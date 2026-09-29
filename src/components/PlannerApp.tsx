@@ -24,7 +24,7 @@ import {
   toIsoDate,
 } from "@/lib/planning";
 import { candidateCycleLength, mockPlanImportService } from "@/lib/plan-import-service";
-import { sowingPlanRepository } from "@/lib/storage";
+import { sowingPlanRepository } from "@/lib/repositories/sowing-plan-repository";
 import type {
   ChangeHistoryEntry,
   ImportFieldKey,
@@ -431,6 +431,11 @@ export function PlannerApp() {
           <span>{storageReady ? "Saglabāts lokāli" : "Ielādē datus"}</span>
           <span>{planRows.length} plāna rindas</span>
           <strong>{workItems.length} darbi</strong>
+          <form action="/api/auth/logout" method="post">
+            <button className="secondary-action" type="submit">
+              Iziet
+            </button>
+          </form>
         </div>
       </header>
 

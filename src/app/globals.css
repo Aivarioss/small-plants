@@ -79,6 +79,7 @@ button {
 
 .topbar__stats {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   align-items: center;
   color: var(--muted);
@@ -95,6 +96,46 @@ button {
 
 .topbar__stats strong {
   color: var(--green-dark);
+}
+
+.topbar__stats form {
+  display: flex;
+}
+
+.login-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 18px;
+}
+
+.login-panel {
+  display: grid;
+  gap: 22px;
+  width: min(420px, 100%);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: var(--shadow);
+  padding: 24px;
+}
+
+.login-panel h1 {
+  font-size: clamp(2rem, 7vw, 3rem);
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.login-form {
+  display: grid;
+  gap: 14px;
+}
+
+.login-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-weight: 700;
 }
 
 .eyebrow {

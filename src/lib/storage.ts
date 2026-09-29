@@ -26,11 +26,6 @@ type LegacyStoredBatches = {
   batches?: LegacyBatch[];
 };
 
-export const sowingPlanRepository = {
-  load: loadPlanRowsFromStorage,
-  save: savePlanRowsToStorage,
-};
-
 export function loadPlanRowsFromStorage(): SowingPlanRow[] {
   const storage = getStorage();
   if (!storage) {

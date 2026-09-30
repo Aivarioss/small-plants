@@ -17,6 +17,7 @@ import type {
   WorkScheduleKind,
   WorkType,
 } from "./types";
+import { scheduleProductionWork, type ScheduledWorkItem } from "./scheduler";
 
 const FULL_TABLE_PLANTS = 16 * 92;
 const GUTTERS_PER_TABLE = 6;
@@ -419,6 +420,88 @@ function findAvailablePrimaryRow(
 }
 
 export function generateWorkItems(row: SowingPlanRow, config: PlannerConfig): WorkItem[] {
+  return generateWorkItemsForRows([row], config);
+}
+
+export function generateWorkItemsForRows(rows: SowingPlanRow[], config: PlannerConfig): WorkItem[] {
+  void config;
+
+  return scheduleProductionWork(rows).items.map((scheduled) => workItemFromSchedule(scheduled, rows));
+}
+
+function workItemFromSchedule(scheduled: ScheduledWorkItem, rows: SowingPlanRow[]): WorkItem {
+  const row = rows.find((candidate) => candidate.id === scheduled.planRowId);
+
+  if (!row) {
+    throw new Error(`Missing plan row for scheduled work ${scheduled.planRowId}`);
+  }
+
+  const totalSow = getTotalSow(row);
+  const details: string[] = [];
+  let placement: PlacementPlan | undefined;
+  let capacityWarning: string | undefined;
+
+  if (scheduled.type === "sowing") {
+    const sowing = calculateSowingPlan(totalSow);
+    details.push(sowing.label, `${totalSow.toLocaleString("lv-LV")} stādi kopā sēt`, `Šķirne: ${row.variety}`);
+  }
+
+  if (scheduled.type === "thinning") {
+    const thinning = calculateThinningPlan(totalSow, row.sectorType);
+    placement = createPlacementPlan(row, rows);
+    capacityWarning = placement.warning;
+    details.push(
+      thinning.label,
+      `${placement.primaryRow ? `Rinda ${placement.primaryRow}` : "Nav brīvas rindas"} — ${placement.tables} galdi`,
+      `Atļauts pārcelt tikai ${dateLabel(cycleDayDate(row, 8))} - ${dateLabel(cycleDayDate(row, 10))}`,
+    );
+  }
+
+  if (scheduled.type === "previcure") {
+    details.push("Aizpildīt uz papīra, ja vajadzīgas devas vai piezīmes");
+  }
+
+  if (scheduled.type === "sideShoots") {
+    details.push("Ne agrāk par 17. cikla dienu", `Slodze: ${formatWorkload(scheduled.workloadWeight)}`);
+  }
+
+  if (scheduled.type === "sticks") {
+    details.push("Elastīgs darbs cikla beigu daļā", `Slodze: ${formatWorkload(scheduled.workloadWeight)}`);
+  }
+
+  if (scheduled.type === "rings") {
+    details.push("Automātiski vienu dienu pirms izvākšanas");
+  }
+
+  if (scheduled.type === "harvest") {
+    const boxPlan = calculateBoxPlan(row);
+    details.push(`${boxPlan.totalBoxes} kastītes pa 12 stādiem`, boxPlan.label);
+  }
+
+  const warnings = scheduled.warnings ?? [];
+
+  return {
+    ...item(
+      row,
+      scheduled.type,
+      scheduled.date,
+      scheduled.cycleDay,
+      scheduled.fixed,
+      scheduled.scheduleKind,
+      scheduled.workloadWeight,
+      [...details, ...warnings],
+      scheduled.allowedDateRange,
+    ),
+    placement,
+    capacityWarning,
+    portion: scheduled.portion,
+    source: scheduled.source,
+    locked: scheduled.locked,
+    warnings,
+  };
+}
+
+export function generateLegacyWorkItems(row: SowingPlanRow, config: PlannerConfig): WorkItem[] {
   void config;
   const totalSow = getTotalSow(row);
   const sowing = calculateSowingPlan(totalSow);
@@ -643,8 +726,7 @@ export function generateMonthlyWorkPlan(
   const month = anchor.getMonth();
   const year = anchor.getFullYear();
 
-  return rows
-    .flatMap((row) => generateWorkItems(row, config))
+  return generateWorkItemsForRows(rows, config)
     .filter((item) => {
       const date = new Date(`${item.date}T12:00:00`);
       return date.getFullYear() === year && date.getMonth() === month;

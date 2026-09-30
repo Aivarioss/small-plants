@@ -16,7 +16,7 @@ import {
   daysBetween,
   eachDate,
   generateWorksheetDays,
-  generateWorkItems,
+  generateWorkItemsForRows,
   getTotalSow,
   greenhouseRows,
   hasManualWorkMoves,
@@ -93,28 +93,31 @@ export function PlannerApp() {
 
   const workItems = useMemo(
     () =>
-      planRows.flatMap((row) =>
-        generateWorkItems(row, plannerConfig).map((item) => {
-          if (item.type !== "thinning") {
-            return item;
-          }
+      generateWorkItemsForRows(planRows, plannerConfig).map((item) => {
+        const row = planRows.find((candidate) => candidate.id === item.planRowId);
+        if (item.type !== "thinning") {
+          return item;
+        }
 
-          const placement = createPlacementPlan(row, planRows);
-          const detailsWithoutStalePlacement = item.details.filter(
-            (detail) => !detail.trim().startsWith("Rinda ") && !detail.trim().startsWith("Nav brīvas rindas"),
-          );
+        if (!row) {
+          return item;
+        }
 
-          return {
-            ...item,
-            placement,
-            capacityWarning: placement.warning,
-            details: [
-              ...detailsWithoutStalePlacement,
-              `${placement.primaryRow ? `Rinda ${placement.primaryRow}` : "Nav brīvas rindas"} — ${placement.tables} galdi`,
-            ],
-          };
-        }),
-      ),
+        const placement = createPlacementPlan(row, planRows);
+        const detailsWithoutStalePlacement = item.details.filter(
+          (detail) => !detail.trim().startsWith("Rinda ") && !detail.trim().startsWith("Nav brīvas rindas"),
+        );
+
+        return {
+          ...item,
+          placement,
+          capacityWarning: placement.warning,
+          details: [
+            ...detailsWithoutStalePlacement,
+            `${placement.primaryRow ? `Rinda ${placement.primaryRow}` : "Nav brīvas rindas"} — ${placement.tables} galdi`,
+          ],
+        };
+      }),
     [planRows],
   );
   const selectedRow = planRows.find((row) => row.id === selectedRowId) ?? planRows[0];

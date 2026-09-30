@@ -15,6 +15,7 @@ export type MainView = "sowingPlan" | "calendar" | "hus" | "batches" | "greenhou
 export type GreenhouseRowId = "A" | "B" | "C" | "D";
 
 export type WorkScheduleKind = "fixed" | "window" | "flexible";
+export type WorkSource = "automatic" | "manual" | "optimizer";
 export type WorkAdjustmentValue = string | string[];
 export type WorkAdjustments = Partial<Record<"thinning" | "sideShoots" | "sticks", WorkAdjustmentValue>>;
 
@@ -211,6 +212,10 @@ export type WorkItem = {
   fixed: boolean;
   scheduleKind: WorkScheduleKind;
   workloadWeight: number;
+  portion?: number;
+  source?: WorkSource;
+  locked?: boolean;
+  warnings?: string[];
   color: string;
   details: string[];
   allowedDateRange?: {

@@ -1,5 +1,5 @@
-import { localStorageSowingPlanRepository } from "./local-storage-sowing-plan-repository";
+import { apiSowingPlanRepository } from "./api-sowing-plan-repository";
 import type { SowingPlanRepository } from "./types";
 
-// Transition point: the app keeps localStorage behavior until Supabase sync is enabled explicitly.
-export const sowingPlanRepository: SowingPlanRepository = localStorageSowingPlanRepository;
+// Supabase is the active source of truth. localStorage remains only as a manual backup/recovery path.
+export const sowingPlanRepository: SowingPlanRepository = apiSowingPlanRepository;

@@ -9,8 +9,11 @@ import type {
 } from "./database";
 
 export function recordToSowingPlanRow(record: SowingPlanRowWithRelations): SowingPlanRow {
+  const placement = relationOne(record.table_placements);
+
   return {
     id: record.id,
+    updatedAt: record.updated_at,
     sectorName: record.hus,
     requiredPlants: record.required_plants,
     extraPlants: record.extra_plants,
@@ -26,15 +29,19 @@ export function recordToSowingPlanRow(record: SowingPlanRowWithRelations): Sowin
     status: record.status,
     source: record.source,
     adjustments: recordsToAdjustments(record.work_adjustments ?? []),
-    placement: record.table_placements?.[0]
+    placement: placement
       ? {
-          primaryRow: record.table_placements[0].primary_row ?? undefined,
-          tables: record.table_placements[0].tables ?? undefined,
-          manual: record.table_placements[0].manual,
+          primaryRow: placement.primary_row ?? undefined,
+          tables: placement.tables ?? undefined,
+          manual: placement.manual,
         }
       : undefined,
     changeHistory: (record.change_history ?? []).map(recordToChangeHistory),
   };
+}
+
+function relationOne<T>(value: T[] | T | undefined): T | undefined {
+  return Array.isArray(value) ? value[0] : value;
 }
 
 export function sowingPlanRowToRecord(row: SowingPlanRow): SowingPlanRowRecord | null {

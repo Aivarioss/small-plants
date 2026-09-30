@@ -35,6 +35,7 @@ export type ChangeHistoryEntry = {
 
 export type SowingPlanRow = {
   id: string;
+  updatedAt?: string;
   sectorName: string;
   requiredPlants: number;
   extraPlants: number;

@@ -50,6 +50,6 @@ export type ChangeHistoryRecord = {
 
 export type SowingPlanRowWithRelations = SowingPlanRowRecord & {
   work_adjustments?: WorkAdjustmentRecord[];
-  table_placements?: TablePlacementRecord[];
+  table_placements?: TablePlacementRecord[] | TablePlacementRecord;
   change_history?: ChangeHistoryRecord[];
 };

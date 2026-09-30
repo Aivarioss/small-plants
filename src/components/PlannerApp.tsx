@@ -1,7 +1,7 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { demoPlanRows, plannerConfig } from "@/lib/demo-data";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { plannerConfig } from "@/lib/demo-data";
 import {
   addDays,
   balanceWorkload,
@@ -24,6 +24,7 @@ import {
   toIsoDate,
 } from "@/lib/planning";
 import { candidateCycleLength, mockPlanImportService } from "@/lib/plan-import-service";
+import { SowingPlanApiConflictError } from "@/lib/repositories/api-sowing-plan-repository";
 import { sowingPlanRepository } from "@/lib/repositories/sowing-plan-repository";
 import type {
   ChangeHistoryEntry,
@@ -75,19 +76,20 @@ function calendarItemLabel(item: WorkItem) {
 }
 
 export function PlannerApp() {
-  const [planRows, setPlanRows] = useState<SowingPlanRow[]>(demoPlanRows);
-  const [storageReady, setStorageReady] = useState(false);
+  const [planRows, setPlanRows] = useState<SowingPlanRow[]>([]);
+  const [repositoryMessage, setRepositoryMessage] = useState("Ielādē Supabase");
   const [activeView, setActiveView] = useState<MainView>("sowingPlan");
   const [viewMode, setViewMode] = useState<ViewMode>("month");
   const [anchorDate, setAnchorDate] = useState("2026-09-25");
   const [selectedDate, setSelectedDate] = useState("2026-09-25");
-  const [selectedRowId, setSelectedRowId] = useState(demoPlanRows[0]?.id ?? "");
+  const [selectedRowId, setSelectedRowId] = useState("");
   const [draft, setDraft] = useState<SowingPlanDraft>(initialDraft);
   const [moveErrors, setMoveErrors] = useState<Record<string, string>>({});
   const [importResult, setImportResult] = useState<PlanImportResult | null>(null);
   const [importBusy, setImportBusy] = useState(false);
   const [importMessage, setImportMessage] = useState("");
   const [balancePreview, setBalancePreview] = useState<WorkloadBalanceProposal[] | null>(null);
+  const rowSaveChainsRef = useRef(new Map<string, Promise<SowingPlanRow>>());
 
   const workItems = useMemo(
     () =>
@@ -127,21 +129,39 @@ export function PlannerApp() {
     .slice(0, 6);
 
   useEffect(() => {
-    queueMicrotask(() => {
-      const loadedRows = sowingPlanRepository.load();
-      setPlanRows(loadedRows);
-      setSelectedRowId(loadedRows[0]?.id ?? "");
-      setStorageReady(true);
-    });
+    let cancelled = false;
+
+    async function loadRows() {
+      try {
+        const loadedRows = await sowingPlanRepository.load();
+        if (cancelled) {
+          return;
+        }
+
+        setPlanRows(loadedRows);
+        setSelectedRowId(loadedRows[0]?.id ?? "");
+        setRepositoryMessage("Supabase aktīvs");
+      } catch (error) {
+        if (!cancelled) {
+          setRepositoryMessage(error instanceof Error ? error.message : "Neizdevās ielādēt Supabase plānu");
+        }
+      }
+    }
+
+    void loadRows();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  useEffect(() => {
-    if (storageReady) {
-      sowingPlanRepository.save(planRows);
-    }
-  }, [planRows, storageReady]);
+  async function reloadRows(message = "Supabase pārlādēts") {
+    const loadedRows = await sowingPlanRepository.load();
+    setPlanRows(loadedRows);
+    setSelectedRowId((current) => (loadedRows.some((row) => row.id === current) ? current : loadedRows[0]?.id ?? ""));
+    setRepositoryMessage(message);
+  }
 
-  function addPlanRow(event: FormEvent<HTMLFormElement>) {
+  async function addPlanRow(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const requiredPlants = Number(draft.requiredPlants);
     const extraPlants = Number(draft.extraPlants);
@@ -169,29 +189,67 @@ export function PlannerApp() {
       source: "user",
     };
 
-    setPlanRows((current) => [row, ...current]);
-    setSelectedRowId(row.id);
-    setSelectedDate(row.sowingDate);
-    setAnchorDate(row.sowingDate);
-    setDraft(initialDraft);
-    setActiveView("worksheet");
+    setRepositoryMessage("Saglabā Supabase");
+    try {
+      const savedRow = await sowingPlanRepository.create(row);
+      setPlanRows((current) => [savedRow, ...current]);
+      setSelectedRowId(savedRow.id);
+      setSelectedDate(savedRow.sowingDate);
+      setAnchorDate(savedRow.sowingDate);
+      setDraft(initialDraft);
+      setActiveView("worksheet");
+      setRepositoryMessage("Supabase saglabāts");
+    } catch (error) {
+      setRepositoryMessage(error instanceof Error ? error.message : "Neizdevās izveidot Hus Supabase");
+    }
   }
 
   function updatePlanRow(id: string, patch: Partial<SowingPlanRow>, options?: { resetSchedule?: boolean }) {
-    setPlanRows((current) =>
-      current.map((row) => {
-        if (row.id !== id) {
-          return row;
+    const previous = planRows.find((row) => row.id === id);
+    if (!previous) {
+      return;
+    }
+
+    const next = { ...previous, ...patch };
+    const persistedRow = {
+      ...next,
+      adjustments: options?.resetSchedule ? undefined : sanitizeAdjustments(next),
+      changeHistory: appendChangeHistory(previous, next, patch, options?.resetSchedule),
+    };
+
+    setPlanRows((current) => current.map((row) => (row.id === id ? persistedRow : row)));
+    void persistRowUpdate(previous, persistedRow);
+  }
+
+  function persistRowUpdate(previous: SowingPlanRow, next: SowingPlanRow): Promise<SowingPlanRow> {
+    setRepositoryMessage("Saglabā Supabase");
+    const baseline = rowSaveChainsRef.current.get(previous.id) ?? Promise.resolve(previous);
+    const operation = baseline
+      .then((latestSavedRow) =>
+        sowingPlanRepository.update({
+          ...next,
+          updatedAt: latestSavedRow.updatedAt ?? previous.updatedAt,
+        }),
+      )
+      .then((savedRow) => {
+        setPlanRows((current) => current.map((row) => (row.id === savedRow.id ? savedRow : row)));
+        setRepositoryMessage("Supabase saglabāts");
+        return savedRow;
+      })
+      .catch(async (error) => {
+        rowSaveChainsRef.current.delete(previous.id);
+        if (error instanceof SowingPlanApiConflictError) {
+          setRepositoryMessage("Šis Hus ir mainīts citur. Dati pārlādēti; pārbaudi jaunāko versiju pirms atkārtotas izmaiņas.");
+          await reloadRows("Šis Hus ir mainīts citur. Pārbaudi jaunāko versiju.");
+          return next;
         }
 
-        const next = { ...row, ...patch };
-        return {
-          ...next,
-          adjustments: options?.resetSchedule ? undefined : sanitizeAdjustments(next),
-          changeHistory: appendChangeHistory(row, next, patch, options?.resetSchedule),
-        };
-      }),
-    );
+        setRepositoryMessage(error instanceof Error ? error.message : "Neizdevās saglabāt Hus Supabase");
+        return next;
+      });
+
+    rowSaveChainsRef.current.set(previous.id, operation);
+    return operation;
   }
 
   function updateDateField(row: SowingPlanRow, field: "sowingDate" | "harvestDate", value: string) {
@@ -228,6 +286,64 @@ export function PlannerApp() {
     setSelectedRowId(remaining[0]?.id ?? "");
     if (remaining.length === 0) {
       setActiveView("sowingPlan");
+    }
+
+    if (row && row.source !== "demo") {
+      void deleteRowFromSupabase(row);
+    }
+  }
+
+  async function deleteRowFromSupabase(row: SowingPlanRow) {
+    setRepositoryMessage("Dzēš Supabase");
+    try {
+      await sowingPlanRepository.delete(row);
+      setRepositoryMessage("Supabase saglabāts");
+    } catch (error) {
+      if (error instanceof SowingPlanApiConflictError) {
+        await reloadRows("Šis Hus ir mainīts citur. Dzēšana apturēta; pārbaudi jaunāko versiju.");
+        return;
+      }
+
+      setRepositoryMessage(error instanceof Error ? error.message : "Neizdevās dzēst Hus Supabase");
+      await reloadRows("Dzēšana neizdevās. Supabase dati pārlādēti.");
+    }
+  }
+
+  async function persistRowDiff(previousRows: SowingPlanRow[], nextRows: SowingPlanRow[]) {
+    setRepositoryMessage("Saglabā Supabase");
+    const previousById = new Map(previousRows.map((row) => [row.id, row]));
+    const nextById = new Map(nextRows.map((row) => [row.id, row]));
+
+    try {
+      await Promise.all(
+        nextRows.map(async (row) => {
+          const previous = previousById.get(row.id);
+          if (!previous) {
+            const saved = await sowingPlanRepository.create(row);
+            setPlanRows((current) => current.map((candidate) => (candidate.id === row.id ? saved : candidate)));
+            return;
+          }
+
+          if (rowsDiffer(previous, row)) {
+            await persistRowUpdate(previous, row);
+          }
+        }),
+      );
+
+      await Promise.all(
+        previousRows
+          .filter((row) => !nextById.has(row.id) && row.source !== "demo")
+          .map((row) => sowingPlanRepository.delete(row)),
+      );
+
+      setRepositoryMessage("Supabase saglabāts");
+    } catch (error) {
+      if (error instanceof SowingPlanApiConflictError) {
+        await reloadRows("Kāda rinda mainīta citur. Dati pārlādēti; pārbaudi jaunāko versiju.");
+        return;
+      }
+
+      setRepositoryMessage(error instanceof Error ? error.message : "Neizdevās saglabāt Supabase");
     }
   }
 
@@ -373,7 +489,9 @@ export function PlannerApp() {
       return;
     }
 
-    setPlanRows((current) => applyImportCandidates(current, importResult.candidates));
+    const nextRows = applyImportCandidates(planRows, importResult.candidates);
+    setPlanRows(nextRows);
+    void persistRowDiff(planRows, nextRows);
     setImportResult(null);
     setImportMessage("Imports apstiprināts. Plāna rindas, darbi, kalendārs un stādu mājas noslodze ir pārrēķināta.");
     setActiveView("sowingPlan");
@@ -388,35 +506,36 @@ export function PlannerApp() {
       return;
     }
 
-    setPlanRows((current) =>
-      current.map((row) => {
-        const proposals = balancePreview.filter((proposal) => proposal.planRowId === row.id);
-        if (proposals.length === 0) {
-          return row;
-        }
+    const nextRows = planRows.map((row) => {
+      const proposals = balancePreview.filter((proposal) => proposal.planRowId === row.id);
+      if (proposals.length === 0) {
+        return row;
+      }
 
-        const adjustments = { ...row.adjustments };
-        proposals.forEach((proposal) => {
-          adjustments[proposal.type] = proposal.toDates.length === 1 ? proposal.toDates[0] : proposal.toDates;
-        });
+      const adjustments = { ...row.adjustments };
+      proposals.forEach((proposal) => {
+        adjustments[proposal.type] = proposal.toDates.length === 1 ? proposal.toDates[0] : proposal.toDates;
+      });
 
-        return {
-          ...row,
-          adjustments,
-          changeHistory: [
-            ...(row.changeHistory ?? []),
-            ...proposals.map((proposal) =>
-              historyEntry(
-                proposal.title,
-                formatDateRange(proposal.fromDates),
-                formatDateRange(proposal.toDates),
-                "Darbi izlīdzināti kalendārā",
-              ),
+      return {
+        ...row,
+        adjustments,
+        changeHistory: [
+          ...(row.changeHistory ?? []),
+          ...proposals.map((proposal) =>
+            historyEntry(
+              proposal.title,
+              formatDateRange(proposal.fromDates),
+              formatDateRange(proposal.toDates),
+              "Darbi izlīdzināti kalendārā",
             ),
-          ],
-        };
-      }),
-    );
+          ),
+        ],
+      };
+    });
+
+    setPlanRows(nextRows);
+    void persistRowDiff(planRows, nextRows);
     setBalancePreview(null);
   }
 
@@ -428,7 +547,7 @@ export function PlannerApp() {
           <h1>Gurķu stādu cikli</h1>
         </div>
         <div className="topbar__stats">
-          <span>{storageReady ? "Saglabāts lokāli" : "Ielādē datus"}</span>
+          <span>{repositoryMessage}</span>
           <span>{planRows.length} plāna rindas</span>
           <strong>{workItems.length} darbi</strong>
           <form action="/api/auth/logout" method="post">
@@ -1824,6 +1943,16 @@ function sanitizeAdjustments(row: SowingPlanRow): SowingPlanRow["adjustments"] {
     ),
   );
   return Object.fromEntries(entries) as SowingPlanRow["adjustments"];
+}
+
+function rowsDiffer(previous: SowingPlanRow, next: SowingPlanRow): boolean {
+  return JSON.stringify(rowComparable(previous)) !== JSON.stringify(rowComparable(next));
+}
+
+function rowComparable(row: SowingPlanRow): Omit<SowingPlanRow, "updatedAt"> {
+  const comparable = { ...row };
+  delete comparable.updatedAt;
+  return comparable;
 }
 
 function adjustmentValueToDates(value: string | string[] | undefined): string[] {

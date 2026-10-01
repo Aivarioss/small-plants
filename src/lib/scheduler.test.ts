@@ -19,6 +19,58 @@ function row(patch: Partial<SowingPlanRow> = {}): SowingPlanRow {
   };
 }
 
+function productionRow(
+  id: string,
+  sectorName: string,
+  requiredPlants: number,
+  sowingDate: string,
+  harvestDate: string,
+  sectorType: SowingPlanRow["sectorType"] = 26,
+): SowingPlanRow {
+  return row({
+    id,
+    sectorName,
+    requiredPlants,
+    extraPlants: 100,
+    variety: "Baltazsara",
+    sowingDate,
+    harvestDate,
+    cycleLength: 22,
+    sectorType,
+    source: "user",
+  });
+}
+
+function realOctoberProductionRows(): SowingPlanRow[] {
+  return [
+    productionRow("hus-4", "Hus 4", 3819, "2026-09-22", "2026-10-14"),
+    productionRow("hus-5", "Hus 5", 3556, "2026-09-24", "2026-10-16"),
+    productionRow("hus-6", "Hus 6", 3556, "2026-09-29", "2026-10-21"),
+    productionRow("hus-7", "Hus 7", 6057, "2026-10-06", "2026-10-28", 39),
+    productionRow("hus-9", "Hus 9", 3707, "2026-10-13", "2026-11-04"),
+  ];
+}
+
+function greenhouseRow(
+  id: string,
+  plantCount: number,
+  sowingDate: string,
+  harvestDate: string,
+  patch: Partial<SowingPlanRow> = {},
+): SowingPlanRow {
+  return row({
+    id,
+    sectorName: patch.sectorName ?? id,
+    requiredPlants: plantCount,
+    extraPlants: 0,
+    sowingDate,
+    harvestDate,
+    cycleLength: patch.cycleLength ?? 22,
+    sectorType: patch.sectorType ?? 26,
+    ...patch,
+  });
+}
+
 describe("production scheduler", () => {
   it("keeps move-out fixed and rings exactly one day before move-out for 21/22/23 day cycles", () => {
     const result = scheduleProductionWork([
@@ -172,6 +224,109 @@ describe("production scheduler", () => {
     ).toBe(1);
   });
 
+  it("adds normal greenhouse placement around 25 plants per trough for thinning", () => {
+    const result = scheduleProductionWork([greenhouseRow("normal", 3844, "2026-10-01", "2026-10-23")]);
+    const thinning = result.items.find((item) => item.type === "thinning");
+
+    expect(thinning?.greenhousePlacement?.totalTables).toBe(26);
+    expect(thinning?.greenhousePlacement?.plantsPerTrough).toBeCloseTo(24.6, 1);
+    expect(thinning?.greenhousePlacement?.densityClass).toBe("normal");
+  });
+
+  it("keeps 4200 plants in one 26-table row through modest compression", () => {
+    const result = scheduleProductionWork([greenhouseRow("compressed", 4200, "2026-10-01", "2026-10-23")]);
+    const thinning = result.items.find((item) => item.type === "thinning");
+
+    expect(thinning?.greenhousePlacement?.totalTables).toBe(26);
+    expect(thinning?.greenhousePlacement?.extraTables).toBe(0);
+    expect(thinning?.greenhousePlacement?.densityClass).toBe("slightlyCompressed");
+  });
+
+  it("compresses a new incoming sector instead of rearranging already-thinned sectors", () => {
+    const existingLarge = greenhouseRow("existing-large", 6157, "2026-09-01", "2026-10-30");
+    const existingNormal = greenhouseRow("existing-normal", 3844, "2026-09-02", "2026-10-30");
+    const incoming = greenhouseRow("incoming", 5000, "2026-09-10", "2026-10-30");
+    const result = scheduleProductionWork([existingLarge, existingNormal, incoming]);
+    const largeThinning = result.items.find((item) => item.planRowId === existingLarge.id && item.type === "thinning");
+    const normalThinning = result.items.find((item) => item.planRowId === existingNormal.id && item.type === "thinning");
+    const incomingThinning = result.items.find((item) => item.planRowId === incoming.id && item.type === "thinning");
+
+    expect(largeThinning?.greenhousePlacement?.totalTables).toBe(39);
+    expect(normalThinning?.greenhousePlacement?.totalTables).toBe(26);
+    expect(incomingThinning?.freeTablesBeforePlacement).toBe(26);
+    expect(incomingThinning?.greenhousePlacement?.totalTables).toBe(26);
+    expect(incomingThinning?.greenhousePlacement?.densityClass).toBe("exceptional");
+  });
+
+  it("chooses day 9 instead of day 8 when move-out frees tables for a better placement", () => {
+    const occupiedLarge = greenhouseRow("occupied-large", 6157, "2026-09-01", "2026-10-09");
+    const occupiedNormal = greenhouseRow("occupied-normal", 3844, "2026-09-02", "2026-10-09");
+    const incoming = greenhouseRow("incoming-day-9", 5000, "2026-10-01", "2026-10-23");
+    const result = scheduleProductionWork([occupiedLarge, occupiedNormal, incoming]);
+    const thinning = result.items.find((item) => item.planRowId === incoming.id && item.type === "thinning");
+
+    expect(thinning?.date).toBe("2026-10-09");
+    expect(thinning?.cycleDay).toBe(9);
+    expect(thinning?.occupiedTables).toBe(0);
+    expect(thinning?.greenhousePlacement?.densityClass).toBe("normal");
+  });
+
+  it("chooses day 10 when that is the first day with substantially better greenhouse capacity", () => {
+    const occupiedLarge = greenhouseRow("occupied-large-day-10", 6157, "2026-09-01", "2026-10-10");
+    const occupiedNormal = greenhouseRow("occupied-normal-day-10", 3844, "2026-09-02", "2026-10-10");
+    const incoming = greenhouseRow("incoming-day-10", 5000, "2026-10-01", "2026-10-23");
+    const result = scheduleProductionWork([occupiedLarge, occupiedNormal, incoming]);
+    const thinning = result.items.find((item) => item.planRowId === incoming.id && item.type === "thinning");
+
+    expect(thinning?.date).toBe("2026-10-10");
+    expect(thinning?.cycleDay).toBe(10);
+    expect(thinning?.occupiedTables).toBe(0);
+    expect(thinning?.greenhousePlacement?.densityClass).toBe("normal");
+  });
+
+  it("allows move-out and thinning on the same day and reuses freed tables for capacity", () => {
+    const movingOut = greenhouseRow("moving-out", 6157, "2026-09-01", "2026-10-09");
+    const alsoMovingOut = greenhouseRow("also-moving-out", 3844, "2026-09-02", "2026-10-09");
+    const incoming = greenhouseRow("same-day-thinning", 5000, "2026-10-01", "2026-10-23");
+    const result = scheduleProductionWork([movingOut, alsoMovingOut, incoming]);
+    const sameDay = result.items.filter((item) => item.date === "2026-10-09");
+    const thinning = sameDay.find((item) => item.planRowId === incoming.id && item.type === "thinning");
+
+    expect(sameDay.map((item) => item.type)).toContain("harvest");
+    expect(thinning?.occupiedTables).toBe(0);
+    expect(thinning?.greenhousePlacement?.densityClass).toBe("normal");
+  });
+
+  it("uses emergency day 11 with a warning when days 8-10 have no feasible capacity", () => {
+    const blockers = [
+      greenhouseRow("blocker-39", 6157, "2026-09-01", "2026-10-11"),
+      greenhouseRow("blocker-26", 3844, "2026-09-02", "2026-10-11"),
+      greenhouseRow("blocker-16", 2400, "2026-09-03", "2026-10-11"),
+    ];
+    const incoming = greenhouseRow("emergency", 2400, "2026-10-01", "2026-10-23");
+    const result = scheduleProductionWork([...blockers, incoming]);
+    const thinning = result.items.find((item) => item.planRowId === incoming.id && item.type === "thinning");
+
+    expect(thinning?.cycleDay).toBe(11);
+    expect(result.warnings.some((warning) => warning.code === "emergency_day_11")).toBe(true);
+    expect(thinning?.warnings?.join(" ")).toContain("11. dienā");
+  });
+
+  it("returns a capacity conflict when thinning is impossible even on emergency day 11", () => {
+    const blockers = [
+      greenhouseRow("hard-blocker-39", 6157, "2026-09-01", "2026-10-30"),
+      greenhouseRow("hard-blocker-26", 3844, "2026-09-02", "2026-10-30"),
+      greenhouseRow("hard-blocker-16", 2400, "2026-09-03", "2026-10-30"),
+    ];
+    const incoming = greenhouseRow("impossible-capacity", 2400, "2026-10-01", "2026-10-23");
+    const result = scheduleProductionWork([...blockers, incoming]);
+    const thinning = result.items.find((item) => item.planRowId === incoming.id && item.type === "thinning");
+
+    expect(thinning?.cycleDay).toBe(11);
+    expect(thinning?.greenhousePlacement?.feasible).toBe(false);
+    expect(result.warnings.some((warning) => warning.code === "greenhouse_capacity_conflict")).toBe(true);
+  });
+
   it("keeps two-sector weekly fixed move-outs and plans thinning inside each legal window", () => {
     const result = scheduleProductionWork([
       row({ id: "wednesday", sowingDate: "2026-10-01", harvestDate: "2026-10-21", cycleLength: 21 }),
@@ -186,6 +341,51 @@ describe("production scheduler", () => {
     );
     expect(result.items.find((item) => item.planRowId === "wednesday" && item.type === "thinning")?.cycleDay).toBe(8);
     expect(result.items.find((item) => item.planRowId === "friday" && item.type === "thinning")?.cycleDay).toBe(8);
+  });
+
+  it("generates the real October production rhythm without treating compatible work as a conflict", () => {
+    const result = scheduleProductionWork(realOctoberProductionRows());
+
+    expect(result.warnings).toEqual([]);
+    expect(result.items.find((item) => item.planRowId === "hus-4" && item.type === "harvest")?.date).toBe(
+      "2026-10-14",
+    );
+    expect(result.items.find((item) => item.planRowId === "hus-5" && item.type === "harvest")?.date).toBe(
+      "2026-10-16",
+    );
+    expect(result.items.find((item) => item.planRowId === "hus-6" && item.type === "harvest")?.date).toBe(
+      "2026-10-21",
+    );
+
+    const october15 = result.items.filter((item) => item.date === "2026-10-15");
+    expect(october15.map((item) => `${item.type}:${item.sectorName}`).sort()).toEqual([
+      "rings:Hus 5",
+      "thinning:Hus 7",
+    ]);
+    expect(
+      effectiveOperationalLoad(
+        october15.map((item) => ({
+          date: item.date,
+          planRowId: item.planRowId,
+          type: item.type,
+          workloadWeight: item.workloadWeight,
+        })),
+      ),
+    ).toBe(1);
+
+    const hus7Thinning = result.items.find((item) => item.planRowId === "hus-7" && item.type === "thinning");
+    expect(hus7Thinning?.date).toBe("2026-10-15");
+    expect(hus7Thinning?.cycleDay).toBeGreaterThanOrEqual(8);
+    expect(hus7Thinning?.cycleDay).toBeLessThanOrEqual(10);
+
+    const ringDates = new Map(
+      result.items.filter((item) => item.type === "rings").map((item) => [item.planRowId, item.date]),
+    );
+    const flexibleItems = result.items.filter((item) => item.type === "sideShoots" || item.type === "sticks");
+    expect(flexibleItems.every((item) => item.date < (ringDates.get(item.planRowId) ?? ""))).toBe(true);
+    const hus9Thinning = result.items.find((item) => item.planRowId === "hus-9" && item.type === "thinning");
+    expect(hus9Thinning?.cycleDay).toBeGreaterThanOrEqual(8);
+    expect(hus9Thinning?.cycleDay).toBeLessThanOrEqual(10);
   });
 
   it("honors valid manual locked adjustments", () => {

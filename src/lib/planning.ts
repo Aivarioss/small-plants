@@ -92,6 +92,10 @@ export function getCycleDay(row: Pick<SowingPlanRow, "sowingDate">, date: string
   return daysBetween(row.sowingDate, date);
 }
 
+export function getBiologicalCycleDays(row: Pick<SowingPlanRow, "sowingDate" | "harvestDate">): number {
+  return daysBetween(row.sowingDate, row.harvestDate);
+}
+
 export function eachDate(startDate: string, endDate: string): string[] {
   const length = daysBetween(startDate, endDate);
   return Array.from({ length }, (_, index) => addDays(startDate, index));
@@ -233,7 +237,7 @@ export function isAllowedMove(row: SowingPlanRow, type: WorkType, date: string):
   }
 
   if (type === "sticks") {
-    return cycleDay >= Math.max(17, row.cycleLength - 5) && date < ringsDate;
+    return cycleDay >= Math.max(17, getBiologicalCycleDays(row) - 5) && date < ringsDate;
   }
 
   return false;
@@ -511,7 +515,8 @@ export function generateLegacyWorkItems(row: SowingPlanRow, config: PlannerConfi
 
   const thinningDefault = getThinningDate(row);
   const sideShootsDefault = cycleDayDate(row, 17);
-  const sticksDefault = cycleDayDate(row, Math.max(18, row.cycleLength - 3));
+  const biologicalCycleDays = getBiologicalCycleDays(row);
+  const sticksDefault = cycleDayDate(row, Math.max(18, biologicalCycleDays - 3));
   const ringsDate = addDays(row.harvestDate, -1);
 
   const thinningDate = firstAdjustmentDate(row.adjustments?.thinning) ?? thinningDefault;
@@ -553,7 +558,7 @@ export function generateLegacyWorkItems(row: SowingPlanRow, config: PlannerConfi
         "Elastīgs darbs cikla beigu daļā",
         `Slodze: ${formatWorkload(workloadPerFlexibleDate("sticks", sticksDates))}`,
       ], {
-        start: cycleDayDate(row, Math.max(17, row.cycleLength - 5)),
+        start: cycleDayDate(row, Math.max(17, biologicalCycleDays - 5)),
         end: addDays(ringsDate, -1),
       }),
     ),
@@ -706,7 +711,7 @@ export function balanceWorkload(rows: SowingPlanRow[], config: PlannerConfig): W
 export function generateWorksheetDays(row: SowingPlanRow, config: PlannerConfig): WorksheetDay[] {
   const works = generateWorkItems(row, config);
 
-  return Array.from({ length: row.cycleLength }, (_, index) => {
+  return Array.from({ length: getBiologicalCycleDays(row) }, (_, index) => {
     const day = index + 1;
     const date = cycleDayDate(row, day);
     return {
@@ -807,13 +812,14 @@ function deadlineJobsForRow(row: SowingPlanRow): DeadlineJob[] {
   }
 
   if (!row.adjustments?.sticks) {
-    const earliest = cycleDayDate(row, Math.max(17, row.cycleLength - 5));
+    const biologicalCycleDays = getBiologicalCycleDays(row);
+    const earliest = cycleDayDate(row, Math.max(17, biologicalCycleDays - 5));
     jobs.push({
       row,
       type: "sticks",
       earliest,
       deadline: sideShootsDeadline,
-      fromDates: [cycleDayDate(row, Math.max(18, row.cycleLength - 3))],
+      fromDates: [cycleDayDate(row, Math.max(18, biologicalCycleDays - 3))],
       workload: 0.5,
       splittable: false,
     });

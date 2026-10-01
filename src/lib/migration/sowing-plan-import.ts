@@ -1,5 +1,5 @@
 import { demoPlanRows } from "../demo-data";
-import { daysBetween } from "../planning";
+import { deriveCycleLength } from "../hus-templates";
 import type { SectorType, SowingPlanRow } from "../types";
 
 export const PLAN_STORAGE_KEY = "cucumber-planner:sowing-plan:v2";
@@ -104,7 +104,7 @@ export function validateImportRow(candidate: unknown): ImportValidationResult {
     return { ok: false, preview: { ...basicPreview, reason: exclusionReason } };
   }
 
-  const cycleLength = numberValue(candidate.cycleLength) || daysBetween(sowingDate, moveOutDate);
+  const cycleLength = numberValue(candidate.cycleLength) || deriveCycleLength(sowingDate, moveOutDate);
   const status = stringValue(candidate.status);
 
   return {
@@ -119,7 +119,7 @@ export function validateImportRow(candidate: unknown): ImportValidationResult {
       sowingDate,
       moveOutDate,
       previcureDate: isIsoDate(stringValue(candidate.previcureDate)) ? stringValue(candidate.previcureDate) : null,
-      cycleLength: cycleLength > 0 ? cycleLength : daysBetween(sowingDate, moveOutDate),
+      cycleLength: cycleLength > 0 ? cycleLength : deriveCycleLength(sowingDate, moveOutDate),
       sectorType,
       correction: numberValue(candidate.correction),
       status: isStatus(status) ? status : "planned",

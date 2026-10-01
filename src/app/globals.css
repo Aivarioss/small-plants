@@ -452,6 +452,60 @@ button:focus-visible {
   padding: 12px;
 }
 
+.quick-entry-grid,
+.advanced-fields__grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.cycle-picker {
+  display: grid;
+  gap: 7px;
+  font-weight: 720;
+}
+
+.segmented--compact {
+  width: 100%;
+}
+
+.segmented--compact button {
+  min-height: 44px;
+  padding: 0 10px;
+}
+
+.quick-entry-summary {
+  display: grid;
+  gap: 4px;
+  border: 1px solid #cfe4d6;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 11px 12px;
+}
+
+.quick-entry-summary span {
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 720;
+}
+
+.advanced-fields {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px 12px;
+}
+
+.advanced-fields summary {
+  cursor: pointer;
+  color: var(--green-dark);
+  font-weight: 800;
+}
+
+.advanced-fields__grid {
+  margin-top: 12px;
+}
+
 .plan-table {
   display: grid;
   gap: 8px;
@@ -997,6 +1051,16 @@ button:focus-visible {
   }
 
   .plan-form {
+    grid-template-columns: 1fr;
+    align-items: end;
+  }
+
+  .quick-entry-grid {
+    grid-template-columns: minmax(150px, 0.8fr) minmax(160px, 0.8fr) minmax(230px, 1fr) minmax(160px, 0.8fr);
+    align-items: end;
+  }
+
+  .advanced-fields__grid {
     grid-template-columns: repeat(5, minmax(120px, 1fr));
     align-items: end;
   }

@@ -13,7 +13,6 @@ import {
   calculateThinningPlan,
   createPlacementPlan,
   dateLabel,
-  daysBetween,
   eachDate,
   generateWorksheetDays,
   generateWorkItemsForRows,
@@ -24,6 +23,17 @@ import {
   toIsoDate,
 } from "@/lib/planning";
 import { candidateCycleLength, mockPlanImportService } from "@/lib/plan-import-service";
+import {
+  applyHusTemplateToDraft,
+  calculateMoveOutDate,
+  deriveCycleLength,
+  operationalTotal,
+  sectorTypeForOperationalTotal,
+  standardHusTemplates,
+  updateDraftCycleLength,
+  updateDraftMoveOutDate,
+  updateDraftSowingDate,
+} from "@/lib/hus-templates";
 import { SowingPlanApiConflictError } from "@/lib/repositories/api-sowing-plan-repository";
 import { sowingPlanRepository } from "@/lib/repositories/sowing-plan-repository";
 import type {
@@ -60,8 +70,9 @@ const initialDraft: SowingPlanDraft = {
   extraPlants: "144",
   variety: "",
   sowingDate: toIsoDate(new Date()),
-  harvestDate: addDays(toIsoDate(new Date()), 21),
+  harvestDate: calculateMoveOutDate(toIsoDate(new Date()), 22),
   cycleLength: "22",
+  cycleMode: "length",
   sectorType: 26,
   plantsPerBox: String(plannerConfig.defaultPlantsPerBox),
 };
@@ -168,7 +179,7 @@ export function PlannerApp() {
     event.preventDefault();
     const requiredPlants = Number(draft.requiredPlants);
     const extraPlants = Number(draft.extraPlants);
-    const cycleLength = Number(draft.cycleLength) || daysBetween(draft.sowingDate, draft.harvestDate);
+    const cycleLength = Number(draft.cycleLength) || deriveCycleLength(draft.sowingDate, draft.harvestDate);
 
     if (!draft.sectorName.trim() || !draft.variety.trim() || requiredPlants <= 0) {
       return;
@@ -258,8 +269,8 @@ export function PlannerApp() {
   function updateDateField(row: SowingPlanRow, field: "sowingDate" | "harvestDate", value: string) {
     const patch: Partial<SowingPlanRow> =
       field === "sowingDate"
-        ? { sowingDate: value, cycleLength: daysBetween(value, row.harvestDate), weekNumber: getIsoWeek(value) }
-        : { harvestDate: value, cycleLength: daysBetween(row.sowingDate, value) };
+        ? { sowingDate: value, cycleLength: deriveCycleLength(value, row.harvestDate), weekNumber: getIsoWeek(value) }
+        : { harvestDate: value, cycleLength: deriveCycleLength(row.sowingDate, value) };
 
     if (field === "sowingDate" && hasManualWorkMoves(row)) {
       const reset = window.confirm("Sēšanas datums mainīts. Vai pārrēķināt šī Hus darba grafiku?");
@@ -273,7 +284,7 @@ export function PlannerApp() {
   function updateCycleLength(row: SowingPlanRow, cycleLength: number) {
     updatePlanRow(row.id, {
       cycleLength,
-      harvestDate: addDays(row.sowingDate, cycleLength - 1),
+      harvestDate: calculateMoveOutDate(row.sowingDate, cycleLength),
       adjustments: undefined,
     }, { resetSchedule: true });
   }
@@ -804,75 +815,136 @@ function SowingPlanPanel({
         />
       ) : null}
 
-      <form className="plan-form" onSubmit={onAdd}>
-        <label>
-          Hus
-          <input
-            onChange={(event) => onDraftChange({ ...draft, sectorName: event.target.value })}
-            placeholder="Hus 3"
-            required
-            value={draft.sectorName}
-          />
-        </label>
-        <label>
-          Nepieciešams
-          <input
-            min="1"
-            onChange={(event) => onDraftChange({ ...draft, requiredPlants: event.target.value })}
-            required
-            type="number"
-            value={draft.requiredPlants}
-          />
-        </label>
-        <label>
-          Extra
-          <input
-            onChange={(event) => onDraftChange({ ...draft, extraPlants: event.target.value })}
-            type="number"
-            value={draft.extraPlants}
-          />
-        </label>
-        <label>
-          Šķirne
-          <input
-            onChange={(event) => onDraftChange({ ...draft, variety: event.target.value })}
-            placeholder="Proloog"
-            required
-            value={draft.variety}
-          />
-        </label>
-        <label>
-          Sēšana
-          <input
-            onChange={(event) => {
-              const sowingDate = event.target.value;
-              onDraftChange({
-                ...draft,
-                sowingDate,
-                cycleLength: String(daysBetween(sowingDate, draft.harvestDate)),
-              });
-            }}
-            required
-            type="date"
-            value={draft.sowingDate}
-          />
-        </label>
-        <label>
-          Izvākšana
-          <input
-            onChange={(event) => {
-              const harvestDate = event.target.value;
-              onDraftChange({
-                ...draft,
-                harvestDate,
-                cycleLength: String(daysBetween(draft.sowingDate, harvestDate)),
-              });
-            }}
-            required
-            type="date"
-            value={draft.harvestDate}
-          />
-        </label>
+      <form className="plan-form plan-form--quick" onSubmit={onAdd}>
+        <div className="quick-entry-grid">
+          <label>
+            Hus
+            <select
+              onChange={(event) => onDraftChange(applyHusTemplateToDraft(draft, event.target.value))}
+              required
+              value={standardHusTemplates.some((template) => template.hus === draft.sectorName) ? draft.sectorName : ""}
+            >
+              <option value="">Izvēlies Hus</option>
+              {standardHusTemplates.map((template) => (
+                <option key={template.hus} value={template.hus}>
+                  {template.hus}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Sēšana
+            <input
+              onChange={(event) => onDraftChange(updateDraftSowingDate(draft, event.target.value))}
+              required
+              type="date"
+              value={draft.sowingDate}
+            />
+          </label>
+          <div className="cycle-picker">
+            <span>Cikls</span>
+            <div className="segmented segmented--compact">
+              {[21, 22, 23].map((cycleLength) => (
+                <button
+                  className={draft.cycleMode === "length" && Number(draft.cycleLength) === cycleLength ? "is-active" : ""}
+                  key={cycleLength}
+                  onClick={() => onDraftChange(updateDraftCycleLength(draft, cycleLength))}
+                  type="button"
+                >
+                  {cycleLength}
+                </button>
+              ))}
+              <button
+                className={draft.cycleMode === "moveOut" ? "is-active" : ""}
+                onClick={() => onDraftChange({ ...draft, cycleMode: "moveOut", cycleLength: String(deriveCycleLength(draft.sowingDate, draft.harvestDate)) })}
+                type="button"
+              >
+                Cits
+              </button>
+            </div>
+          </div>
+          <label>
+            Izvākšana
+            <input
+              onChange={(event) => onDraftChange(updateDraftMoveOutDate(draft, event.target.value))}
+              required
+              type="date"
+              value={draft.harvestDate}
+            />
+          </label>
+        </div>
+
+        <div className="quick-entry-summary">
+          <strong>
+            {draft.variety || "Šķirne"} · {Number(draft.requiredPlants || 0).toLocaleString("lv-LV")} +{" "}
+            {Number(draft.extraPlants || 0).toLocaleString("lv-LV")} →{" "}
+            {operationalTotal(Number(draft.requiredPlants || 0), Number(draft.extraPlants || 0)).toLocaleString("lv-LV")} stādi
+          </strong>
+          <span>
+            Izvākšana {shortDate(draft.harvestDate)} · {draft.cycleLength || "?"} dienu cikls
+          </span>
+        </div>
+
+        <details className="advanced-fields">
+          <summary>Mainīt parametrus</summary>
+          <div className="advanced-fields__grid">
+            <label>
+              Hus nosaukums
+              <input
+                onChange={(event) => onDraftChange({ ...draft, sectorName: event.target.value })}
+                placeholder="Hus 3"
+                required
+                value={draft.sectorName}
+              />
+            </label>
+            <label>
+              Agronoma sējamais skaits
+              <input
+                min="1"
+                onChange={(event) => {
+                  const requiredPlants = event.target.value;
+                  const total = operationalTotal(Number(requiredPlants), Number(draft.extraPlants || 0));
+                  onDraftChange({ ...draft, requiredPlants, sectorType: sectorTypeForOperationalTotal(total) });
+                }}
+                required
+                type="number"
+                value={draft.requiredPlants}
+              />
+            </label>
+            <label>
+              Darbinieka extra
+              <input
+                onChange={(event) => {
+                  const extraPlants = event.target.value;
+                  const total = operationalTotal(Number(draft.requiredPlants || 0), Number(extraPlants));
+                  onDraftChange({ ...draft, extraPlants, sectorType: sectorTypeForOperationalTotal(total) });
+                }}
+                type="number"
+                value={draft.extraPlants}
+              />
+            </label>
+            <label>
+              Šķirne
+              <input
+                onChange={(event) => onDraftChange({ ...draft, variety: event.target.value })}
+                placeholder="Baltazsara"
+                required
+                value={draft.variety}
+              />
+            </label>
+            <label>
+              Sektora galdi
+              <select
+                value={draft.sectorType}
+                onChange={(event) => onDraftChange({ ...draft, sectorType: Number(event.target.value) as SectorType })}
+              >
+                <option value={26}>26 galdi</option>
+                <option value={39}>39 galdi</option>
+              </select>
+            </label>
+          </div>
+        </details>
+
         <button className="primary-action" type="submit">
           Pievienot Hus
         </button>
@@ -881,7 +953,7 @@ function SowingPlanPanel({
       <div className="plan-table" role="table" aria-label="Plāna Hus rindas">
         <div className="plan-row plan-row--head" role="row">
           <span>Hus</span>
-          <span>Nepieciešams</span>
+          <span>Agronoma sēja</span>
           <span>Extra</span>
           <span>Kopā sēt</span>
           <span>Šķirne</span>
@@ -1631,7 +1703,7 @@ function BatchEditor({
         </select>
       </label>
       <label>
-        Nepieciešamais stādu skaits
+        Agronoma sējamais skaits
         <input
           min="1"
           type="number"
@@ -1640,7 +1712,7 @@ function BatchEditor({
         />
       </label>
       <label>
-        Extra stādi
+        Darbinieka extra
         <input
           type="number"
           value={row.extraPlants}

@@ -1,6 +1,8 @@
 import type { SowingPlanRow, WorkScheduleKind, WorkSource, WorkType } from "./types";
+import { calculateGreenhouseTablePlacement, type GreenhouseTablePlacement } from "./greenhouse-placement";
 
 const DAILY_TARGET = 1;
+const GREENHOUSE_GROWING_TABLES = 91;
 
 export type ScheduledWorkItem = {
   id: string;
@@ -19,6 +21,9 @@ export type ScheduledWorkItem = {
     start: string;
     end?: string;
   };
+  greenhousePlacement?: GreenhouseTablePlacement;
+  occupiedTables?: number;
+  freeTablesBeforePlacement?: number;
   warnings?: string[];
 };
 
@@ -29,7 +34,9 @@ export type ScheduleWarning = {
   code:
     | "invalid_manual_adjustment"
     | "no_valid_window"
-    | "deadline_capacity_shortage";
+    | "deadline_capacity_shortage"
+    | "emergency_day_11"
+    | "greenhouse_capacity_conflict";
   message: string;
 };
 
@@ -59,12 +66,37 @@ type Candidate = {
   rawLoad: number;
   moveOutCollision: boolean;
   weekdayScore: number;
+  greenhousePlacement?: GreenhouseTablePlacement;
+  occupiedTables?: number;
+  freeTablesBeforePlacement?: number;
+  emergencyDay?: boolean;
+  capacityImprovement?: boolean;
+  compatibleRingsThinning?: boolean;
+};
+
+type PlacedSector = {
+  planRowId: string;
+  sectorName: string;
+  thinningDate: string;
+  moveOutDate: string;
+  tables: number;
+  plantsPerTrough: number;
+};
+
+type DateChoice = {
+  dates: string[];
+  warning?: string;
+  warningCode?: ScheduleWarning["code"];
+  greenhousePlacement?: GreenhouseTablePlacement;
+  occupiedTables?: number;
+  freeTablesBeforePlacement?: number;
 };
 
 export function scheduleProductionWork(rows: SowingPlanRow[]): ScheduleResult {
   const items: ScheduledWorkItem[] = [];
   const warnings: ScheduleWarning[] = [];
   const scheduled: ScheduledEntry[] = [];
+  const placedSectors: PlacedSector[] = [];
   const jobs: DeadlineJob[] = [];
 
   const addItem = (item: ScheduledWorkItem) => {
@@ -100,14 +132,14 @@ export function scheduleProductionWork(rows: SowingPlanRow[]): ScheduleResult {
         left.earliest.localeCompare(right.earliest),
     )
     .forEach((job) => {
-      const chosen = chooseDates(job, scheduled);
+      const chosen = chooseDates(job, scheduled, placedSectors);
 
       if (chosen.warning) {
         warnings.push({
           planRowId: job.row.id,
           sectorName: job.row.sectorName,
           type: job.type,
-          code: "deadline_capacity_shortage",
+          code: chosen.warningCode ?? "deadline_capacity_shortage",
           message: chosen.warning,
         });
       }
@@ -126,10 +158,24 @@ export function scheduleProductionWork(rows: SowingPlanRow[]): ScheduleResult {
             job.source,
             job.locked,
             { start: job.earliest, end: job.deadline },
+            job.type === "thinning" ? chosen.greenhousePlacement : undefined,
+            job.type === "thinning" ? chosen.occupiedTables : undefined,
+            job.type === "thinning" ? chosen.freeTablesBeforePlacement : undefined,
             chosen.warning ? [chosen.warning] : undefined,
           ),
         );
       });
+
+      if (job.type === "thinning" && chosen.dates[0] && chosen.greenhousePlacement?.feasible) {
+        placedSectors.push({
+          planRowId: job.row.id,
+          sectorName: job.row.sectorName,
+          thinningDate: chosen.dates[0],
+          moveOutDate: job.row.harvestDate,
+          tables: chosen.greenhousePlacement.totalTables,
+          plantsPerTrough: chosen.greenhousePlacement.plantsPerTrough,
+        });
+      }
     });
 
   return {
@@ -169,12 +215,12 @@ function deadlineJobsForRow(row: SowingPlanRow, warnings: ScheduleWarning[]): De
     {
       row,
       type: "sticks",
-      earliest: cycleDayDate(row, Math.max(17, row.cycleLength - 5)),
+      earliest: cycleDayDate(row, Math.max(17, biologicalCycleDays(row) - 5)),
       deadline: beforeRings,
       scheduleKind: "flexible",
       workload: 0.5,
       splittable: false,
-      preferredDates: [cycleDayDate(row, Math.max(18, row.cycleLength - 3))],
+      preferredDates: [cycleDayDate(row, Math.max(18, biologicalCycleDays(row) - 3))],
       source: "automatic",
       locked: false,
     },
@@ -222,8 +268,12 @@ function deadlineJobsForRow(row: SowingPlanRow, warnings: ScheduleWarning[]): De
   });
 }
 
-function chooseDates(job: DeadlineJob, scheduled: ScheduledEntry[]): { dates: string[]; warning?: string } {
+function chooseDates(job: DeadlineJob, scheduled: ScheduledEntry[], placedSectors: PlacedSector[]): DateChoice {
   const dates = eachDate(job.earliest, job.deadline);
+
+  if (job.type === "thinning") {
+    return chooseThinningDate(job, dates, scheduled, placedSectors);
+  }
 
   if (job.type === "sideShoots") {
     const full = bestSingleDate(job, dates, scheduled, 1, true);
@@ -261,6 +311,67 @@ function chooseDates(job: DeadlineJob, scheduled: ScheduledEntry[]): { dates: st
   };
 }
 
+function chooseThinningDate(
+  job: DeadlineJob,
+  dates: string[],
+  scheduled: ScheduledEntry[],
+  placedSectors: PlacedSector[],
+): DateChoice {
+  const normalCandidates = dates.map((date, index) => {
+    const candidate = candidateFor(job, date, scheduled, job.workload, placedSectors);
+    const previousDate = index > 0 ? dates[index - 1] : undefined;
+    const previousFreeTables = previousDate
+      ? greenhouseCandidate(job, previousDate, placedSectors).freeTablesBeforePlacement
+      : candidate.freeTablesBeforePlacement;
+
+    return {
+      ...candidate,
+      capacityImprovement: (candidate.freeTablesBeforePlacement ?? 0) > (previousFreeTables ?? 0),
+    };
+  });
+  const feasible = normalCandidates
+    .filter((candidate) => candidate.greenhousePlacement?.feasible)
+    .sort(compareThinningCandidates)[0];
+
+  if (feasible) {
+    return {
+      dates: [feasible.date],
+      greenhousePlacement: feasible.greenhousePlacement,
+      occupiedTables: feasible.occupiedTables,
+      freeTablesBeforePlacement: feasible.freeTablesBeforePlacement,
+      warning: feasible.greenhousePlacement?.densityClass === "exceptional"
+        ? `⚠ ${job.row.sectorName} retināšanai vajadzīgs ārkārtas blīvums: ${feasible.greenhousePlacement.plantsPerTrough} stādi renē.`
+        : undefined,
+      warningCode: feasible.greenhousePlacement?.densityClass === "exceptional"
+        ? "deadline_capacity_shortage"
+        : undefined,
+    };
+  }
+
+  const emergencyDate = addDays(job.deadline, 1);
+  const emergency = candidateFor(job, emergencyDate, scheduled, job.workload, placedSectors, true);
+
+  if (emergency.greenhousePlacement?.feasible) {
+    return {
+      dates: [emergency.date],
+      greenhousePlacement: emergency.greenhousePlacement,
+      occupiedTables: emergency.occupiedTables,
+      freeTablesBeforePlacement: emergency.freeTablesBeforePlacement,
+      warning: `⚠ Retināšana ${job.row.sectorName} ieplānota 11. dienā vietas trūkuma dēļ.`,
+      warningCode: "emergency_day_11",
+    };
+  }
+
+  return {
+    dates: [emergency.date],
+    greenhousePlacement: emergency.greenhousePlacement,
+    occupiedTables: emergency.occupiedTables,
+    freeTablesBeforePlacement: emergency.freeTablesBeforePlacement,
+    warning: `⚠ ${job.row.sectorName} retināšanai nepietiek brīvu galdu pat 11. dienā pie 35 stādiem renē.`,
+    warningCode: "greenhouse_capacity_conflict",
+  };
+}
+
 function bestSingleDate(
   job: DeadlineJob,
   dates: string[],
@@ -273,8 +384,16 @@ function bestSingleDate(
     .sort(compareCandidates(job, preferWholeDay))[0];
 }
 
-function candidateFor(job: DeadlineJob, date: string, scheduled: ScheduledEntry[], workload: number): Candidate {
+function candidateFor(
+  job: DeadlineJob,
+  date: string,
+  scheduled: ScheduledEntry[],
+  workload: number,
+  placedSectors: PlacedSector[] = [],
+  emergencyDay = false,
+): Candidate {
   const entries = scheduled.filter((entry) => entry.date === date);
+  const greenhouse = job.type === "thinning" ? greenhouseCandidate(job, date, placedSectors) : undefined;
 
   return {
     date,
@@ -285,7 +404,68 @@ function candidateFor(job: DeadlineJob, date: string, scheduled: ScheduledEntry[
     rawLoad: entries.reduce((sum, entry) => sum + entry.workloadWeight, 0),
     moveOutCollision: entries.some((entry) => entry.type === "harvest"),
     weekdayScore: weekdayPreference(job.type, date),
+    emergencyDay,
+    compatibleRingsThinning: job.type === "thinning" && entries.some((entry) => entry.type === "rings"),
+    ...greenhouse,
   };
+}
+
+function greenhouseCandidate(
+  job: DeadlineJob,
+  date: string,
+  placedSectors: PlacedSector[],
+): Pick<Candidate, "greenhousePlacement" | "occupiedTables" | "freeTablesBeforePlacement"> {
+  const occupiedTables = occupiedGrowingTables(date, placedSectors);
+  const freeTablesBeforePlacement = Math.max(0, GREENHOUSE_GROWING_TABLES - occupiedTables);
+
+  return {
+    occupiedTables,
+    freeTablesBeforePlacement,
+    greenhousePlacement: calculateGreenhouseTablePlacement(getTotalPlants(job.row), {
+      maxTables: freeTablesBeforePlacement,
+    }),
+  };
+}
+
+function occupiedGrowingTables(date: string, placedSectors: PlacedSector[]): number {
+  return placedSectors
+    .filter((sector) => sector.thinningDate <= date && date < sector.moveOutDate)
+    .reduce((sum, sector) => sum + sector.tables, 0);
+}
+
+function compareThinningCandidates(left: Candidate, right: Candidate): number {
+  const leftFeasible = left.greenhousePlacement?.feasible ? 0 : 1;
+  const rightFeasible = right.greenhousePlacement?.feasible ? 0 : 1;
+
+  return (
+    leftFeasible - rightFeasible ||
+    densityClassScore(left.greenhousePlacement) - densityClassScore(right.greenhousePlacement) ||
+    Math.abs((left.greenhousePlacement?.plantsPerTrough ?? 99) - 25) -
+      Math.abs((right.greenhousePlacement?.plantsPerTrough ?? 99) - 25) ||
+    Number(left.emergencyDay) - Number(right.emergencyDay) ||
+    Number(right.compatibleRingsThinning) - Number(left.compatibleRingsThinning) ||
+    Number(right.capacityImprovement) - Number(left.capacityImprovement) ||
+    left.weekdayScore - right.weekdayScore ||
+    overloadAmount(left.projectedLoad) - overloadAmount(right.projectedLoad) ||
+    left.projectedLoad - right.projectedLoad ||
+    left.date.localeCompare(right.date)
+  );
+}
+
+function densityClassScore(placement: GreenhouseTablePlacement | undefined): number {
+  if (!placement?.feasible) {
+    return 3;
+  }
+
+  if (placement.densityClass === "normal") {
+    return 0;
+  }
+
+  if (placement.densityClass === "slightlyCompressed") {
+    return 1;
+  }
+
+  return 2;
 }
 
 function compareCandidates(job: DeadlineJob, preferWholeDay: boolean) {
@@ -361,6 +541,9 @@ function workItem(
   source: WorkSource,
   locked: boolean,
   allowedDateRange?: ScheduledWorkItem["allowedDateRange"],
+  greenhousePlacement?: GreenhouseTablePlacement,
+  occupiedTables?: number,
+  freeTablesBeforePlacement?: number,
   warnings?: string[],
 ): ScheduledWorkItem {
   return {
@@ -377,6 +560,9 @@ function workItem(
     source,
     locked,
     allowedDateRange,
+    greenhousePlacement,
+    occupiedTables,
+    freeTablesBeforePlacement,
     warnings,
   };
 }
@@ -395,6 +581,10 @@ function workloadForDate(type: WorkType, dateCount: number): number {
 
 function capacityWarning(job: DeadlineJob): string {
   return `${job.row.sectorName} ${job.type} jāpabeidz līdz ${job.deadline}, bet pieejamā darba kapacitāte nav pietiekama.`;
+}
+
+function getTotalPlants(row: Pick<SowingPlanRow, "requiredPlants" | "extraPlants">): number {
+  return Math.max(0, row.requiredPlants + row.extraPlants);
 }
 
 function adjustmentDates(value: string | string[] | undefined): string[] | undefined {
@@ -427,6 +617,10 @@ function cycleDayDate(row: Pick<SowingPlanRow, "sowingDate">, cycleDay: number):
 
 function getCycleDay(row: Pick<SowingPlanRow, "sowingDate">, date: string): number {
   return daysBetween(row.sowingDate, date);
+}
+
+function biologicalCycleDays(row: Pick<SowingPlanRow, "sowingDate" | "harvestDate">): number {
+  return daysBetween(row.sowingDate, row.harvestDate);
 }
 
 function eachDate(startDate: string, endDate: string): string[] {

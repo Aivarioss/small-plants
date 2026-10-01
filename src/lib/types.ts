@@ -70,6 +70,7 @@ export type SowingPlanDraft = {
   sowingDate: string;
   harvestDate: string;
   cycleLength: string;
+  cycleMode: "length" | "moveOut";
   sectorType: SectorType;
   plantsPerBox: string;
 };

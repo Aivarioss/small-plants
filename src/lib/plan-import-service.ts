@@ -1,4 +1,5 @@
-import { addDays, daysBetween, toIsoDate } from "./planning";
+import { addDays, toIsoDate } from "./planning";
+import { calculateMoveOutDate, deriveCycleLength } from "./hus-templates";
 import type { PlanImportCandidate, PlanImportResult } from "./types";
 
 export type PlanImportService = {
@@ -25,7 +26,7 @@ function candidate(
     confidence?: Partial<Record<keyof PlanImportCandidate["fields"], number>>;
   },
 ): PlanImportCandidate {
-  const harvestDate = addDays(seed.sowingDate, (seed.cycleLength ?? 22) - 1);
+  const harvestDate = calculateMoveOutDate(seed.sowingDate, seed.cycleLength ?? 22);
   const confidence = seed.confidence ?? {};
 
   return {
@@ -89,7 +90,7 @@ export const mockPlanImportService: PlanImportService = {
 };
 
 export function candidateCycleLength(candidate: PlanImportCandidate): number {
-  return daysBetween(candidate.fields.sowingDate.value, candidate.fields.harvestDate.value);
+  return deriveCycleLength(candidate.fields.sowingDate.value, candidate.fields.harvestDate.value);
 }
 
 function getIsoWeek(date: string): number {

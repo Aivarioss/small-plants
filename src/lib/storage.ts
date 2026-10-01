@@ -1,5 +1,6 @@
 import { demoPlanRows, plannerConfig } from "./demo-data";
-import { daysBetween, getTotalSow } from "./planning";
+import { getTotalSow } from "./planning";
+import { calculateMoveOutDate, deriveCycleLength } from "./hus-templates";
 import type { SectorType, SowingPlanRow } from "./types";
 
 const PLAN_STORAGE_KEY = "cucumber-planner:sowing-plan:v2";
@@ -76,7 +77,7 @@ function migrateLegacyBatches(raw: string | null): SowingPlanRow[] {
       .map((batch): SowingPlanRow | null => {
         const cycleLength = Number(batch.cycleLength);
         const sowingDate = batch.sowingDate;
-        const harvestDate = addDaysLocal(sowingDate, cycleLength - 1);
+        const harvestDate = calculateMoveOutDate(sowingDate, cycleLength);
         const row = normalizePlanRow({
           id: batch.id,
           sectorName: batch.name,
@@ -133,7 +134,7 @@ function normalizePlanRow(candidate: Partial<SowingPlanRow>): SowingPlanRow | nu
     sowingDate: candidate.sowingDate,
     harvestDate: candidate.harvestDate,
     previcureDate: candidate.previcureDate,
-    cycleLength: cycleLength > 0 ? cycleLength : daysBetween(candidate.sowingDate, candidate.harvestDate),
+    cycleLength: cycleLength > 0 ? cycleLength : deriveCycleLength(candidate.sowingDate, candidate.harvestDate),
     sectorType,
     plantsPerBox,
     correction,
@@ -159,13 +160,4 @@ function getStorage(): Storage | null {
   } catch {
     return null;
   }
-}
-
-function addDaysLocal(date: string, days: number): string {
-  const value = new Date(`${date}T12:00:00`);
-  value.setDate(value.getDate() + days);
-  const year = value.getFullYear();
-  const month = String(value.getMonth() + 1).padStart(2, "0");
-  const day = String(value.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
 }

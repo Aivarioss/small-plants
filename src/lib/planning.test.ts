@@ -18,6 +18,7 @@ import {
   isAllowedMove,
 } from "./planning";
 import { candidateCycleLength, mockPlanImportService } from "./plan-import-service";
+import { deriveCycleLength } from "./hus-templates";
 import type { SowingPlanRow } from "./types";
 
 const row: SowingPlanRow = {
@@ -170,7 +171,7 @@ describe("planning calculations", () => {
     const candidate = result.candidates[0];
 
     expect(candidateCycleLength(candidate)).toBe(
-      daysBetween(candidate.fields.sowingDate.value, candidate.fields.harvestDate.value),
+      deriveCycleLength(candidate.fields.sowingDate.value, candidate.fields.harvestDate.value),
     );
   });
 

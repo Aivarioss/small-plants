@@ -1,4 +1,4 @@
-import { daysBetween } from "./planning";
+import { deriveCycleLength } from "./hus-templates";
 import type { PlannerConfig, SowingPlanRow } from "./types";
 
 export const plannerConfig: PlannerConfig = {
@@ -47,7 +47,7 @@ export const demoPlanRows: SowingPlanRow[] = [
 function planRow(row: Omit<SowingPlanRow, "cycleLength" | "plantsPerBox" | "correction">): SowingPlanRow {
   return {
     ...row,
-    cycleLength: daysBetween(row.sowingDate, row.harvestDate),
+    cycleLength: deriveCycleLength(row.sowingDate, row.harvestDate),
     plantsPerBox: plannerConfig.defaultPlantsPerBox,
     correction: 0,
     weekNumber: getIsoWeek(row.sowingDate),

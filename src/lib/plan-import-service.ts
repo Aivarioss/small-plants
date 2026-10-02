@@ -28,17 +28,24 @@ function candidate(
 ): PlanImportCandidate {
   const harvestDate = calculateMoveOutDate(seed.sowingDate, seed.cycleLength ?? 22);
   const confidence = seed.confidence ?? {};
+  const extraPlants = 100;
 
   return {
     id,
+    selected: true,
+    warnings: [],
     fields: {
       sectorName: field(seed.sectorName, confidence.sectorName ?? 0.92),
+      agronomistRequiredPlants: field(null, 1),
       requiredPlants: field(seed.requiredPlants, confidence.requiredPlants ?? 0.9),
+      extraPlants: field(extraPlants, 1),
       variety: field(seed.variety, confidence.variety ?? 0.88),
       weekNumber: field(seed.weekNumber, confidence.weekNumber ?? 0.82),
       sowingDate: field(seed.sowingDate, confidence.sowingDate ?? 0.93),
       harvestDate: field(harvestDate, confidence.harvestDate ?? 0.9),
     },
+    cycleLength: deriveCycleLength(seed.sowingDate, harvestDate),
+    operationalTotal: seed.requiredPlants + extraPlants,
     duplicateAction: "createNew",
   };
 }
@@ -52,6 +59,8 @@ export const mockPlanImportService: PlanImportService = {
       mode: "mock",
       fileName: file.name,
       importedAt: new Date().toISOString(),
+      provider: "client-mock",
+      providerConfigured: true,
       candidates: [
         candidate("mock-hus-4", {
           sectorName: "Hus 4",

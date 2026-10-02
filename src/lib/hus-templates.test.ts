@@ -48,20 +48,19 @@ describe("Hus templates", () => {
     expect(findHusTemplate("Hus 6")?.agronomistSowCount).toBe(3556);
   });
 
-  it("calculates move-out dates from the agronomist calendar-day cycle convention", () => {
-    expect(calculateMoveOutDate("2026-09-29", 21)).toBe("2026-10-20");
-    expect(calculateMoveOutDate("2026-09-29", 22)).toBe("2026-10-21");
-    expect(calculateMoveOutDate("2026-09-29", 23)).toBe("2026-10-22");
-    expect(calculateMoveOutDate("2026-10-06", 22)).toBe("2026-10-28");
-    expect(calculateMoveOutDate("2026-10-13", 22)).toBe("2026-11-04");
+  it("calculates move-out dates from biological day cycle convention", () => {
+    expect(calculateMoveOutDate("2026-10-01", 21)).toBe("2026-10-21");
+    expect(calculateMoveOutDate("2026-10-01", 22)).toBe("2026-10-22");
+    expect(calculateMoveOutDate("2026-10-01", 23)).toBe("2026-10-23");
+    expect(calculateMoveOutDate("2026-09-29", 22)).toBe("2026-10-20");
   });
 
   it("derives cycle length from a move-out date", () => {
-    const next = updateDraftMoveOutDate(draft, "2026-10-21");
+    const next = updateDraftMoveOutDate({ ...draft, sowingDate: "2026-10-01" }, "2026-10-23");
 
     expect(next.cycleMode).toBe("moveOut");
-    expect(next.cycleLength).toBe("22");
-    expect(deriveCycleLength("2026-09-29", "2026-10-21")).toBe(22);
+    expect(next.cycleLength).toBe("23");
+    expect(deriveCycleLength("2026-10-01", "2026-10-23")).toBe(23);
   });
 
   it("supports non-standard Hus values", () => {

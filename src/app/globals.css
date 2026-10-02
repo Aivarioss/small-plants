@@ -610,6 +610,20 @@ button:focus-visible {
   font-weight: 800;
 }
 
+.import-preview {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.import-preview__image {
+  min-height: 260px;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+
 .import-table {
   display: grid;
   gap: 8px;
@@ -619,15 +633,18 @@ button:focus-visible {
 .import-row {
   display: grid;
   grid-template-columns:
-    minmax(110px, 0.8fr)
-    minmax(110px, 0.75fr)
+    minmax(44px, 0.3fr)
+    minmax(100px, 0.7fr)
     minmax(130px, 0.9fr)
+    minmax(130px, 0.85fr)
+    minmax(100px, 0.65fr)
+    minmax(96px, 0.55fr)
+    minmax(130px, 0.8fr)
+    minmax(130px, 0.8fr)
     minmax(90px, 0.55fr)
-    minmax(140px, 0.8fr)
-    minmax(140px, 0.8fr)
-    minmax(220px, 1fr);
+    minmax(240px, 1.2fr);
   gap: 8px;
-  min-width: 980px;
+  min-width: 1260px;
   align-items: start;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -659,6 +676,21 @@ button:focus-visible {
 .duplicate-cell {
   display: grid;
   gap: 6px;
+}
+
+.checkbox-cell,
+.status-cell {
+  display: grid;
+  gap: 6px;
+}
+
+.checkbox-cell {
+  justify-items: center;
+}
+
+.status-cell ul {
+  margin: 0;
+  padding-left: 18px;
 }
 
 .capacity-warning {

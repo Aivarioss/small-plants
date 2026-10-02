@@ -97,6 +97,7 @@ export function scheduleProductionWork(rows: SowingPlanRow[]): ScheduleResult {
   const warnings: ScheduleWarning[] = [];
   const scheduled: ScheduledEntry[] = [];
   const placedSectors: PlacedSector[] = [];
+  const sideShootsCompletionByRow = new Map<string, string>();
   const jobs: DeadlineJob[] = [];
 
   const addItem = (item: ScheduledWorkItem) => {
@@ -132,7 +133,7 @@ export function scheduleProductionWork(rows: SowingPlanRow[]): ScheduleResult {
         left.earliest.localeCompare(right.earliest),
     )
     .forEach((job) => {
-      const chosen = chooseDates(job, scheduled, placedSectors);
+      const chosen = chooseDates(job, scheduled, placedSectors, sideShootsCompletionByRow);
 
       if (chosen.warning) {
         warnings.push({
@@ -175,6 +176,10 @@ export function scheduleProductionWork(rows: SowingPlanRow[]): ScheduleResult {
           tables: chosen.greenhousePlacement.totalTables,
           plantsPerTrough: chosen.greenhousePlacement.plantsPerTrough,
         });
+      }
+
+      if (job.type === "sideShoots" && chosen.dates.length > 0) {
+        sideShootsCompletionByRow.set(job.row.id, chosen.dates.slice().sort().at(-1) ?? chosen.dates[0]);
       }
     });
 
@@ -268,8 +273,26 @@ function deadlineJobsForRow(row: SowingPlanRow, warnings: ScheduleWarning[]): De
   });
 }
 
-function chooseDates(job: DeadlineJob, scheduled: ScheduledEntry[], placedSectors: PlacedSector[]): DateChoice {
-  const dates = eachDate(job.earliest, job.deadline);
+function chooseDates(
+  job: DeadlineJob,
+  scheduled: ScheduledEntry[],
+  placedSectors: PlacedSector[],
+  sideShootsCompletionByRow: Map<string, string>,
+): DateChoice {
+  const sideShootsCompletion = sideShootsCompletionByRow.get(job.row.id);
+  if (job.type === "sticks" && !sideShootsCompletion) {
+    return {
+      dates: [],
+      warning: `${job.row.sectorName} kociņus nevar ieplānot, jo pazares nav ieplānotas pirms gredzeniem.`,
+      warningCode: "deadline_capacity_shortage",
+    };
+  }
+
+  const earliest =
+    job.type === "sticks" && sideShootsCompletion
+      ? maxIsoDate(job.earliest, addDays(sideShootsCompletion, 1))
+      : job.earliest;
+  const dates = earliest <= job.deadline ? eachDate(earliest, job.deadline) : [];
 
   if (job.type === "thinning") {
     return chooseThinningDate(job, dates, scheduled, placedSectors);
@@ -298,6 +321,14 @@ function chooseDates(job: DeadlineJob, scheduled: ScheduledEntry[], placedSector
     }
 
     return { dates: [], warning: capacityWarning(job) };
+  }
+
+  if (job.type === "sticks" && dates.length === 0) {
+    return {
+      dates: [],
+      warning: `${job.row.sectorName} kociņus nevar ieplānot pēc pazarēm un pirms gredzeniem.`,
+      warningCode: "deadline_capacity_shortage",
+    };
   }
 
   const best = bestSingleDate(job, dates, scheduled, job.workload, false);
@@ -580,7 +611,19 @@ function workloadForDate(type: WorkType, dateCount: number): number {
 }
 
 function capacityWarning(job: DeadlineJob): string {
-  return `${job.row.sectorName} ${job.type} jāpabeidz līdz ${job.deadline}, bet pieejamā darba kapacitāte nav pietiekama.`;
+  return `${job.row.sectorName} ${workTitle(job.type)} jāpabeidz līdz ${job.deadline}, bet pieejamā darba kapacitāte nav pietiekama.`;
+}
+
+function workTitle(type: DeadlineJob["type"]): string {
+  if (type === "thinning") {
+    return "retināšana";
+  }
+
+  if (type === "sideShoots") {
+    return "pazares";
+  }
+
+  return "kociņi";
 }
 
 function getTotalPlants(row: Pick<SowingPlanRow, "requiredPlants" | "extraPlants">): number {
@@ -599,6 +642,10 @@ function addDays(date: string, days: number): string {
   const value = new Date(`${date}T12:00:00`);
   value.setDate(value.getDate() + days);
   return toIsoDate(value);
+}
+
+function maxIsoDate(left: string, right: string): string {
+  return left > right ? left : right;
 }
 
 function toIsoDate(date: Date): string {

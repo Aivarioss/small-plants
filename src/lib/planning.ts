@@ -237,7 +237,8 @@ export function isAllowedMove(row: SowingPlanRow, type: WorkType, date: string):
   }
 
   if (type === "sticks") {
-    return cycleDay >= Math.max(17, getBiologicalCycleDays(row) - 5) && date < ringsDate;
+    const sideShootsCompletion = latestAdjustmentDate(row.adjustments?.sideShoots) ?? cycleDayDate(row, 17);
+    return cycleDay >= 17 && date > sideShootsCompletion && date < ringsDate;
   }
 
   return false;
@@ -609,6 +610,7 @@ export function balanceWorkload(rows: SowingPlanRow[], config: PlannerConfig): W
   const proposals: WorkloadBalanceProposal[] = [];
   const scheduled: ScheduledWorkEntry[] = [];
   const scheduledThinningDates = new Map<string, string>();
+  const sideShootsCompletionByRow = new Map<string, string>();
 
   rows.forEach((row) => {
     const ringsDate = addDays(row.harvestDate, -1);
@@ -633,6 +635,11 @@ export function balanceWorkload(rows: SowingPlanRow[], config: PlannerConfig): W
 
     addManualFlexibleWork(row, "sideShoots", scheduled);
     addManualFlexibleWork(row, "sticks", scheduled);
+
+    const manualSideShootsCompletion = latestAdjustmentDate(row.adjustments?.sideShoots);
+    if (manualSideShootsCompletion) {
+      sideShootsCompletionByRow.set(row.id, manualSideShootsCompletion);
+    }
   });
 
   const loadFor = (date: string) =>
@@ -698,8 +705,30 @@ export function balanceWorkload(rows: SowingPlanRow[], config: PlannerConfig): W
         return;
       }
 
+      if (job.type === "sticks") {
+        const sideShootsCompletion = sideShootsCompletionByRow.get(job.row.id);
+        if (!sideShootsCompletion) {
+          reserve(job.row, job.type, job.fromDates, [], `${job.row.sectorName} kociņus nevar ieplānot, jo pazares nav ieplānotas pirms gredzeniem.`);
+          return;
+        }
+
+        const earliest = maxIsoDate(job.earliest, addDays(sideShootsCompletion, 1));
+        if (earliest > job.deadline) {
+          reserve(job.row, job.type, job.fromDates, [], `${job.row.sectorName} kociņus nevar ieplānot pēc pazarēm un pirms gredzeniem.`);
+          return;
+        }
+
+        const choice = chooseFlexibleDates({ ...job, earliest }, loadFor, entriesForDate);
+        reserve(job.row, job.type, job.fromDates, choice.dates, choice.warning);
+        return;
+      }
+
       const choice = chooseFlexibleDates(job, loadFor, entriesForDate);
       reserve(job.row, job.type, job.fromDates, choice.dates, choice.warning);
+
+      if (job.type === "sideShoots" && choice.dates.length > 0) {
+        sideShootsCompletionByRow.set(job.row.id, choice.dates.slice().sort().at(-1) ?? choice.dates[0]);
+      }
     });
 
   const optimizedMetrics = calculateWorkloadMetrics(scheduled);
@@ -1171,6 +1200,18 @@ function adjustmentDates(value: string | string[] | undefined, fallback: string)
 
 function firstAdjustmentDate(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
+}
+
+function latestAdjustmentDate(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) {
+    return value.slice().sort().at(-1);
+  }
+
+  return value;
+}
+
+function maxIsoDate(left: string, right: string): string {
+  return left > right ? left : right;
 }
 
 function sameDates(left: string[], right: string[]): boolean {

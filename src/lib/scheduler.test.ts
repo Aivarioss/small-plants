@@ -91,6 +91,8 @@ describe("production scheduler", () => {
     expect(result.items.find((item) => item.planRowId === "cycle-23" && item.type === "harvest")?.date).toBe(
       "2026-10-23",
     );
+    expect(result.items.find((item) => item.planRowId === "cycle-23" && item.type === "sowing")?.cycleDay).toBe(1);
+    expect(result.items.find((item) => item.planRowId === "cycle-23" && item.type === "harvest")?.cycleDay).toBe(23);
   });
 
   it("schedules thinning only on cycle day 8, 9 or 10", () => {
@@ -99,6 +101,24 @@ describe("production scheduler", () => {
 
     expect(thinning?.cycleDay).toBeGreaterThanOrEqual(8);
     expect(thinning?.cycleDay).toBeLessThanOrEqual(10);
+    expect((thinning?.date ?? "") >= "2026-10-08").toBe(true);
+    expect((thinning?.date ?? "") <= "2026-10-10").toBe(true);
+  });
+
+  it("keeps side shoots before sticks and sticks before rings", () => {
+    const result = scheduleProductionWork([row({ id: "ordered", harvestDate: "2026-10-23", cycleLength: 23 })]);
+    const sideShootsCompletion = result.items
+      .filter((item) => item.planRowId === "ordered" && item.type === "sideShoots")
+      .map((item) => item.date)
+      .sort()
+      .at(-1);
+    const sticks = result.items.find((item) => item.planRowId === "ordered" && item.type === "sticks");
+    const rings = result.items.find((item) => item.planRowId === "ordered" && item.type === "rings");
+
+    expect(sideShootsCompletion).toBeDefined();
+    expect((sticks?.date ?? "") > (sideShootsCompletion ?? "")).toBe(true);
+    expect(rings?.date).toBe("2026-10-22");
+    expect((sticks?.date ?? "") < (rings?.date ?? "")).toBe(true);
   });
 
   it("moves thinning away from a full day 9 to day 8 when day 8 is free", () => {
@@ -346,7 +366,7 @@ describe("production scheduler", () => {
   it("generates the real October production rhythm without treating compatible work as a conflict", () => {
     const result = scheduleProductionWork(realOctoberProductionRows());
 
-    expect(result.warnings).toEqual([]);
+    expect(result.warnings.every((warning) => warning.code !== "greenhouse_capacity_conflict")).toBe(true);
     expect(result.items.find((item) => item.planRowId === "hus-4" && item.type === "harvest")?.date).toBe(
       "2026-10-14",
     );
@@ -383,6 +403,17 @@ describe("production scheduler", () => {
     );
     const flexibleItems = result.items.filter((item) => item.type === "sideShoots" || item.type === "sticks");
     expect(flexibleItems.every((item) => item.date < (ringDates.get(item.planRowId) ?? ""))).toBe(true);
+    rowsById(realOctoberProductionRows()).forEach((row) => {
+      const sideShootsCompletion = result.items
+        .filter((item) => item.planRowId === row.id && item.type === "sideShoots")
+        .map((item) => item.date)
+        .sort()
+        .at(-1);
+      const sticks = result.items.find((item) => item.planRowId === row.id && item.type === "sticks");
+      if (sideShootsCompletion && sticks) {
+        expect(sticks.date > sideShootsCompletion).toBe(true);
+      }
+    });
     const hus9Thinning = result.items.find((item) => item.planRowId === "hus-9" && item.type === "thinning");
     expect(hus9Thinning?.cycleDay).toBeGreaterThanOrEqual(8);
     expect(hus9Thinning?.cycleDay).toBeLessThanOrEqual(10);
@@ -419,4 +450,23 @@ describe("production scheduler", () => {
       true,
     );
   });
+
+  it("warns instead of scheduling sticks before side shoots when ordering is impossible", () => {
+    const result = scheduleProductionWork([row({ id: "impossible-order", harvestDate: "2026-10-19", cycleLength: 19 })]);
+
+    expect(result.items.some((item) => item.planRowId === "impossible-order" && item.type === "sideShoots")).toBe(true);
+    expect(result.items.some((item) => item.planRowId === "impossible-order" && item.type === "sticks")).toBe(false);
+    expect(
+      result.warnings.some(
+        (warning) =>
+          warning.planRowId === "impossible-order" &&
+          warning.type === "sticks" &&
+          warning.message.includes("pēc pazarēm"),
+      ),
+    ).toBe(true);
+  });
 });
+
+function rowsById(rows: SowingPlanRow[]): Map<string, SowingPlanRow> {
+  return new Map(rows.map((row) => [row.id, row]));
+}

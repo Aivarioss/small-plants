@@ -77,7 +77,9 @@ export type SowingPlanDraft = {
 
 export type ImportFieldKey =
   | "sectorName"
+  | "agronomistRequiredPlants"
   | "requiredPlants"
+  | "extraPlants"
   | "variety"
   | "weekNumber"
   | "harvestDate"
@@ -91,22 +93,31 @@ export type ImportField<T> = {
 
 export type PlanImportCandidate = {
   id: string;
+  selected: boolean;
+  warnings: string[];
   fields: {
     sectorName: ImportField<string>;
+    agronomistRequiredPlants: ImportField<number | null>;
     requiredPlants: ImportField<number>;
+    extraPlants: ImportField<number>;
     variety: ImportField<string>;
-    weekNumber: ImportField<number>;
+    weekNumber: ImportField<number | null>;
     harvestDate: ImportField<string>;
     sowingDate: ImportField<string>;
   };
+  cycleLength: number | null;
+  operationalTotal: number;
   duplicateOf?: string;
   duplicateAction?: "keepExisting" | "replace" | "createNew";
 };
 
 export type PlanImportResult = {
-  mode: "mock" | "vision";
+  mode: "mock" | "vision" | "unconfigured";
   fileName: string;
   importedAt: string;
+  provider: string;
+  providerConfigured: boolean;
+  message?: string;
   candidates: PlanImportCandidate[];
 };
 

@@ -22,7 +22,6 @@ import {
   isAllowedMove,
   toIsoDate,
 } from "@/lib/planning";
-import { candidateCycleLength, mockPlanImportService } from "@/lib/plan-import-service";
 import {
   applyHusTemplateToDraft,
   calculateMoveOutDate,
@@ -99,6 +98,7 @@ export function PlannerApp() {
   const [importResult, setImportResult] = useState<PlanImportResult | null>(null);
   const [importBusy, setImportBusy] = useState(false);
   const [importMessage, setImportMessage] = useState("");
+  const [importPreviewUrl, setImportPreviewUrl] = useState("");
   const [balancePreview, setBalancePreview] = useState<WorkloadBalanceProposal[] | null>(null);
   const rowSaveChainsRef = useRef(new Map<string, Promise<SowingPlanRow>>());
 
@@ -167,6 +167,14 @@ export function PlannerApp() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (importPreviewUrl) {
+        URL.revokeObjectURL(importPreviewUrl);
+      }
+    };
+  }, [importPreviewUrl]);
 
   async function reloadRows(message = "Supabase pārlādēts") {
     const loadedRows = await sowingPlanRepository.load();
@@ -430,14 +438,43 @@ export function PlannerApp() {
   async function importPlanFromFile(file: File) {
     setImportBusy(true);
     setImportMessage("");
+    setImportResult(null);
+
+    if (importPreviewUrl) {
+      URL.revokeObjectURL(importPreviewUrl);
+    }
+    setImportPreviewUrl(URL.createObjectURL(file));
 
     try {
-      const result = await mockPlanImportService.analyzeImage(file);
-      setImportResult({
-        ...result,
-        candidates: markImportDuplicates(result.candidates, planRows),
+      const formData = new FormData();
+      formData.append("image", file);
+
+      const response = await fetch("/api/production-plan/extract", {
+        body: formData,
+        method: "POST",
       });
-      setImportMessage("Demo režīms: foto netiek analizēts ar īstu OCR/AI. Zemāk redzami pārbaudes kandidāti plūsmas testēšanai.");
+      const result = (await response.json().catch(() => null)) as (Partial<PlanImportResult> & { error?: string }) | null;
+
+      if (!result) {
+        setImportMessage("Neizdevās nolasīt plānu no foto.");
+        return;
+      }
+
+      if (!Array.isArray(result.candidates)) {
+        setImportMessage(result.error ?? "Neizdevās nolasīt plānu no foto.");
+        return;
+      }
+
+      const importResult = result as PlanImportResult;
+      setImportResult({
+        ...importResult,
+        candidates: markImportDuplicates(importResult.candidates, planRows),
+      });
+      setImportMessage(
+        importResult.providerConfigured
+          ? "Plāns nolasīts. Pārbaudi katru rindu pirms importa apstiprināšanas nākamajā posmā."
+          : importResult.message ?? "Foto atpazīšanas providers vēl nav konfigurēts.",
+      );
     } finally {
       setImportBusy(false);
     }
@@ -454,19 +491,27 @@ export function PlannerApp() {
           return candidate;
         }
 
-        const numericFields: ImportFieldKey[] = ["requiredPlants", "weekNumber"];
-        const nextValue = numericFields.includes(field) ? Number(value) : value;
+        const numericFields: ImportFieldKey[] = ["agronomistRequiredPlants", "extraPlants", "requiredPlants", "weekNumber"];
+        const nextValue = numericFields.includes(field) ? (value === "" ? null : Number(value)) : value;
+        const fields = {
+          ...candidate.fields,
+          [field]: {
+            value: nextValue,
+            confidence: 1,
+            needsReview: false,
+          },
+        } as PlanImportCandidate["fields"];
+        const cycleLength =
+          fields.sowingDate.value && fields.harvestDate.value
+            ? deriveCycleLength(fields.sowingDate.value, fields.harvestDate.value)
+            : null;
+        const operationalTotal = Number(fields.requiredPlants.value || 0) + Number(fields.extraPlants.value || 0);
 
         return {
           ...candidate,
-          fields: {
-            ...candidate.fields,
-            [field]: {
-              value: nextValue,
-              confidence: 1,
-              needsReview: false,
-            },
-          },
+          fields,
+          cycleLength,
+          operationalTotal,
         } as PlanImportCandidate;
       });
 
@@ -477,38 +522,17 @@ export function PlannerApp() {
     });
   }
 
-  function updateDuplicateAction(id: string, duplicateAction: NonNullable<PlanImportCandidate["duplicateAction"]>) {
+  function updateImportCandidateSelection(id: string, selected: boolean) {
     setImportResult((current) =>
       current
         ? {
             ...current,
             candidates: current.candidates.map((candidate) =>
-              candidate.id === id ? { ...candidate, duplicateAction } : candidate,
+              candidate.id === id ? { ...candidate, selected } : candidate,
             ),
           }
         : current,
     );
-  }
-
-  function confirmImport() {
-    if (!importResult) {
-      return;
-    }
-
-    const needsReview = importResult.candidates.some((candidate) =>
-      Object.values(candidate.fields).some((field) => field.needsReview),
-    );
-    if (needsReview) {
-      setImportMessage("Pirms apstiprināšanas izlabo vai apstiprini izceltos laukus.");
-      return;
-    }
-
-    const nextRows = applyImportCandidates(planRows, importResult.candidates);
-    setPlanRows(nextRows);
-    void persistRowDiff(planRows, nextRows);
-    setImportResult(null);
-    setImportMessage("Imports apstiprināts. Plāna rindas, darbi, kalendārs un stādu mājas noslodze ir pārrēķināta.");
-    setActiveView("sowingPlan");
   }
 
   function previewWorkloadBalance() {
@@ -593,11 +617,10 @@ export function PlannerApp() {
             onAdd={addPlanRow}
             onDelete={deletePlanRow}
             onDeleteDemo={deleteDemoRows}
-            onConfirmImport={confirmImport}
             onDraftChange={setDraft}
-            onImportActionChange={updateDuplicateAction}
             onImportCandidateChange={updateImportCandidate}
             onImportFile={importPlanFromFile}
+            onImportSelectionChange={updateImportCandidateSelection}
             onOpenRow={(id) => {
               setSelectedRowId(id);
               setActiveView("worksheet");
@@ -606,6 +629,7 @@ export function PlannerApp() {
             onUpdateRow={updatePlanRow}
             importBusy={importBusy}
             importMessage={importMessage}
+            importPreviewUrl={importPreviewUrl}
             importResult={importResult}
             rows={planRows}
           />
@@ -741,15 +765,15 @@ function SowingPlanPanel({
   hasDemoRows,
   importBusy,
   importMessage,
+  importPreviewUrl,
   importResult,
   onAdd,
-  onConfirmImport,
   onDelete,
   onDeleteDemo,
   onDraftChange,
-  onImportActionChange,
   onImportCandidateChange,
   onImportFile,
+  onImportSelectionChange,
   onOpenRow,
   onUpdateDate,
   onUpdateRow,
@@ -759,15 +783,15 @@ function SowingPlanPanel({
   hasDemoRows: boolean;
   importBusy: boolean;
   importMessage: string;
+  importPreviewUrl: string;
   importResult: PlanImportResult | null;
   onAdd: (event: FormEvent<HTMLFormElement>) => void;
-  onConfirmImport: () => void;
   onDelete: (id: string) => void;
   onDeleteDemo: () => void;
   onDraftChange: (draft: SowingPlanDraft) => void;
-  onImportActionChange: (id: string, action: NonNullable<PlanImportCandidate["duplicateAction"]>) => void;
   onImportCandidateChange: (id: string, field: ImportFieldKey, value: string) => void;
   onImportFile: (file: File) => void;
+  onImportSelectionChange: (id: string, selected: boolean) => void;
   onOpenRow: (id: string) => void;
   onUpdateDate: (row: SowingPlanRow, field: "sowingDate" | "harvestDate", value: string) => void;
   onUpdateRow: (id: string, patch: Partial<SowingPlanRow>) => void;
@@ -782,7 +806,7 @@ function SowingPlanPanel({
         </div>
         <div className="button-row">
           <label className="file-action">
-            📷 Importēt plānu no foto
+            Nolasīt plānu
             <input
               accept="image/png,image/jpeg"
               capture="environment"
@@ -804,14 +828,23 @@ function SowingPlanPanel({
         </div>
       </div>
 
-      {importBusy ? <p className="import-note">Apstrādā foto failu demo importa plūsmā...</p> : null}
+      {importPreviewUrl ? (
+        <div className="import-preview">
+          <div
+            aria-label="Augšupielādētā plāna foto priekšskatījums"
+            className="import-preview__image"
+            role="img"
+            style={{ backgroundImage: `url(${importPreviewUrl})` }}
+          />
+        </div>
+      ) : null}
+      {importBusy ? <p className="import-note">Nolasa plānu no foto...</p> : null}
       {importMessage ? <p className="import-note">{importMessage}</p> : null}
       {importResult ? (
         <ImportReviewPanel
           importResult={importResult}
-          onActionChange={onImportActionChange}
           onChange={onImportCandidateChange}
-          onConfirm={onConfirmImport}
+          onSelectionChange={onImportSelectionChange}
         />
       ) : null}
 
@@ -1001,14 +1034,12 @@ function SowingPlanPanel({
 
 function ImportReviewPanel({
   importResult,
-  onActionChange,
   onChange,
-  onConfirm,
+  onSelectionChange,
 }: {
   importResult: PlanImportResult;
-  onActionChange: (id: string, action: NonNullable<PlanImportCandidate["duplicateAction"]>) => void;
   onChange: (id: string, field: ImportFieldKey, value: string) => void;
-  onConfirm: () => void;
+  onSelectionChange: (id: string, selected: boolean) => void;
 }) {
   return (
     <section className="import-review">
@@ -1017,54 +1048,59 @@ function ImportReviewPanel({
           <p className="eyebrow">Foto imports</p>
           <h3>Pārbaudīt atpazīto plānu</h3>
         </div>
-        <span className="mock-badge">Demo/mock režīms · {importResult.fileName}</span>
+        <span className="mock-badge">
+          {importResult.providerConfigured ? importResult.provider : "Providers nav konfigurēts"} · {importResult.fileName}
+        </span>
       </div>
       <p className="import-note">
-        Šīs rindas vēl nav pievienotas sezonas plānam. Izlabo izceltos laukus un tikai tad apstiprini importu.
+        Šajā etapā nekas netiek saglabāts Supabase. Pārbaudi un izlabo nolasīto plānu; saglabāšanas solis tiks pieslēgts atsevišķi.
       </p>
       <div className="import-table" role="table" aria-label="Atpazītā plāna pārbaude">
         <div className="import-row import-row--head" role="row">
+          <span>✓</span>
           <span>Hus</span>
-          <span>Stādi</span>
           <span>Šķirne</span>
-          <span>Nedēļa</span>
+          <span>Agronoma sējamais</span>
+          <span>+ Rezerve</span>
+          <span>Kopā</span>
           <span>Sēšana</span>
           <span>Izvākšana</span>
-          <span>Dublikāti</span>
+          <span>Cikls</span>
+          <span>Statuss</span>
         </div>
         {importResult.candidates.map((candidate) => (
           <div className="import-row" key={candidate.id} role="row">
+            <label className="checkbox-cell">
+              <input
+                checked={candidate.selected}
+                onChange={(event) => onSelectionChange(candidate.id, event.target.checked)}
+                type="checkbox"
+              />
+            </label>
             <ReviewInput candidate={candidate} field="sectorName" onChange={onChange} />
-            <ReviewInput candidate={candidate} field="requiredPlants" onChange={onChange} type="number" />
             <ReviewInput candidate={candidate} field="variety" onChange={onChange} />
-            <ReviewInput candidate={candidate} field="weekNumber" onChange={onChange} type="number" />
+            <ReviewInput candidate={candidate} field="requiredPlants" onChange={onChange} type="number" />
+            <ReviewInput candidate={candidate} field="extraPlants" onChange={onChange} type="number" />
+            <strong>{candidate.operationalTotal.toLocaleString("lv-LV")}</strong>
             <ReviewInput candidate={candidate} field="sowingDate" onChange={onChange} type="date" />
             <ReviewInput candidate={candidate} field="harvestDate" onChange={onChange} type="date" />
-            <div className="duplicate-cell">
-              {candidate.duplicateOf ? (
-                <>
-                  <strong>Iespējams, šis Hus cikls jau eksistē.</strong>
-                  <select
-                    value={candidate.duplicateAction ?? "keepExisting"}
-                    onChange={(event) =>
-                      onActionChange(candidate.id, event.target.value as NonNullable<PlanImportCandidate["duplicateAction"]>)
-                    }
-                  >
-                    <option value="keepExisting">Atstāt esošo</option>
-                    <option value="replace">Aizvietot/atjaunināt</option>
-                    <option value="createNew">Izveidot kā jaunu</option>
-                  </select>
-                </>
+            <strong>{candidate.cycleLength ? `${candidate.cycleLength} dienas` : "⚠"}</strong>
+            <div className="status-cell">
+              {candidate.warnings.length > 0 || Object.values(candidate.fields).some((field) => field.needsReview) ? (
+                <ul>
+                  {[...candidate.warnings, ...fieldWarnings(candidate)].map((warning) => (
+                    <li key={warning}>⚠ {warning}</li>
+                  ))}
+                </ul>
               ) : (
-                <span>Jauna rinda</span>
+                <span>Gatavs pārbaudei</span>
               )}
+              {candidate.duplicateOf ? <small>Iespējams dublikāts ar esošu Hus ciklu.</small> : null}
             </div>
           </div>
         ))}
       </div>
-      <button className="primary-action" type="button" onClick={onConfirm}>
-        Apstiprināt un izveidot plānu
-      </button>
+      {importResult.candidates.length === 0 ? <p className="empty-state">Nav nolasītu rindu pārbaudei.</p> : null}
     </section>
   );
 }
@@ -1248,11 +1284,32 @@ function ReviewInput({
         min={type === "number" ? "1" : undefined}
         onChange={(event) => onChange(candidate.id, field, event.target.value)}
         type={type}
-        value={String(value.value)}
+        value={value.value === null || value.value === undefined ? "" : String(value.value)}
       />
       {value.needsReview ? <small>Pārbaudi ({Math.round(value.confidence * 100)}%)</small> : null}
     </label>
   );
+}
+
+function fieldWarnings(candidate: PlanImportCandidate): string[] {
+  return Object.entries(candidate.fields)
+    .filter(([, field]) => field.needsReview)
+    .map(([key, field]) => `${importFieldLabel(key as ImportFieldKey)} jāpārbauda (${Math.round(field.confidence * 100)}%).`);
+}
+
+function importFieldLabel(field: ImportFieldKey): string {
+  const labels: Record<ImportFieldKey, string> = {
+    agronomistRequiredPlants: "Agronoma prasītais skaits",
+    extraPlants: "Rezerve",
+    harvestDate: "Izvākšana",
+    requiredPlants: "Agronoma sējamais",
+    sectorName: "Hus",
+    sowingDate: "Sēšana",
+    variety: "Šķirne",
+    weekNumber: "Nedēļa",
+  };
+
+  return labels[field];
 }
 
 function CalendarPanel({
@@ -1895,56 +1952,6 @@ function markImportDuplicates(candidates: PlanImportCandidate[], rows: SowingPla
       duplicateAction: duplicate ? (candidate.duplicateOf === duplicate.id ? candidate.duplicateAction ?? "keepExisting" : "keepExisting") : "createNew",
     };
   });
-}
-
-function applyImportCandidates(rows: SowingPlanRow[], candidates: PlanImportCandidate[]): SowingPlanRow[] {
-  return candidates.reduce((current, candidate) => {
-    if (candidate.duplicateOf && candidate.duplicateAction === "keepExisting") {
-      return current;
-    }
-
-    const importedRow = rowFromImportCandidate(candidate);
-
-    if (candidate.duplicateOf && candidate.duplicateAction === "replace") {
-      return current.map((row) =>
-        row.id === candidate.duplicateOf
-          ? {
-              ...row,
-              ...importedRow,
-              id: row.id,
-              changeHistory: [
-                ...(row.changeHistory ?? []),
-                historyEntry("Imports", row.sectorName, importedRow.sectorName, "Aizvietots no pārbaudīta foto importa"),
-              ],
-            }
-          : row,
-      );
-    }
-
-    return [importedRow, ...current];
-  }, rows);
-}
-
-function rowFromImportCandidate(candidate: PlanImportCandidate): SowingPlanRow {
-  const cycleLength = Math.max(1, candidateCycleLength(candidate));
-
-  return {
-    id: crypto.randomUUID(),
-    sectorName: candidate.fields.sectorName.value.trim(),
-    requiredPlants: Number(candidate.fields.requiredPlants.value),
-    extraPlants: 0,
-    variety: candidate.fields.variety.value.trim() || "Nav norādīta",
-    weekNumber: Number(candidate.fields.weekNumber.value) || getIsoWeek(candidate.fields.sowingDate.value),
-    sowingDate: candidate.fields.sowingDate.value,
-    harvestDate: candidate.fields.harvestDate.value,
-    cycleLength,
-    sectorType: Number(candidate.fields.requiredPlants.value) > 26 * 6 * 28 ? 39 : 26,
-    plantsPerBox: plannerConfig.defaultPlantsPerBox,
-    correction: 0,
-    status: "imported",
-    changeHistory: [historyEntry("Rinda importēta", "", candidate.fields.sectorName.value, "Pārbaudīts foto importa rezultāts")],
-    source: "import",
-  };
 }
 
 function appendChangeHistory(

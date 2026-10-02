@@ -85,15 +85,14 @@ export function updateDraftMoveOutDate(draft: SowingPlanDraft, harvestDate: stri
   };
 }
 
-// Business cycle length follows the agronomist plan: it is the calendar-day
-// difference between sowing and move-out. Biological work-day numbering remains
-// date-based in the scheduler, where sowing can still be displayed as day 1.
+// Cycle length is the biological day of move-out. Sowing is day 1, so a
+// 23-day cycle moves out 22 calendar days after sowing.
 export function calculateMoveOutDate(sowingDate: string, cycleLength: number): string {
-  return addDays(sowingDate, Math.max(1, cycleLength));
+  return addDays(sowingDate, Math.max(1, cycleLength) - 1);
 }
 
 export function deriveCycleLength(sowingDate: string, moveOutDate: string): number {
-  return Math.max(1, daysBetween(sowingDate, moveOutDate) - 1);
+  return Math.max(1, daysBetween(sowingDate, moveOutDate));
 }
 
 export function operationalTotal(agronomistSowCount: number, workerExtra: number): number {

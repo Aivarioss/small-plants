@@ -691,50 +691,92 @@ export function balanceWorkload(rows: SowingPlanRow[], config: PlannerConfig): W
 
   const jobs = rows.flatMap((row) => deadlineJobsForRow(row));
 
-  jobs
-    .sort(
-      (a, b) =>
-        a.deadline.localeCompare(b.deadline) ||
-        b.workload - a.workload ||
-        a.earliest.localeCompare(b.earliest),
-    )
-    .forEach((job) => {
-      if (job.type === "thinning") {
-        const choice = chooseThinningDate(job, rows, scheduledThinningDates, loadFor, entriesForDate);
-        reserve(job.row, job.type, job.fromDates, choice.dates, choice.warning);
-        return;
-      }
-
-      if (job.type === "sticks") {
-        const sideShootsCompletion = sideShootsCompletionByRow.get(job.row.id);
-        if (!sideShootsCompletion) {
-          reserve(job.row, job.type, job.fromDates, [], `${job.row.sectorName} kociņus nevar ieplānot, jo pazares nav ieplānotas pirms gredzeniem.`);
-          return;
-        }
-
-        const earliest = maxIsoDate(job.earliest, addDays(sideShootsCompletion, 1));
-        if (earliest > job.deadline) {
-          reserve(job.row, job.type, job.fromDates, [], `${job.row.sectorName} kociņus nevar ieplānot pēc pazarēm un pirms gredzeniem.`);
-          return;
-        }
-
-        const choice = chooseFlexibleDates({ ...job, earliest }, loadFor, entriesForDate);
-        reserve(job.row, job.type, job.fromDates, choice.dates, choice.warning);
-        return;
-      }
-
-      const choice = chooseFlexibleDates(job, loadFor, entriesForDate);
+  const processJob = (job: DeadlineJob) => {
+    if (job.type === "thinning") {
+      const choice = chooseThinningDate(job, rows, scheduledThinningDates, loadFor, entriesForDate);
       reserve(job.row, job.type, job.fromDates, choice.dates, choice.warning);
+      return;
+    }
 
-      if (job.type === "sideShoots" && choice.dates.length > 0) {
-        sideShootsCompletionByRow.set(job.row.id, choice.dates.slice().sort().at(-1) ?? choice.dates[0]);
+    if (job.type === "sticks") {
+      const sideShootsCompletion = sideShootsCompletionByRow.get(job.row.id);
+      if (!sideShootsCompletion) {
+        reserve(job.row, job.type, job.fromDates, [], `${job.row.sectorName} kociņus nevar ieplānot, jo pazares nav ieplānotas pirms gredzeniem.`);
+        return;
       }
-    });
+
+      const earliest = maxIsoDate(job.earliest, addDays(sideShootsCompletion, 1));
+      if (earliest > job.deadline) {
+        reserve(job.row, job.type, job.fromDates, [], `${job.row.sectorName} kociņus nevar ieplānot pēc pazarēm un pirms gredzeniem.`);
+        return;
+      }
+
+      const choice = chooseFlexibleDates({ ...job, earliest }, loadFor, entriesForDate);
+      reserve(job.row, job.type, job.fromDates, choice.dates, choice.warning);
+      return;
+    }
+
+    const choice = chooseFlexibleDates(job, loadFor, entriesForDate);
+    reserve(job.row, job.type, job.fromDates, choice.dates, choice.warning);
+
+    if (job.type === "sideShoots" && choice.dates.length > 0) {
+      sideShootsCompletionByRow.set(job.row.id, choice.dates.slice().sort().at(-1) ?? choice.dates[0]);
+    }
+  };
+
+  jobs
+    .filter((job) => job.type === "thinning")
+    .sort(compareBalanceDeadlineJobs)
+    .forEach(processJob);
+
+  const flexibleJobs = jobs.filter((job) => job.type !== "thinning");
+  while (flexibleJobs.length > 0) {
+    flexibleJobs.sort(compareBalanceFlexibleJobs(sideShootsCompletionByRow));
+    const [nextJob] = flexibleJobs.splice(0, 1);
+    processJob(nextJob);
+  }
 
   const optimizedMetrics = calculateWorkloadMetrics(scheduled);
   const hasWarnings = proposals.some((proposal) => proposal.warning);
 
   return isNotWorseSchedule(optimizedMetrics, baselineMetrics) || hasWarnings ? proposals : [];
+}
+
+function compareBalanceDeadlineJobs(left: DeadlineJob, right: DeadlineJob): number {
+  return (
+    left.deadline.localeCompare(right.deadline) ||
+    right.workload - left.workload ||
+    left.earliest.localeCompare(right.earliest) ||
+    left.row.sowingDate.localeCompare(right.row.sowingDate)
+  );
+}
+
+function compareBalanceFlexibleJobs(sideShootsCompletionByRow: Map<string, string>) {
+  return (left: DeadlineJob, right: DeadlineJob): number => {
+    const leftReadySticks = left.type === "sticks" && sideShootsCompletionByRow.has(left.row.id);
+    const rightReadySticks = right.type === "sticks" && sideShootsCompletionByRow.has(right.row.id);
+
+    return (
+      left.deadline.localeCompare(right.deadline) ||
+      Number(rightReadySticks) - Number(leftReadySticks) ||
+      balanceWorkSequenceOrder(left, sideShootsCompletionByRow) -
+        balanceWorkSequenceOrder(right, sideShootsCompletionByRow) ||
+      left.earliest.localeCompare(right.earliest) ||
+      left.row.sowingDate.localeCompare(right.row.sowingDate)
+    );
+  };
+}
+
+function balanceWorkSequenceOrder(job: DeadlineJob, sideShootsCompletionByRow: Map<string, string>): number {
+  if (job.type === "sticks" && sideShootsCompletionByRow.has(job.row.id)) {
+    return 0;
+  }
+
+  if (job.type === "sideShoots") {
+    return 1;
+  }
+
+  return 2;
 }
 
 export function generateWorksheetDays(row: SowingPlanRow, config: PlannerConfig): WorksheetDay[] {
@@ -943,9 +985,9 @@ function chooseFlexibleDates(
         overloadAmount(a.projected) - overloadAmount(b.projected) ||
         a.projected - b.projected ||
         a.load - b.load ||
+        a.date.localeCompare(b.date) ||
         flexibleWeekdayPreference(a.date) - flexibleWeekdayPreference(b.date) ||
-        Number(b.isCurrent) - Number(a.isCurrent) ||
-        b.date.localeCompare(a.date),
+        Number(b.isCurrent) - Number(a.isCurrent),
     )[0];
 
   if (fullDay) {
@@ -965,8 +1007,8 @@ function chooseFlexibleDates(
           overloadAmount(a.projected) - overloadAmount(b.projected) ||
           a.projected - b.projected ||
           a.load - b.load ||
-          flexibleWeekdayPreference(a.date) - flexibleWeekdayPreference(b.date) ||
-          b.date.localeCompare(a.date),
+          a.date.localeCompare(b.date) ||
+          flexibleWeekdayPreference(a.date) - flexibleWeekdayPreference(b.date),
       )
       .slice(0, 2)
       .map((candidate) => candidate.date)
@@ -987,7 +1029,7 @@ function chooseFlexibleDates(
         overloadAmount(a.projected) - overloadAmount(b.projected) ||
         a.projected - b.projected ||
         flexibleWeekdayPreference(a.date) - flexibleWeekdayPreference(b.date) ||
-        b.date.localeCompare(a.date),
+        a.date.localeCompare(b.date),
     )[0];
 
   return {
@@ -1017,9 +1059,9 @@ function chooseSingleFlexibleDay(
         overloadAmount(a.projected) - overloadAmount(b.projected) ||
         a.load - b.load ||
         a.projected - b.projected ||
+        a.date.localeCompare(b.date) ||
         flexibleWeekdayPreference(a.date) - flexibleWeekdayPreference(b.date) ||
-        Number(b.isCurrent) - Number(a.isCurrent) ||
-        b.date.localeCompare(a.date)
+        Number(b.isCurrent) - Number(a.isCurrent)
       );
     })[0];
 

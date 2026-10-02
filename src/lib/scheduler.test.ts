@@ -121,6 +121,51 @@ describe("production scheduler", () => {
     expect((sticks?.date ?? "") < (rings?.date ?? "")).toBe(true);
   });
 
+  it("uses the earliest free allowed day for flexible work in the initial schedule", () => {
+    const result = scheduleProductionWork([row({ id: "early", harvestDate: "2026-10-23", cycleLength: 23 })]);
+    const sideShoots = result.items.find((item) => item.planRowId === "early" && item.type === "sideShoots");
+    const sticks = result.items.find((item) => item.planRowId === "early" && item.type === "sticks");
+
+    expect(sideShoots?.date).toBe("2026-10-17");
+    expect(sticks?.date).toBe("2026-10-18");
+  });
+
+  it("finishes one sector's side shoots and sticks before starting the next when deadlines allow", () => {
+    const result = scheduleProductionWork([
+      row({ id: "first", sectorName: "Hus First", harvestDate: "2026-10-23", cycleLength: 23 }),
+      row({ id: "second", sectorName: "Hus Second", harvestDate: "2026-10-23", cycleLength: 23 }),
+    ]);
+    const work = result.items
+      .filter((item) => item.type === "sideShoots" || item.type === "sticks")
+      .map((item) => `${item.planRowId}:${item.type}:${item.date}`);
+
+    expect(work).toEqual([
+      "first:sideShoots:2026-10-17",
+      "first:sticks:2026-10-18",
+      "second:sideShoots:2026-10-19",
+      "second:sticks:2026-10-20",
+    ]);
+  });
+
+  it("breaks sector completion order when another sector has an earlier agronomic deadline", () => {
+    const result = scheduleProductionWork([
+      row({
+        id: "started",
+        sectorName: "Hus Started",
+        harvestDate: "2026-10-23",
+        cycleLength: 23,
+        adjustments: { sideShoots: "2026-10-17" },
+      }),
+      row({ id: "urgent", sectorName: "Hus Urgent", sowingDate: "2026-09-28", harvestDate: "2026-10-19", cycleLength: 22 }),
+    ]);
+    const urgentSideShoots = result.items.find((item) => item.planRowId === "urgent" && item.type === "sideShoots");
+    const startedSticks = result.items.find((item) => item.planRowId === "started" && item.type === "sticks");
+
+    expect(urgentSideShoots?.date).toBe("2026-10-14");
+    expect((urgentSideShoots?.date ?? "") < (startedSticks?.date ?? "")).toBe(true);
+    expect((startedSticks?.date ?? "") < "2026-10-22").toBe(true);
+  });
+
   it("moves thinning away from a full day 9 to day 8 when day 8 is free", () => {
     const target = row({ id: "target", sowingDate: "2026-10-01", harvestDate: "2026-10-21" });
     const fullDay9 = row({

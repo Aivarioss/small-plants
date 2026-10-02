@@ -125,68 +125,109 @@ export function scheduleProductionWork(rows: SowingPlanRow[]): ScheduleResult {
     jobs.push(...deadlineJobsForRow(row, warnings));
   });
 
-  jobs
-    .sort(
-      (left, right) =>
-        left.deadline.localeCompare(right.deadline) ||
-        right.workload - left.workload ||
-        left.earliest.localeCompare(right.earliest),
-    )
-    .forEach((job) => {
-      const chosen = chooseDates(job, scheduled, placedSectors, sideShootsCompletionByRow);
+  const processJob = (job: DeadlineJob) => {
+    const chosen = chooseDates(job, scheduled, placedSectors, sideShootsCompletionByRow);
 
-      if (chosen.warning) {
-        warnings.push({
-          planRowId: job.row.id,
-          sectorName: job.row.sectorName,
-          type: job.type,
-          code: chosen.warningCode ?? "deadline_capacity_shortage",
-          message: chosen.warning,
-        });
-      }
-
-      chosen.dates.forEach((date) => {
-        const workload = workloadForDate(job.type, chosen.dates.length);
-        addItem(
-          workItem(
-            job.row,
-            job.type,
-            date,
-            job.scheduleKind,
-            false,
-            workload,
-            workload,
-            job.source,
-            job.locked,
-            { start: job.earliest, end: job.deadline },
-            job.type === "thinning" ? chosen.greenhousePlacement : undefined,
-            job.type === "thinning" ? chosen.occupiedTables : undefined,
-            job.type === "thinning" ? chosen.freeTablesBeforePlacement : undefined,
-            chosen.warning ? [chosen.warning] : undefined,
-          ),
-        );
+    if (chosen.warning) {
+      warnings.push({
+        planRowId: job.row.id,
+        sectorName: job.row.sectorName,
+        type: job.type,
+        code: chosen.warningCode ?? "deadline_capacity_shortage",
+        message: chosen.warning,
       });
+    }
 
-      if (job.type === "thinning" && chosen.dates[0] && chosen.greenhousePlacement?.feasible) {
-        placedSectors.push({
-          planRowId: job.row.id,
-          sectorName: job.row.sectorName,
-          thinningDate: chosen.dates[0],
-          moveOutDate: job.row.harvestDate,
-          tables: chosen.greenhousePlacement.totalTables,
-          plantsPerTrough: chosen.greenhousePlacement.plantsPerTrough,
-        });
-      }
-
-      if (job.type === "sideShoots" && chosen.dates.length > 0) {
-        sideShootsCompletionByRow.set(job.row.id, chosen.dates.slice().sort().at(-1) ?? chosen.dates[0]);
-      }
+    chosen.dates.forEach((date) => {
+      const workload = workloadForDate(job.type, chosen.dates.length);
+      addItem(
+        workItem(
+          job.row,
+          job.type,
+          date,
+          job.scheduleKind,
+          false,
+          workload,
+          workload,
+          job.source,
+          job.locked,
+          { start: job.earliest, end: job.deadline },
+          job.type === "thinning" ? chosen.greenhousePlacement : undefined,
+          job.type === "thinning" ? chosen.occupiedTables : undefined,
+          job.type === "thinning" ? chosen.freeTablesBeforePlacement : undefined,
+          chosen.warning ? [chosen.warning] : undefined,
+        ),
+      );
     });
+
+    if (job.type === "thinning" && chosen.dates[0] && chosen.greenhousePlacement?.feasible) {
+      placedSectors.push({
+        planRowId: job.row.id,
+        sectorName: job.row.sectorName,
+        thinningDate: chosen.dates[0],
+        moveOutDate: job.row.harvestDate,
+        tables: chosen.greenhousePlacement.totalTables,
+        plantsPerTrough: chosen.greenhousePlacement.plantsPerTrough,
+      });
+    }
+
+    if (job.type === "sideShoots" && chosen.dates.length > 0) {
+      sideShootsCompletionByRow.set(job.row.id, chosen.dates.slice().sort().at(-1) ?? chosen.dates[0]);
+    }
+  };
+
+  jobs
+    .filter((job) => job.type === "thinning")
+    .sort(compareDeadlineJobs)
+    .forEach(processJob);
+
+  const flexibleJobs = jobs.filter((job) => job.type !== "thinning");
+  while (flexibleJobs.length > 0) {
+    flexibleJobs.sort(compareFlexibleJobs(sideShootsCompletionByRow));
+    const [nextJob] = flexibleJobs.splice(0, 1);
+    processJob(nextJob);
+  }
 
   return {
     items: items.sort((left, right) => left.date.localeCompare(right.date) || workTypeOrder(left.type) - workTypeOrder(right.type)),
     warnings,
   };
+}
+
+function compareDeadlineJobs(left: DeadlineJob, right: DeadlineJob): number {
+  return (
+    left.deadline.localeCompare(right.deadline) ||
+    right.workload - left.workload ||
+    left.earliest.localeCompare(right.earliest) ||
+    left.row.sowingDate.localeCompare(right.row.sowingDate)
+  );
+}
+
+function compareFlexibleJobs(sideShootsCompletionByRow: Map<string, string>) {
+  return (left: DeadlineJob, right: DeadlineJob): number => {
+    const leftReadySticks = left.type === "sticks" && sideShootsCompletionByRow.has(left.row.id);
+    const rightReadySticks = right.type === "sticks" && sideShootsCompletionByRow.has(right.row.id);
+
+    return (
+      left.deadline.localeCompare(right.deadline) ||
+      Number(rightReadySticks) - Number(leftReadySticks) ||
+      workSequenceOrder(left, sideShootsCompletionByRow) - workSequenceOrder(right, sideShootsCompletionByRow) ||
+      left.earliest.localeCompare(right.earliest) ||
+      left.row.sowingDate.localeCompare(right.row.sowingDate)
+    );
+  };
+}
+
+function workSequenceOrder(job: DeadlineJob, sideShootsCompletionByRow: Map<string, string>): number {
+  if (job.type === "sticks" && sideShootsCompletionByRow.has(job.row.id)) {
+    return 0;
+  }
+
+  if (job.type === "sideShoots") {
+    return 1;
+  }
+
+  return 2;
 }
 
 function deadlineJobsForRow(row: SowingPlanRow, warnings: ScheduleWarning[]): DeadlineJob[] {
@@ -500,6 +541,8 @@ function densityClassScore(placement: GreenhouseTablePlacement | undefined): num
 }
 
 function compareCandidates(job: DeadlineJob, preferWholeDay: boolean) {
+  void preferWholeDay;
+
   return (left: Candidate, right: Candidate) => {
     const leftFits = left.projectedLoad <= DAILY_TARGET ? 0 : 1;
     const rightFits = right.projectedLoad <= DAILY_TARGET ? 0 : 1;
@@ -512,9 +555,9 @@ function compareCandidates(job: DeadlineJob, preferWholeDay: boolean) {
       overloadAmount(left.projectedLoad) - overloadAmount(right.projectedLoad) ||
       left.projectedLoad - right.projectedLoad ||
       left.rawLoad - right.rawLoad ||
+      left.date.localeCompare(right.date) ||
       left.weekdayScore - right.weekdayScore ||
-      Number(!job.preferredDates.includes(left.date)) - Number(!job.preferredDates.includes(right.date)) ||
-      (preferWholeDay ? right.date.localeCompare(left.date) : right.date.localeCompare(left.date))
+      Number(!job.preferredDates.includes(left.date)) - Number(!job.preferredDates.includes(right.date))
     );
   };
 }

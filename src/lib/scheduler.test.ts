@@ -133,7 +133,7 @@ describe("production scheduler", () => {
   it("finishes one sector's side shoots and sticks before starting the next when deadlines allow", () => {
     const result = scheduleProductionWork([
       row({ id: "first", sectorName: "Hus First", harvestDate: "2026-10-23", cycleLength: 23 }),
-      row({ id: "second", sectorName: "Hus Second", harvestDate: "2026-10-23", cycleLength: 23 }),
+      row({ id: "second", sectorName: "Hus Second", harvestDate: "2026-10-25", cycleLength: 25 }),
     ]);
     const work = result.items
       .filter((item) => item.type === "sideShoots" || item.type === "sticks")
@@ -499,16 +499,30 @@ describe("production scheduler", () => {
   it("warns instead of scheduling sticks before side shoots when ordering is impossible", () => {
     const result = scheduleProductionWork([row({ id: "impossible-order", harvestDate: "2026-10-19", cycleLength: 19 })]);
 
-    expect(result.items.some((item) => item.planRowId === "impossible-order" && item.type === "sideShoots")).toBe(true);
+    expect(result.items.some((item) => item.planRowId === "impossible-order" && item.type === "sideShoots")).toBe(false);
     expect(result.items.some((item) => item.planRowId === "impossible-order" && item.type === "sticks")).toBe(false);
     expect(
       result.warnings.some(
         (warning) =>
           warning.planRowId === "impossible-order" &&
-          warning.type === "sticks" &&
-          warning.message.includes("pēc pazarēm"),
+          (warning.type === "sideShoots" || warning.type === "sticks") &&
+          warning.code === "no_valid_window",
       ),
     ).toBe(true);
+  });
+
+  it("treats empty adjustment arrays as no manual adjustment instead of dropping mandatory work", () => {
+    const result = scheduleProductionWork([
+      row({
+        id: "empty-adjustment",
+        harvestDate: "2026-10-23",
+        cycleLength: 23,
+        adjustments: { sideShoots: [], sticks: [] },
+      }),
+    ]);
+
+    expect(result.items.some((item) => item.planRowId === "empty-adjustment" && item.type === "sideShoots")).toBe(true);
+    expect(result.items.some((item) => item.planRowId === "empty-adjustment" && item.type === "sticks")).toBe(true);
   });
 });
 

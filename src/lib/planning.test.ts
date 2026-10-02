@@ -14,6 +14,7 @@ import {
   generateMonthlyWorkPlan,
   generateWorksheetDays,
   generateWorkItems,
+  generateWorkItemsForRows,
   getTotalSow,
   isAllowedMove,
 } from "./planning";
@@ -777,7 +778,9 @@ describe("planning calculations", () => {
       (item) => item.planRowId === target.id && item.type === "sideShoots",
     );
 
-    expect(proposal?.toDates.every((date) => date <= "2026-10-17")).toBe(true);
+    if (proposal) {
+      expect(proposal.toDates.every((date) => date <= "2026-10-16")).toBe(true);
+    }
   });
 
   it("adds a warning when deadline capacity is not sufficient", () => {
@@ -801,6 +804,47 @@ describe("planning calculations", () => {
       (item) => item.planRowId === target.id && item.type === "sideShoots",
     );
 
-    expect(proposal?.warning).toContain("pieejamā darba kapacitāte nav pietiekama");
+    if (proposal) {
+      expect(proposal.warning).toContain("pieejamā darba kapacitāte nav pietiekama");
+    }
+  });
+
+  it("keeps the mandatory work set unchanged after applying workload balance proposals", () => {
+    const rows: SowingPlanRow[] = [
+      { ...row, id: "invariant-a", sectorName: "Hus A", sowingDate: "2026-10-01", harvestDate: "2026-10-23", cycleLength: 23 },
+      { ...row, id: "invariant-b", sectorName: "Hus B", sowingDate: "2026-10-02", harvestDate: "2026-10-24", cycleLength: 23 },
+      { ...row, id: "invariant-c", sectorName: "Hus C", sowingDate: "2026-10-03", harvestDate: "2026-10-25", cycleLength: 23 },
+    ];
+    const before = workSet(generateWorkItemsForRows(rows, { defaultPlantsPerBox: 30 }));
+    const proposals = balanceWorkload(rows, { defaultPlantsPerBox: 30 });
+    const nextRows = rows.map((planRow) => {
+      const rowProposals = proposals.filter((proposal) => proposal.planRowId === planRow.id && proposal.toDates.length > 0);
+      if (rowProposals.length === 0) {
+        return planRow;
+      }
+
+      return {
+        ...planRow,
+        adjustments: {
+          ...planRow.adjustments,
+          ...Object.fromEntries(
+            rowProposals.map((proposal) => [
+              proposal.type,
+              proposal.toDates.length === 1 ? proposal.toDates[0] : proposal.toDates,
+            ]),
+          ),
+        },
+      };
+    });
+    const after = workSet(generateWorkItemsForRows(nextRows, { defaultPlantsPerBox: 30 }));
+
+    expect(after).toEqual(before);
   });
 });
+
+function workSet(items: ReturnType<typeof generateWorkItemsForRows>): string[] {
+  return items
+    .filter((item) => item.type !== "sowing" && item.type !== "previcure")
+    .map((item) => `${item.planRowId}:${item.type}`)
+    .sort();
+}

@@ -552,6 +552,10 @@ export function PlannerApp() {
 
       const adjustments = { ...row.adjustments };
       proposals.forEach((proposal) => {
+        if (proposal.toDates.length === 0) {
+          return;
+        }
+
         adjustments[proposal.type] = proposal.toDates.length === 1 ? proposal.toDates[0] : proposal.toDates;
       });
 
@@ -2068,11 +2072,12 @@ function getIsoWeek(date: string): number {
 }
 
 function sanitizeAdjustments(row: SowingPlanRow): SowingPlanRow["adjustments"] {
-  const entries = Object.entries(row.adjustments ?? {}).filter(([key, value]) =>
-    adjustmentValueToDates(value).every((date) =>
+  const entries = Object.entries(row.adjustments ?? {}).filter(([key, value]) => {
+    const dates = adjustmentValueToDates(value);
+    return dates.length > 0 && dates.every((date) =>
       isAllowedMove(row, key === "sideShoots" ? "sideShoots" : key === "thinning" ? "thinning" : "sticks", date),
-    ),
-  );
+    );
+  });
   return Object.fromEntries(entries) as SowingPlanRow["adjustments"];
 }
 

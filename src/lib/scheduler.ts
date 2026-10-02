@@ -205,6 +205,11 @@ function compareDeadlineJobs(left: DeadlineJob, right: DeadlineJob): number {
 
 function compareFlexibleJobs(sideShootsCompletionByRow: Map<string, string>) {
   return (left: DeadlineJob, right: DeadlineJob): number => {
+    const dependencyOrder = blockedSticksDependencyOrder(left, right, sideShootsCompletionByRow);
+    if (dependencyOrder !== 0) {
+      return dependencyOrder;
+    }
+
     const leftReadySticks = left.type === "sticks" && sideShootsCompletionByRow.has(left.row.id);
     const rightReadySticks = right.type === "sticks" && sideShootsCompletionByRow.has(right.row.id);
 
@@ -216,6 +221,25 @@ function compareFlexibleJobs(sideShootsCompletionByRow: Map<string, string>) {
       left.row.sowingDate.localeCompare(right.row.sowingDate)
     );
   };
+}
+
+function blockedSticksDependencyOrder(
+  left: DeadlineJob,
+  right: DeadlineJob,
+  sideShootsCompletionByRow: Map<string, string>,
+): number {
+  const leftBlockedSticks = left.type === "sticks" && !sideShootsCompletionByRow.has(left.row.id);
+  const rightBlockedSticks = right.type === "sticks" && !sideShootsCompletionByRow.has(right.row.id);
+
+  if (leftBlockedSticks && right.type === "sideShoots" && left.row.id === right.row.id) {
+    return 1;
+  }
+
+  if (rightBlockedSticks && left.type === "sideShoots" && right.row.id === left.row.id) {
+    return -1;
+  }
+
+  return 0;
 }
 
 function workSequenceOrder(job: DeadlineJob, sideShootsCompletionByRow: Map<string, string>): number {
@@ -233,6 +257,7 @@ function workSequenceOrder(job: DeadlineJob, sideShootsCompletionByRow: Map<stri
 function deadlineJobsForRow(row: SowingPlanRow, warnings: ScheduleWarning[]): DeadlineJob[] {
   const ringsDate = addDays(row.harvestDate, -1);
   const beforeRings = addDays(ringsDate, -1);
+  const sideShootsDeadline = addDays(beforeRings, -1);
   const candidates: DeadlineJob[] = [
     {
       row,
@@ -250,7 +275,7 @@ function deadlineJobsForRow(row: SowingPlanRow, warnings: ScheduleWarning[]): De
       row,
       type: "sideShoots",
       earliest: cycleDayDate(row, 17),
-      deadline: beforeRings,
+      deadline: sideShootsDeadline,
       scheduleKind: "flexible",
       workload: 1,
       splittable: true,
@@ -675,6 +700,10 @@ function getTotalPlants(row: Pick<SowingPlanRow, "requiredPlants" | "extraPlants
 
 function adjustmentDates(value: string | string[] | undefined): string[] | undefined {
   if (!value) {
+    return undefined;
+  }
+
+  if (Array.isArray(value) && value.length === 0) {
     return undefined;
   }
 

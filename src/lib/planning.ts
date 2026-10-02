@@ -233,7 +233,7 @@ export function isAllowedMove(row: SowingPlanRow, type: WorkType, date: string):
   }
 
   if (type === "sideShoots") {
-    return cycleDay >= 17 && date < ringsDate;
+    return cycleDay >= 17 && date < addDays(ringsDate, -1);
   }
 
   if (type === "sticks") {
@@ -551,7 +551,7 @@ export function generateLegacyWorkItems(row: SowingPlanRow, config: PlannerConfi
         `Slodze: ${formatWorkload(workloadPerFlexibleDate("sideShoots", sideShootsDates))}`,
       ], {
         start: cycleDayDate(row, 17),
-        end: addDays(ringsDate, -1),
+        end: addDays(ringsDate, -2),
       }),
     ),
     ...sticksDates.map((date) =>
@@ -753,6 +753,11 @@ function compareBalanceDeadlineJobs(left: DeadlineJob, right: DeadlineJob): numb
 
 function compareBalanceFlexibleJobs(sideShootsCompletionByRow: Map<string, string>) {
   return (left: DeadlineJob, right: DeadlineJob): number => {
+    const dependencyOrder = balanceBlockedSticksDependencyOrder(left, right, sideShootsCompletionByRow);
+    if (dependencyOrder !== 0) {
+      return dependencyOrder;
+    }
+
     const leftReadySticks = left.type === "sticks" && sideShootsCompletionByRow.has(left.row.id);
     const rightReadySticks = right.type === "sticks" && sideShootsCompletionByRow.has(right.row.id);
 
@@ -765,6 +770,25 @@ function compareBalanceFlexibleJobs(sideShootsCompletionByRow: Map<string, strin
       left.row.sowingDate.localeCompare(right.row.sowingDate)
     );
   };
+}
+
+function balanceBlockedSticksDependencyOrder(
+  left: DeadlineJob,
+  right: DeadlineJob,
+  sideShootsCompletionByRow: Map<string, string>,
+): number {
+  const leftBlockedSticks = left.type === "sticks" && !sideShootsCompletionByRow.has(left.row.id);
+  const rightBlockedSticks = right.type === "sticks" && !sideShootsCompletionByRow.has(right.row.id);
+
+  if (leftBlockedSticks && right.type === "sideShoots" && left.row.id === right.row.id) {
+    return 1;
+  }
+
+  if (rightBlockedSticks && left.type === "sideShoots" && right.row.id === left.row.id) {
+    return -1;
+  }
+
+  return 0;
 }
 
 function balanceWorkSequenceOrder(job: DeadlineJob, sideShootsCompletionByRow: Map<string, string>): number {
@@ -855,10 +879,11 @@ type DeadlineJob = {
 
 function deadlineJobsForRow(row: SowingPlanRow): DeadlineJob[] {
   const ringsDate = addDays(row.harvestDate, -1);
-  const sideShootsDeadline = addDays(ringsDate, -1);
+  const sticksDeadline = addDays(ringsDate, -1);
+  const sideShootsDeadline = addDays(sticksDeadline, -1);
   const jobs: DeadlineJob[] = [];
 
-  if (!row.adjustments?.thinning) {
+  if (!hasAdjustment(row.adjustments?.thinning)) {
     jobs.push({
       row,
       type: "thinning",
@@ -870,7 +895,7 @@ function deadlineJobsForRow(row: SowingPlanRow): DeadlineJob[] {
     });
   }
 
-  if (!row.adjustments?.sideShoots) {
+  if (!hasAdjustment(row.adjustments?.sideShoots)) {
     jobs.push({
       row,
       type: "sideShoots",
@@ -882,14 +907,14 @@ function deadlineJobsForRow(row: SowingPlanRow): DeadlineJob[] {
     });
   }
 
-  if (!row.adjustments?.sticks) {
+  if (!hasAdjustment(row.adjustments?.sticks)) {
     const biologicalCycleDays = getBiologicalCycleDays(row);
     const earliest = cycleDayDate(row, Math.max(17, biologicalCycleDays - 5));
     jobs.push({
       row,
       type: "sticks",
       earliest,
-      deadline: sideShootsDeadline,
+      deadline: sticksDeadline,
       fromDates: [cycleDayDate(row, Math.max(18, biologicalCycleDays - 3))],
       workload: 0.5,
       splittable: false,
@@ -1238,6 +1263,10 @@ function adjustmentDates(value: string | string[] | undefined, fallback: string)
   }
 
   return [value ?? fallback];
+}
+
+function hasAdjustment(value: string | string[] | undefined): boolean {
+  return Array.isArray(value) ? value.length > 0 : Boolean(value);
 }
 
 function firstAdjustmentDate(value: string | string[] | undefined): string | undefined {

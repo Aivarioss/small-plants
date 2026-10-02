@@ -577,6 +577,49 @@ export function PlannerApp() {
     setBalancePreview(null);
   }
 
+  function recalculateAutomaticPlan() {
+    const rowsWithAdjustments = planRows.filter((row) => hasManualWorkMoves(row));
+
+    if (rowsWithAdjustments.length === 0) {
+      setRepositoryMessage("Plāns jau tiek rēķināts automātiski");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Pārrēķināt darbu plānu no ${planRows.length} esošajām Hus rindām ar jauno scheduler algoritmu?\n\n` +
+        "Tas nedzēsīs Hus/sēšanas datus. Tiks notīrīti saglabātie darba datumu pārcēlumi, lai kalendārs atkal tiktu ģenerēts automātiski.",
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    const nextRows = planRows.map((row) => {
+      if (!hasManualWorkMoves(row)) {
+        return row;
+      }
+
+      return {
+        ...row,
+        adjustments: undefined,
+        changeHistory: [
+          ...(row.changeHistory ?? []),
+          historyEntry(
+            "Darbu plāns pārrēķināts",
+            formatAdjustmentSummary(row.adjustments),
+            "Automātisks scheduler",
+            "Notīrīti saglabātie darba datumu pārcēlumi",
+          ),
+        ],
+      };
+    });
+
+    setBalancePreview(null);
+    setPlanRows(nextRows);
+    void persistRowDiff(planRows, nextRows);
+    setRepositoryMessage(`Pārrēķina ${rowsWithAdjustments.length} Hus darbu datumus`);
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -653,6 +696,7 @@ export function PlannerApp() {
               onApplyBalance={confirmWorkloadBalance}
               onCancelBalance={() => setBalancePreview(null)}
               onPreviewBalance={previewWorkloadBalance}
+              onRecalculatePlan={recalculateAutomaticPlan}
               onSelectDate={setSelectedDate}
               onSetAnchorDate={setAnchorDate}
               selectedDate={selectedDate}
@@ -1319,6 +1363,7 @@ function CalendarPanel({
   onApplyBalance,
   onCancelBalance,
   onPreviewBalance,
+  onRecalculatePlan,
   onSelectDate,
   onSetAnchorDate,
   onSetViewMode,
@@ -1332,6 +1377,7 @@ function CalendarPanel({
   onApplyBalance: () => void;
   onCancelBalance: () => void;
   onPreviewBalance: () => void;
+  onRecalculatePlan: () => void;
   onSelectDate: (date: string) => void;
   onSetAnchorDate: (date: string) => void;
   onSetViewMode: (mode: ViewMode) => void;
@@ -1347,6 +1393,9 @@ function CalendarPanel({
           <h2>{calendarTitle(anchorDate, viewMode)}</h2>
         </div>
         <div className="calendar-controls">
+          <button type="button" onClick={onRecalculatePlan}>
+            Pārrēķināt plānu
+          </button>
           <button type="button" onClick={onPreviewBalance}>
             Izlīdzināt darbus
           </button>
@@ -2047,6 +2096,30 @@ function adjustmentValueToDates(value: string | string[] | undefined): string[] 
 
 function formatAdjustmentValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? formatDateRange(value) : value ?? "";
+}
+
+function formatAdjustmentSummary(adjustments: SowingPlanRow["adjustments"]): string {
+  const parts = Object.entries(adjustments ?? {})
+    .map(([type, value]) => `${workTypeLabel(type)}: ${formatAdjustmentValue(value)}`)
+    .filter((value) => value.trim().length > 0);
+
+  return parts.length > 0 ? parts.join("; ") : "Nav saglabātu pārcēlumu";
+}
+
+function workTypeLabel(type: string): string {
+  if (type === "thinning") {
+    return "Retināšana";
+  }
+
+  if (type === "sideShoots") {
+    return "Pazares";
+  }
+
+  if (type === "sticks") {
+    return "Kociņi";
+  }
+
+  return type;
 }
 
 function getCalendarDays(anchorDate: string, viewMode: ViewMode) {

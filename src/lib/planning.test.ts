@@ -11,6 +11,8 @@ import {
   createPlacementPlan,
   daysBetween,
   getAllCapacityConflicts,
+  applyWorkloadBalanceProposals,
+  generateBaseWorkItemsForRows,
   generateMonthlyWorkPlan,
   generateWorksheetDays,
   generateWorkItems,
@@ -840,11 +842,32 @@ describe("planning calculations", () => {
 
     expect(after).toEqual(before);
   });
+
+  it("generates the initial plan equivalent to applying workload balance manually", () => {
+    const rows: SowingPlanRow[] = [
+      { ...row, id: "auto-a", sectorName: "Hus Auto A", sowingDate: "2026-10-01", harvestDate: "2026-10-23", cycleLength: 23 },
+      { ...row, id: "auto-b", sectorName: "Hus Auto B", sowingDate: "2026-10-02", harvestDate: "2026-10-24", cycleLength: 23 },
+      { ...row, id: "auto-c", sectorName: "Hus Auto C", sowingDate: "2026-10-03", harvestDate: "2026-10-25", cycleLength: 23 },
+    ];
+    const proposals = balanceWorkload(rows, { defaultPlantsPerBox: 30 });
+    const manuallyBalancedRows = applyWorkloadBalanceProposals(rows, proposals);
+    const automatic = workDates(generateWorkItemsForRows(rows, { defaultPlantsPerBox: 30 }));
+    const manual = workDates(generateBaseWorkItemsForRows(manuallyBalancedRows, { defaultPlantsPerBox: 30 }));
+
+    expect(automatic).toEqual(manual);
+  });
 });
 
 function workSet(items: ReturnType<typeof generateWorkItemsForRows>): string[] {
   return items
     .filter((item) => item.type !== "sowing" && item.type !== "previcure")
     .map((item) => `${item.planRowId}:${item.type}`)
+    .sort();
+}
+
+function workDates(items: ReturnType<typeof generateWorkItemsForRows>): string[] {
+  return items
+    .filter((item) => item.type !== "sowing" && item.type !== "previcure")
+    .map((item) => `${item.planRowId}:${item.type}:${item.date}`)
     .sort();
 }

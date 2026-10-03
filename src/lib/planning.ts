@@ -245,7 +245,7 @@ export function isAllowedMove(row: SowingPlanRow, type: WorkType, date: string):
 }
 
 export function hasManualWorkMoves(row: SowingPlanRow): boolean {
-  return Object.keys(row.adjustments ?? {}).length > 0;
+  return Object.values(row.adjustments ?? {}).some(hasAdjustment);
 }
 
 export function getThinningDate(row: SowingPlanRow): string {
@@ -429,6 +429,33 @@ export function generateWorkItems(row: SowingPlanRow, config: PlannerConfig): Wo
 }
 
 export function generateWorkItemsForRows(rows: SowingPlanRow[], config: PlannerConfig): WorkItem[] {
+  const balancedRows = applyWorkloadBalanceProposals(rows, balanceWorkload(rows, config));
+  return generateBaseWorkItemsForRows(balancedRows, config);
+}
+
+export function applyWorkloadBalanceProposals(
+  rows: SowingPlanRow[],
+  proposals: WorkloadBalanceProposal[],
+): SowingPlanRow[] {
+  return rows.map((row) => {
+    const rowProposals = proposals.filter((proposal) => proposal.planRowId === row.id && proposal.toDates.length > 0);
+    if (rowProposals.length === 0) {
+      return row;
+    }
+
+    const adjustments = { ...row.adjustments };
+    rowProposals.forEach((proposal) => {
+      adjustments[proposal.type] = proposal.toDates.length === 1 ? proposal.toDates[0] : proposal.toDates;
+    });
+
+    return {
+      ...row,
+      adjustments: normalizeAdjustments(adjustments),
+    };
+  });
+}
+
+export function generateBaseWorkItemsForRows(rows: SowingPlanRow[], config: PlannerConfig): WorkItem[] {
   void config;
 
   return scheduleProductionWork(rows).items.map((scheduled) => workItemFromSchedule(scheduled, rows));
@@ -598,14 +625,12 @@ export function countMainWork(items: WorkItem[], date: string): number {
 
 export function balanceWorkload(rows: SowingPlanRow[], config: PlannerConfig): WorkloadBalanceProposal[] {
   const baselineMetrics = calculateWorkloadMetrics(
-    rows.flatMap((row) =>
-      generateWorkItems(row, config).map((item) => ({
+    generateBaseWorkItemsForRows(rows, config).map((item) => ({
         date: item.date,
         planRowId: item.planRowId,
         type: item.type,
         workload: item.workloadWeight,
       })),
-    ),
   );
   const proposals: WorkloadBalanceProposal[] = [];
   const scheduled: ScheduledWorkEntry[] = [];
@@ -1267,6 +1292,11 @@ function adjustmentDates(value: string | string[] | undefined, fallback: string)
 
 function hasAdjustment(value: string | string[] | undefined): boolean {
   return Array.isArray(value) ? value.length > 0 : Boolean(value);
+}
+
+function normalizeAdjustments(adjustments: SowingPlanRow["adjustments"]): SowingPlanRow["adjustments"] {
+  const entries = Object.entries(adjustments ?? {}).filter(([, value]) => hasAdjustment(value));
+  return entries.length > 0 ? (Object.fromEntries(entries) as SowingPlanRow["adjustments"]) : undefined;
 }
 
 function firstAdjustmentDate(value: string | string[] | undefined): string | undefined {

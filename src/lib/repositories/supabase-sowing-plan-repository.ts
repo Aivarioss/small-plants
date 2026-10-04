@@ -232,6 +232,7 @@ function rowRecordUpdatePatch(record: NonNullable<ReturnType<typeof sowingPlanRo
     required_plants: record.required_plants,
     sector_type: record.sector_type,
     source: record.source,
+    sowing_tables: record.sowing_tables,
     sowing_date: record.sowing_date,
     status: record.status,
     variety: record.variety,

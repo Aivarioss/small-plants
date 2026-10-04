@@ -67,6 +67,7 @@ const initialDraft: SowingPlanDraft = {
   requiredPlants: "3400",
   extraPlants: "144",
   variety: "",
+  sowingTables: "",
   sowingDate: toIsoDate(new Date()),
   harvestDate: calculateMoveOutDate(toIsoDate(new Date()), 22),
   cycleLength: "22",
@@ -193,6 +194,7 @@ export function PlannerApp() {
       requiredPlants,
       extraPlants,
       variety: draft.variety.trim(),
+      sowingTables: draft.sowingTables.trim() || undefined,
       sowingDate: draft.sowingDate,
       harvestDate: draft.harvestDate,
       cycleLength,
@@ -994,6 +996,14 @@ function SowingPlanPanel({
               />
             </label>
             <label>
+              Sēšanas galdi
+              <input
+                onChange={(event) => onDraftChange({ ...draft, sowingTables: event.target.value })}
+                placeholder="A3-A7"
+                value={draft.sowingTables}
+              />
+            </label>
+            <label>
               Sektora galdi
               <select
                 value={draft.sectorType}
@@ -1014,6 +1024,7 @@ function SowingPlanPanel({
       <div className="plan-table" role="table" aria-label="Plāna Hus rindas">
         <div className="plan-row plan-row--head" role="row">
           <span>Hus</span>
+          <span>Sēšanas galdi</span>
           <span>Agronoma sēja</span>
           <span>Extra</span>
           <span>Kopā sēt</span>
@@ -1029,6 +1040,11 @@ function SowingPlanPanel({
           return (
             <div className="plan-row" role="row" key={row.id}>
               <input value={row.sectorName} onChange={(event) => onUpdateRow(row.id, { sectorName: event.target.value })} />
+              <input
+                placeholder="A3-A7"
+                value={row.sowingTables ?? ""}
+                onChange={(event) => onUpdateRow(row.id, { sowingTables: event.target.value || undefined })}
+              />
               <input
                 min="1"
                 type="number"
@@ -1160,10 +1176,12 @@ function WorksheetView({
   row: SowingPlanRow;
   workItems: WorkItem[];
 }) {
+  const [activeWorksheetTab, setActiveWorksheetTab] = useState<"works" | "worksheet">("works");
   const totalSow = getTotalSow(row);
   const worksheetDays = generateWorksheetDaysFromWorkItems(row, workItems);
-  const rings = workItems.find((item) => item.type === "rings");
-  const sticks = workItems.find((item) => item.type === "sticks");
+  const chronologicalWorkItems = [...workItems].sort(
+    (left, right) => left.date.localeCompare(right.date) || left.title.localeCompare(right.title, "lv"),
+  );
 
   return (
     <section className="print-host">
@@ -1181,7 +1199,42 @@ function WorksheetView({
         </div>
       </div>
 
-      <article className="print-page worksheet-page">
+      <div className="segmented worksheet-tabs no-print" aria-label="Hus skats">
+        <button
+          className={activeWorksheetTab === "works" ? "is-active" : ""}
+          onClick={() => setActiveWorksheetTab("works")}
+          type="button"
+        >
+          Darbi
+        </button>
+        <button
+          className={activeWorksheetTab === "worksheet" ? "is-active" : ""}
+          onClick={() => setActiveWorksheetTab("worksheet")}
+          type="button"
+        >
+          Darba lapa
+        </button>
+      </div>
+
+      {activeWorksheetTab === "works" ? (
+        <div className="panel hus-work-panel no-print">
+          <div className="work-list">
+            {chronologicalWorkItems.map((item) => (
+              <article className={`hus-work-row work-card--${item.color}`} key={item.id}>
+                <time>{shortDate(item.date)}</time>
+                <div>
+                  <strong>{item.title}</strong>
+                  <span>
+                    {item.cycleDay}. diena · {item.source === "manual" ? "Manuāli" : "Automātiski"}
+                  </span>
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <article className={`print-page worksheet-page ${activeWorksheetTab === "worksheet" ? "" : "screen-hidden"}`}>
         <header className="worksheet-header">
           <h1 className="print-only-title">{row.sectorName}</h1>
           <div className="worksheet-meta">
@@ -1189,8 +1242,7 @@ function WorksheetView({
             <span><strong>Stādi:</strong> {totalSow.toLocaleString("lv-LV")}</span>
             <span><strong>Šķirne:</strong> {row.variety}</span>
             <span><strong>Izvākšana:</strong> {shortDate(row.harvestDate)}</span>
-            <span><strong>Gredzeni:</strong> {rings ? shortDate(rings.date) : ""}</span>
-            <span><strong>Kociņi:</strong> {sticks ? shortDate(sticks.date) : ""}</span>
+            <span><strong>Sēšanas galdi:</strong> {row.sowingTables || "Nav norādīti"}</span>
           </div>
         </header>
 
@@ -1820,6 +1872,14 @@ function BatchEditor({
         <input value={row.variety} onChange={(event) => onUpdateRow(row.id, { variety: event.target.value })} />
       </label>
       <label>
+        Sēšanas galdi
+        <input
+          placeholder="A3-A7"
+          value={row.sowingTables ?? ""}
+          onChange={(event) => onUpdateRow(row.id, { sowingTables: event.target.value || undefined })}
+        />
+      </label>
+      <label>
         Nedēļas numurs
         <input
           min="1"
@@ -2048,6 +2108,7 @@ function appendChangeHistory(
     ["extraPlants", "Extra"],
     ["variety", "Šķirne"],
     ["weekNumber", "Nedēļa"],
+    ["sowingTables", "Sēšanas galdi"],
     ["sowingDate", "Sēšana"],
     ["harvestDate", "Izvākšana"],
     ["previcureDate", "Previcure"],

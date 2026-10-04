@@ -49,15 +49,35 @@ export const greenhouseRows: GreenhouseRow[] = [
 
 export const workTypeMeta: Record<WorkType, { title: string; color: string }> = {
   sowing: { title: "Sēšana", color: "mint" },
+  removeFilm: { title: "Noņemt plēvi", color: "mint" },
+  addAgrofilm: { title: "Uzlikt agroplēvi", color: "mint" },
+  removeAgrofilm: { title: "Noņemt agroplēvi", color: "mint" },
   thinning: { title: "Retināšana", color: "teal" },
+  previcur: { title: "Previcur", color: "teal" },
+  disinfectTables: { title: "Dezinficēt galdus", color: "teal" },
   previcure: { title: "Previcure", color: "amber" },
   sideShoots: { title: "Pazares", color: "amber" },
   sticks: { title: "Kociņi", color: "violet" },
   rings: { title: "Gredzeni", color: "blue" },
   harvest: { title: "Izvākšana", color: "green" },
+  sprayTables: { title: "Nomiglot galdus", color: "green" },
 };
 
-const workTypeSortOrder: WorkType[] = ["sowing", "thinning", "previcure", "sideShoots", "sticks", "rings", "harvest"];
+const workTypeSortOrder: WorkType[] = [
+  "sowing",
+  "removeFilm",
+  "addAgrofilm",
+  "removeAgrofilm",
+  "thinning",
+  "previcur",
+  "disinfectTables",
+  "previcure",
+  "sideShoots",
+  "sticks",
+  "rings",
+  "harvest",
+  "sprayTables",
+];
 
 export function addDays(date: string, days: number): string {
   const value = new Date(`${date}T12:00:00`);
@@ -460,7 +480,42 @@ export function applyWorkloadBalanceProposals(
 export function generateBaseWorkItemsForRows(rows: SowingPlanRow[], config: PlannerConfig): WorkItem[] {
   void config;
 
-  return scheduleProductionWork(rows).items.map((scheduled) => workItemFromSchedule(scheduled, rows));
+  const baseItems = scheduleProductionWork(rows).items.map((scheduled) => workItemFromSchedule(scheduled, rows));
+  return [...baseItems, ...generateSmallWorkItems(rows, baseItems)].sort(
+    (left, right) =>
+      left.date.localeCompare(right.date) ||
+      left.sectorName.localeCompare(right.sectorName, "lv", { numeric: true }) ||
+      workTypeSortOrder.indexOf(left.type) - workTypeSortOrder.indexOf(right.type),
+  );
+}
+
+function generateSmallWorkItems(rows: SowingPlanRow[], baseItems: WorkItem[]): WorkItem[] {
+  return rows.flatMap((row) => {
+    const thinningDate = baseItems.find((item) => item.planRowId === row.id && item.type === "thinning")?.date;
+    const smallItems = [
+      smallWorkItem(row, "removeFilm", cycleDayDate(row, 3), "Saistīts ar sēšanu"),
+      smallWorkItem(row, "addAgrofilm", cycleDayDate(row, 3), "Saistīts ar sēšanu"),
+      smallWorkItem(row, "removeAgrofilm", cycleDayDate(row, 5), "Saistīts ar sēšanu"),
+      smallWorkItem(row, "sprayTables", addDays(row.harvestDate, 1), "Pēc izvākšanas"),
+    ];
+
+    if (thinningDate) {
+      smallItems.push(
+        smallWorkItem(row, "previcur", thinningDate, "Pēc retināšanas"),
+        smallWorkItem(row, "disinfectTables", thinningDate, "Pēc retināšanas"),
+      );
+    }
+
+    return smallItems;
+  });
+}
+
+function smallWorkItem(row: SowingPlanRow, type: WorkType, date: string, detail: string): WorkItem {
+  return {
+    ...item(row, type, date, getCycleDay(row, date), true, "fixed", 0, [detail]),
+    source: "automatic",
+    locked: true,
+  };
 }
 
 function workItemFromSchedule(scheduled: ScheduledWorkItem, rows: SowingPlanRow[]): WorkItem {
@@ -842,8 +897,12 @@ export function generateWorksheetDaysFromWorkItems(row: SowingPlanRow, workItems
         left.date.localeCompare(right.date) ||
         workTypeSortOrder.indexOf(left.type) - workTypeSortOrder.indexOf(right.type),
     );
+  const worksheetLength = Math.max(
+    getBiologicalCycleDays(row),
+    ...works.map((work) => Math.max(1, work.cycleDay)),
+  );
 
-  return Array.from({ length: getBiologicalCycleDays(row) }, (_, index) => {
+  return Array.from({ length: worksheetLength }, (_, index) => {
     const day = index + 1;
     const date = cycleDayDate(row, day);
     return {

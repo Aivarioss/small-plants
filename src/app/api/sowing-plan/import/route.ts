@@ -112,6 +112,7 @@ function importRowToRecord(row: ValidatedImportRow): SowingPlanRowRecord {
     extra_plants: row.extraPlants,
     variety: row.variety,
     week_number: row.weekNumber,
+    sowing_tables: null,
     sowing_date: row.sowingDate,
     move_out_date: row.moveOutDate,
     previcure_date: row.previcureDate,

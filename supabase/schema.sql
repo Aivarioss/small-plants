@@ -13,6 +13,7 @@ create table sowing_plan_rows (
   extra_plants integer not null default 0,
   variety text not null,
   week_number integer,
+  sowing_tables text,
   sowing_date date not null,
   move_out_date date not null,
   previcure_date date,

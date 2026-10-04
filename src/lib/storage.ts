@@ -131,6 +131,7 @@ function normalizePlanRow(candidate: Partial<SowingPlanRow>): SowingPlanRow | nu
     extraPlants,
     variety: candidate.variety || "Nav norādīta",
     weekNumber: Number(candidate.weekNumber) || undefined,
+    sowingTables: candidate.sowingTables,
     sowingDate: candidate.sowingDate,
     harvestDate: candidate.harvestDate,
     previcureDate: candidate.previcureDate,

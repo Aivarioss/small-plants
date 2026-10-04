@@ -180,10 +180,10 @@ describe("planning calculations", () => {
     );
   });
 
-  it("generates one printable worksheet row for every cycle day", () => {
-    expect(generateWorksheetDays({ ...row, cycleLength: 21, harvestDate: "2026-10-15" }, { defaultPlantsPerBox: 30 })).toHaveLength(21);
-    expect(generateWorksheetDays(row, { defaultPlantsPerBox: 30 })).toHaveLength(22);
-    expect(generateWorksheetDays({ ...row, cycleLength: 23, harvestDate: "2026-10-17" }, { defaultPlantsPerBox: 30 })).toHaveLength(23);
+  it("generates printable worksheet rows through the cycle and post-move-out work", () => {
+    expect(generateWorksheetDays({ ...row, cycleLength: 21, harvestDate: "2026-10-15" }, { defaultPlantsPerBox: 30 })).toHaveLength(22);
+    expect(generateWorksheetDays(row, { defaultPlantsPerBox: 30 })).toHaveLength(23);
+    expect(generateWorksheetDays({ ...row, cycleLength: 23, harvestDate: "2026-10-17" }, { defaultPlantsPerBox: 30 })).toHaveLength(24);
   });
 
   it("places previcure into the printable worksheet and monthly plan when set", () => {
@@ -211,6 +211,20 @@ describe("planning calculations", () => {
 
     expect(countMainWork(items, row.sowingDate)).toBe(0);
     expect(countMainWork(items, row.harvestDate)).toBe(1);
+  });
+
+  it("generates minor Hus tasks without adding main workload", () => {
+    const items = generateWorkItems(row, { defaultPlantsPerBox: 30 });
+    const byType = Object.fromEntries(items.map((item) => [item.type, item]));
+
+    expect(byType.removeFilm.date).toBe(cycleDayDateForTest(row, 3));
+    expect(byType.addAgrofilm.date).toBe(cycleDayDateForTest(row, 3));
+    expect(byType.removeAgrofilm.date).toBe(cycleDayDateForTest(row, 5));
+    expect(byType.previcur.date).toBe(byType.thinning.date);
+    expect(byType.disinfectTables.date).toBe(byType.thinning.date);
+    expect(byType.sprayTables.date).toBe(addDays(row.harvestDate, 1));
+    expect(countMainWork(items, byType.thinning.date)).toBe(1);
+    expect(countMainWork(items, cycleDayDateForTest(row, 3))).toBe(0);
   });
 
   it("renders flexible work on every manually selected work date", () => {
@@ -556,6 +570,8 @@ describe("planning calculations", () => {
     expect(items.filter((item) => item.date === "2026-10-22").map((item) => item.type)).toEqual([
       "rings",
       "thinning",
+      "previcur",
+      "disinfectTables",
     ]);
     expect(countMainWork(items, "2026-10-22")).toBe(1);
   });
@@ -1060,6 +1076,18 @@ describe("planning calculations", () => {
     expect(workDatesForRow(finalItems, adjustedRow.id)).toContain("2026-10-17:flow-h6:sticks:0.5");
     expect(worksheetWorkDatesFromItems(adjustedRow, finalItems)).toEqual(workDatesForRow(finalItems, adjustedRow.id));
   });
+
+  it("keeps minor tasks attached to balanced base work dates in calendar and worksheet data", () => {
+    const rows = realisticPlanRows();
+    const finalItems = generateWorkItemsForRows(rows, { defaultPlantsPerBox: 30 });
+    const targetRow = rows.find((planRow) => planRow.id === "flow-h7") as SowingPlanRow;
+    const targetItems = finalItems.filter((item) => item.planRowId === targetRow.id);
+    const thinningDate = targetItems.find((item) => item.type === "thinning")?.date;
+
+    expect(targetItems.find((item) => item.type === "previcur")?.date).toBe(thinningDate);
+    expect(targetItems.find((item) => item.type === "disinfectTables")?.date).toBe(thinningDate);
+    expect(worksheetWorkDatesFromItems(targetRow, finalItems)).toEqual(workDatesForRow(finalItems, targetRow.id));
+  });
 });
 
 function workSet(items: ReturnType<typeof generateWorkItemsForRows>): string[] {
@@ -1164,7 +1192,20 @@ function worksheetWorkDatesFromItems(planRow: SowingPlanRow, workItems: WorkItem
 function expectMandatoryWork(items: WorkItem[], planRowId: string) {
   const actual = mandatoryWorkTypes(items.filter((item) => item.planRowId === planRowId));
 
-  expect(actual).toEqual(["harvest", "rings", "sideShoots", "sowing", "sticks", "thinning"]);
+  expect(actual).toEqual([
+    "addAgrofilm",
+    "disinfectTables",
+    "harvest",
+    "previcur",
+    "removeAgrofilm",
+    "removeFilm",
+    "rings",
+    "sideShoots",
+    "sowing",
+    "sprayTables",
+    "sticks",
+    "thinning",
+  ]);
 }
 
 function mandatoryWorkCounts(items: WorkItem[]): string[] {
@@ -1190,4 +1231,8 @@ function planRowData(planRow: SowingPlanRow): Omit<SowingPlanRow, "adjustments">
   const data: Partial<SowingPlanRow> = { ...planRow };
   delete data.adjustments;
   return data as Omit<SowingPlanRow, "adjustments">;
+}
+
+function cycleDayDateForTest(planRow: SowingPlanRow, day: number): string {
+  return addDays(planRow.sowingDate, day - 1);
 }

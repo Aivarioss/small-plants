@@ -5,6 +5,7 @@ export type SowingPlanRowRecord = {
   extra_plants: number;
   variety: string;
   week_number: number | null;
+  sowing_tables: string | null;
   sowing_date: string;
   move_out_date: string;
   previcure_date: string | null;

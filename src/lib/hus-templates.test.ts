@@ -17,6 +17,7 @@ const draft: SowingPlanDraft = {
   requiredPlants: "",
   extraPlants: "",
   variety: "",
+  sowingTables: "",
   sowingDate: "2026-09-29",
   harvestDate: "2026-10-20",
   cycleLength: "22",

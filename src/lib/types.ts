@@ -3,12 +3,18 @@ export type SectorType = 26 | 39;
 
 export type WorkType =
   | "sowing"
+  | "removeFilm"
+  | "addAgrofilm"
+  | "removeAgrofilm"
   | "thinning"
+  | "previcur"
+  | "disinfectTables"
   | "previcure"
   | "sideShoots"
   | "sticks"
   | "rings"
-  | "harvest";
+  | "harvest"
+  | "sprayTables";
 
 export type ViewMode = "month" | "tenDays" | "today";
 export type MainView = "sowingPlan" | "calendar" | "hus" | "batches" | "greenhouse" | "batch" | "worksheet" | "monthPlan";
@@ -42,6 +48,7 @@ export type SowingPlanRow = {
   extraPlants: number;
   variety: string;
   weekNumber?: number;
+  sowingTables?: string;
   sowingDate: string;
   harvestDate: string;
   previcureDate?: string;
@@ -67,6 +74,7 @@ export type SowingPlanDraft = {
   requiredPlants: string;
   extraPlants: string;
   variety: string;
+  sowingTables: string;
   sowingDate: string;
   harvestDate: string;
   cycleLength: string;

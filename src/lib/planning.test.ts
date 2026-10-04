@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  addDays,
   calculateAvailability,
   calculateBoxPlan,
   calculateBoxesNeeded,
@@ -15,6 +16,7 @@ import {
   generateBaseWorkItemsForRows,
   generateMonthlyWorkPlan,
   generateWorksheetDays,
+  generateWorksheetDaysFromWorkItems,
   generateWorkItems,
   generateWorkItemsForRows,
   getTotalSow,
@@ -22,7 +24,7 @@ import {
 } from "./planning";
 import { candidateCycleLength, mockPlanImportService } from "./plan-import-service";
 import { deriveCycleLength } from "./hus-templates";
-import type { SowingPlanRow } from "./types";
+import type { SowingPlanRow, WorkItem, WorkType } from "./types";
 
 const row: SowingPlanRow = {
   id: "test",
@@ -856,6 +858,208 @@ describe("planning calculations", () => {
 
     expect(automatic).toEqual(manual);
   });
+
+  it("recalculates derived work, calendar data, and worksheet data when an existing plan row changes", () => {
+    const rows = realisticPlanRows();
+    const initialItems = generateWorkItemsForRows(rows, { defaultPlantsPerBox: 30 });
+    const changedRows = rows.map((planRow) =>
+      planRow.id === "flow-h6"
+        ? {
+            ...planRow,
+            sowingDate: "2026-09-30",
+            harvestDate: "2026-10-22",
+          }
+        : planRow,
+    );
+    const changedItems = generateWorkItemsForRows(changedRows, { defaultPlantsPerBox: 30 });
+    const changedRow = changedRows.find((planRow) => planRow.id === "flow-h6");
+
+    expect(workDatesForRow(initialItems, "flow-h6")).not.toEqual(workDatesForRow(changedItems, "flow-h6"));
+    expect(generateMonthlyWorkPlan(changedRows, { defaultPlantsPerBox: 30 }, "2026-10-01").map(workItemIdentity).sort()).toEqual(
+      changedItems.filter((item) => item.date.startsWith("2026-10")).map(workItemIdentity).sort(),
+    );
+    expect(changedRow).toBeDefined();
+    expect(worksheetWorkDates(changedRow as SowingPlanRow)).toEqual(workDatesForRow(generateWorkItems(changedRow as SowingPlanRow, { defaultPlantsPerBox: 30 }), "flow-h6"));
+  });
+
+  it("adds a new sector through the full generated work, calendar, and worksheet data flow", () => {
+    const rows = realisticPlanRows().slice(0, 3);
+    const addedRow = realisticPlanRows().find((planRow) => planRow.id === "flow-h7") as SowingPlanRow;
+    const nextRows = [...rows, addedRow];
+    const items = generateWorkItemsForRows(nextRows, { defaultPlantsPerBox: 30 });
+    const calendarItems = generateMonthlyWorkPlan(nextRows, { defaultPlantsPerBox: 30 }, "2026-10-01");
+
+    expectMandatoryWork(items, addedRow.id);
+    expect(workDatesForRow(calendarItems, addedRow.id).length).toBeGreaterThan(0);
+    expect(worksheetWorkDates(addedRow)).toEqual(workDatesForRow(generateWorkItems(addedRow, { defaultPlantsPerBox: 30 }), addedRow.id));
+  });
+
+  it("removes deleted sector work without leaving stale calendar data and keeps remaining sectors valid", () => {
+    const rows = realisticPlanRows();
+    const remainingRows = rows.filter((planRow) => planRow.id !== "flow-h5");
+    const items = generateWorkItemsForRows(remainingRows, { defaultPlantsPerBox: 30 });
+    const calendarItems = generateMonthlyWorkPlan(remainingRows, { defaultPlantsPerBox: 30 }, "2026-10-01");
+
+    expect(items.some((item) => item.planRowId === "flow-h5")).toBe(false);
+    expect(calendarItems.some((item) => item.planRowId === "flow-h5")).toBe(false);
+    remainingRows.forEach((planRow) => expectMandatoryWork(items, planRow.id));
+  });
+
+  it("keeps manual adjustments locked when other rows change and ignores empty adjustment arrays", () => {
+    const rows = realisticPlanRows();
+    const manuallyMoved: SowingPlanRow = {
+      ...rows.find((planRow) => planRow.id === "flow-h6")!,
+      adjustments: {
+        sideShoots: "2026-10-16",
+      },
+    };
+    const changedRows = [
+      ...rows.filter((planRow) => planRow.id !== "flow-h6"),
+      manuallyMoved,
+      {
+        ...row,
+        id: "flow-extra",
+        sectorName: "Hus Extra",
+        requiredPlants: 4200,
+        extraPlants: 100,
+        variety: "Baltazsara",
+        sowingDate: "2026-10-05",
+        harvestDate: "2026-10-27",
+        cycleLength: 23,
+      },
+    ];
+    const items = generateWorkItemsForRows(changedRows, { defaultPlantsPerBox: 30 });
+    const movedSideShoots = items.find((item) => item.planRowId === "flow-h6" && item.type === "sideShoots");
+    const emptyAdjustmentRow: SowingPlanRow = {
+      ...rows.find((planRow) => planRow.id === "flow-h7")!,
+      adjustments: {
+        sideShoots: [],
+        sticks: [],
+      },
+    };
+    const emptyAdjustmentItems = generateWorkItemsForRows([emptyAdjustmentRow], { defaultPlantsPerBox: 30 });
+
+    expect(movedSideShoots?.date).toBe("2026-10-16");
+    expect(movedSideShoots?.source).toBe("manual");
+    expect(movedSideShoots?.locked).toBe(true);
+    expectMandatoryWork(emptyAdjustmentItems, emptyAdjustmentRow.id);
+  });
+
+  it("preserves the mandatory work invariant before and after balancing", () => {
+    const rows = realisticPlanRows();
+    const base = mandatoryWorkCounts(generateBaseWorkItemsForRows(rows, { defaultPlantsPerBox: 30 }));
+    const balanced = mandatoryWorkCounts(generateWorkItemsForRows(rows, { defaultPlantsPerBox: 30 }));
+
+    expect(balanced).toEqual(base);
+  });
+
+  it("is idempotent when generating the same plan twice", () => {
+    const rows = realisticPlanRows();
+    const first = workDates(generateWorkItemsForRows(rows, { defaultPlantsPerBox: 30 }));
+    const second = workDates(generateWorkItemsForRows(rows, { defaultPlantsPerBox: 30 }));
+
+    expect(second).toEqual(first);
+  });
+
+  it("recalculation clears scheduling adjustments without changing plan rows and matches clean generation", () => {
+    const cleanRows = realisticPlanRows();
+    const adjustedRows = cleanRows.map((planRow) =>
+      planRow.id === "flow-h6"
+        ? {
+            ...planRow,
+            adjustments: {
+              thinning: "2026-10-07",
+              sideShoots: "2026-10-16",
+              sticks: "2026-10-17",
+            },
+          }
+        : planRow,
+    );
+    const recalculatedRows = clearAdjustments(adjustedRows);
+
+    expect(recalculatedRows.map(planRowData)).toEqual(cleanRows.map(planRowData));
+    expect(workDates(generateWorkItemsForRows(recalculatedRows, { defaultPlantsPerBox: 30 }))).toEqual(
+      workDates(generateWorkItemsForRows(cleanRows, { defaultPlantsPerBox: 30 })),
+    );
+  });
+
+  it("uses the same final work item source for calendar and worksheet dates", () => {
+    const rows = realisticPlanRows();
+    const finalItems = generateWorkItemsForRows(rows, { defaultPlantsPerBox: 30 });
+    const rowWithGlobalMove = rows.find((planRow) => {
+      const globalDates = workDatesForRow(finalItems, planRow.id);
+      const isolatedDates = workDatesForRow(generateWorkItems(planRow, { defaultPlantsPerBox: 30 }), planRow.id);
+      return JSON.stringify(globalDates) !== JSON.stringify(isolatedDates);
+    });
+
+    expect(rowWithGlobalMove).toBeDefined();
+
+    const worksheetDates = worksheetWorkDatesFromItems(rowWithGlobalMove as SowingPlanRow, finalItems);
+    const calendarDates = workDatesForRow(finalItems, (rowWithGlobalMove as SowingPlanRow).id);
+
+    expect(worksheetDates).toEqual(calendarDates);
+  });
+
+  it("keeps calendar and worksheet dates identical after a plan row changes", () => {
+    const rows = realisticPlanRows().map((planRow) =>
+      planRow.id === "flow-h6"
+        ? {
+            ...planRow,
+            sowingDate: "2026-09-30",
+            harvestDate: "2026-10-22",
+          }
+        : planRow,
+    );
+    const finalItems = generateWorkItemsForRows(rows, { defaultPlantsPerBox: 30 });
+    const changedRow = rows.find((planRow) => planRow.id === "flow-h6") as SowingPlanRow;
+
+    expect(worksheetWorkDatesFromItems(changedRow, finalItems)).toEqual(workDatesForRow(finalItems, changedRow.id));
+  });
+
+  it("keeps worksheet dates in sync when a new sector changes another sector's balanced dates", () => {
+    const rows = [realisticPlanRows().find((planRow) => planRow.id === "flow-h6") as SowingPlanRow];
+    const beforeItems = generateWorkItemsForRows(rows, { defaultPlantsPerBox: 30 });
+    const originalSideShootsDate = beforeItems.find((item) => item.planRowId === "flow-h6" && item.type === "sideShoots")?.date;
+    const blockingRow: SowingPlanRow = {
+      ...row,
+      id: "flow-blocker",
+      sectorName: "Hus Blocker",
+      requiredPlants: 4200,
+      extraPlants: 100,
+      variety: "Baltazsara",
+      sowingDate: addDays(originalSideShootsDate ?? "2026-10-17", -22),
+      harvestDate: originalSideShootsDate ?? "2026-10-17",
+      cycleLength: 23,
+    };
+    const nextRows = [...rows, blockingRow];
+    const afterItems = generateWorkItemsForRows(nextRows, { defaultPlantsPerBox: 30 });
+    const changedExistingRow = rows[0];
+
+    expect(workDatesForRow(afterItems, changedExistingRow.id)).not.toEqual(workDatesForRow(beforeItems, changedExistingRow.id));
+    expect(worksheetWorkDatesFromItems(changedExistingRow as SowingPlanRow, afterItems)).toEqual(
+      workDatesForRow(afterItems, (changedExistingRow as SowingPlanRow).id),
+    );
+  });
+
+  it("renders manual adjustments identically in calendar and worksheet data", () => {
+    const adjustedRows = realisticPlanRows().map((planRow) =>
+      planRow.id === "flow-h6"
+        ? {
+            ...planRow,
+            adjustments: {
+              sideShoots: "2026-10-16",
+              sticks: "2026-10-17",
+            },
+          }
+        : planRow,
+    );
+    const finalItems = generateWorkItemsForRows(adjustedRows, { defaultPlantsPerBox: 30 });
+    const adjustedRow = adjustedRows.find((planRow) => planRow.id === "flow-h6") as SowingPlanRow;
+
+    expect(workDatesForRow(finalItems, adjustedRow.id)).toContain("2026-10-16:flow-h6:sideShoots:1");
+    expect(workDatesForRow(finalItems, adjustedRow.id)).toContain("2026-10-17:flow-h6:sticks:0.5");
+    expect(worksheetWorkDatesFromItems(adjustedRow, finalItems)).toEqual(workDatesForRow(finalItems, adjustedRow.id));
+  });
 });
 
 function workSet(items: ReturnType<typeof generateWorkItemsForRows>): string[] {
@@ -870,4 +1074,120 @@ function workDates(items: ReturnType<typeof generateWorkItemsForRows>): string[]
     .filter((item) => item.type !== "sowing" && item.type !== "previcure")
     .map((item) => `${item.planRowId}:${item.type}:${item.date}`)
     .sort();
+}
+
+function realisticPlanRows(): SowingPlanRow[] {
+  return [
+    {
+      ...row,
+      id: "flow-h4",
+      sectorName: "Hus 4",
+      requiredPlants: 3819,
+      extraPlants: 100,
+      variety: "Baltazsara",
+      sowingDate: "2026-09-22",
+      harvestDate: "2026-10-14",
+      cycleLength: 23,
+    },
+    {
+      ...row,
+      id: "flow-h5",
+      sectorName: "Hus 5",
+      requiredPlants: 3556,
+      extraPlants: 100,
+      variety: "Baltazsara",
+      sowingDate: "2026-09-24",
+      harvestDate: "2026-10-16",
+      cycleLength: 23,
+    },
+    {
+      ...row,
+      id: "flow-h6",
+      sectorName: "Hus 6",
+      requiredPlants: 3556,
+      extraPlants: 100,
+      variety: "Baltazsara",
+      sowingDate: "2026-09-29",
+      harvestDate: "2026-10-21",
+      cycleLength: 23,
+    },
+    {
+      ...row,
+      id: "flow-h7",
+      sectorName: "Hus 7",
+      requiredPlants: 6057,
+      extraPlants: 100,
+      variety: "Baltazsara",
+      sowingDate: "2026-10-06",
+      harvestDate: "2026-10-28",
+      cycleLength: 23,
+    },
+    {
+      ...row,
+      id: "flow-h9",
+      sectorName: "Hus 9",
+      requiredPlants: 3707,
+      extraPlants: 100,
+      variety: "Baltazsara",
+      sowingDate: "2026-10-13",
+      harvestDate: "2026-11-04",
+      cycleLength: 23,
+    },
+  ];
+}
+
+function workItemIdentity(item: WorkItem): string {
+  return `${item.date}:${item.planRowId}:${item.type}:${item.portion ?? ""}`;
+}
+
+function workDatesForRow(items: WorkItem[], planRowId: string): string[] {
+  return items
+    .filter((item) => item.planRowId === planRowId)
+    .map(workItemIdentity)
+    .sort();
+}
+
+function worksheetWorkDates(planRow: SowingPlanRow): string[] {
+  return generateWorksheetDays(planRow, { defaultPlantsPerBox: 30 })
+    .flatMap((day) => day.works)
+    .map(workItemIdentity)
+    .sort();
+}
+
+function worksheetWorkDatesFromItems(planRow: SowingPlanRow, workItems: WorkItem[]): string[] {
+  return generateWorksheetDaysFromWorkItems(planRow, workItems)
+    .flatMap((day) => day.works)
+    .map(workItemIdentity)
+    .sort();
+}
+
+function expectMandatoryWork(items: WorkItem[], planRowId: string) {
+  const actual = mandatoryWorkTypes(items.filter((item) => item.planRowId === planRowId));
+
+  expect(actual).toEqual(["harvest", "rings", "sideShoots", "sowing", "sticks", "thinning"]);
+}
+
+function mandatoryWorkCounts(items: WorkItem[]): string[] {
+  return items
+    .filter((item) => item.type !== "previcure")
+    .map((item) => `${item.planRowId}:${item.type}`)
+    .sort();
+}
+
+function mandatoryWorkTypes(items: WorkItem[]): WorkType[] {
+  return [...new Set(items.filter((item) => item.type !== "previcure").map((item) => item.type))].sort();
+}
+
+function clearAdjustments(rows: SowingPlanRow[]): SowingPlanRow[] {
+  return rows.map((planRow) => {
+    const data = { ...planRow };
+    delete data.adjustments;
+    return data;
+  });
+}
+
+function planRowData(planRow: SowingPlanRow): Omit<SowingPlanRow, "adjustments"> {
+  const data: Partial<SowingPlanRow> = { ...planRow };
+  delete data.adjustments;
+  return data as Omit<SowingPlanRow, "adjustments">;
 }

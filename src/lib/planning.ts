@@ -57,6 +57,8 @@ export const workTypeMeta: Record<WorkType, { title: string; color: string }> = 
   harvest: { title: "Izvākšana", color: "green" },
 };
 
+const workTypeSortOrder: WorkType[] = ["sowing", "thinning", "previcure", "sideShoots", "sticks", "rings", "harvest"];
+
 export function addDays(date: string, days: number): string {
   const value = new Date(`${date}T12:00:00`);
   value.setDate(value.getDate() + days);
@@ -829,7 +831,17 @@ function balanceWorkSequenceOrder(job: DeadlineJob, sideShootsCompletionByRow: M
 }
 
 export function generateWorksheetDays(row: SowingPlanRow, config: PlannerConfig): WorksheetDay[] {
-  const works = generateWorkItems(row, config);
+  return generateWorksheetDaysFromWorkItems(row, generateWorkItems(row, config));
+}
+
+export function generateWorksheetDaysFromWorkItems(row: SowingPlanRow, workItems: WorkItem[]): WorksheetDay[] {
+  const works = workItems
+    .filter((work) => work.planRowId === row.id)
+    .sort(
+      (left, right) =>
+        left.date.localeCompare(right.date) ||
+        workTypeSortOrder.indexOf(left.type) - workTypeSortOrder.indexOf(right.type),
+    );
 
   return Array.from({ length: getBiologicalCycleDays(row) }, (_, index) => {
     const day = index + 1;

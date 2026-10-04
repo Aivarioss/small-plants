@@ -14,7 +14,7 @@ import {
   createPlacementPlan,
   dateLabel,
   eachDate,
-  generateWorksheetDays,
+  generateWorksheetDaysFromWorkItems,
   generateWorkItemsForRows,
   getTotalSow,
   greenhouseRows,
@@ -1181,7 +1181,7 @@ function WorksheetView({
   workItems: WorkItem[];
 }) {
   const totalSow = getTotalSow(row);
-  const worksheetDays = generateWorksheetDays(row, plannerConfig);
+  const worksheetDays = generateWorksheetDaysFromWorkItems(row, workItems);
   const rings = workItems.find((item) => item.type === "rings");
   const sticks = workItems.find((item) => item.type === "sticks");
 

@@ -150,11 +150,18 @@ button {
 .main-nav,
 .segmented {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
   margin: 14px 0;
   border-radius: 8px;
   padding: 6px;
+}
+
+.main-nav {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.segmented {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .main-nav button,
@@ -197,13 +204,62 @@ button {
 
 .calendar-controls {
   display: grid;
-  grid-template-columns: 1fr 44px 1fr 44px;
+  grid-template-columns: 44px minmax(86px, 1fr) 44px minmax(132px, auto);
   gap: 6px;
+  width: 100%;
+  max-width: 440px;
 }
 
-.calendar-controls button {
+.calendar-controls button,
+.calendar-actions summary {
   border-color: var(--border);
   background: var(--surface);
+}
+
+.calendar-actions {
+  position: relative;
+}
+
+.calendar-actions summary {
+  display: grid;
+  min-height: 42px;
+  cursor: pointer;
+  list-style: none;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--green-dark);
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.calendar-actions summary::-webkit-details-marker {
+  display: none;
+}
+
+.calendar-actions div {
+  position: absolute;
+  z-index: 5;
+  right: 0;
+  display: grid;
+  min-width: min(260px, 82vw);
+  gap: 6px;
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: var(--shadow);
+  padding: 8px;
+}
+
+.calendar-actions div button {
+  width: 100%;
+  justify-content: start;
+  text-align: left;
+}
+
+.calendar-view-toggle {
+  max-width: 360px;
 }
 
 .calendar-grid {
@@ -278,6 +334,53 @@ button {
   font-weight: 720;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.agenda-list {
+  display: grid;
+  gap: 8px;
+}
+
+.agenda-day {
+  display: grid;
+  width: 100%;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px;
+  color: var(--text);
+  text-align: left;
+}
+
+.agenda-day.is-selected {
+  border-color: var(--green);
+  outline: 2px solid rgba(40, 124, 67, 0.18);
+}
+
+.agenda-day.is-overloaded {
+  border-color: var(--red);
+  background: var(--red-soft);
+}
+
+.agenda-day__date,
+.agenda-day__items,
+.agenda-work {
+  display: grid;
+  gap: 4px;
+}
+
+.agenda-day__date span,
+.agenda-work span {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.agenda-work {
+  border-left: 4px solid currentColor;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 8px 10px;
 }
 
 .work-chip--mint,
@@ -908,6 +1011,10 @@ button:focus-visible {
   margin-left: 18px;
 }
 
+.calendar-print-source {
+  display: none;
+}
+
 .range-fields {
   display: grid;
   grid-template-columns: 1fr;
@@ -1037,6 +1144,57 @@ button:focus-visible {
 }
 
 @media (max-width: 720px) {
+  .app-shell {
+    padding: 12px;
+  }
+
+  .topbar,
+  .panel {
+    padding: 14px;
+  }
+
+  .topbar__stats {
+    gap: 6px;
+  }
+
+  .topbar__stats span,
+  .topbar__stats strong,
+  .overload-badge,
+  .summary-strip span {
+    padding: 6px 8px;
+    font-size: 0.82rem;
+  }
+
+  .main-nav button,
+  .segmented button,
+  .calendar-controls button,
+  .calendar-actions summary,
+  .primary-action {
+    min-height: 40px;
+    padding: 0 8px;
+    font-size: 0.9rem;
+  }
+
+  .calendar-controls {
+    grid-template-columns: 40px minmax(0, 1fr) 40px;
+    max-width: none;
+  }
+
+  .calendar-actions {
+    grid-column: 1 / -1;
+  }
+
+  .calendar-actions div {
+    left: 0;
+    right: auto;
+    width: min(100%, 300px);
+    min-width: 0;
+  }
+
+  .calendar-view-toggle {
+    max-width: none;
+  }
+
   .calendar-day {
     min-height: 78px;
     padding: 5px;
@@ -1050,6 +1208,14 @@ button:focus-visible {
 
   .calendar-day__number {
     font-size: 0.88rem;
+  }
+
+  .agenda-day {
+    padding: 10px;
+  }
+
+  .agenda-work {
+    padding: 7px 8px;
   }
 }
 
@@ -1147,8 +1313,14 @@ button:focus-visible {
   .topbar,
   .main-nav,
   .next-panel,
+  .calendar-panel,
+  .side-panel,
   .no-print {
     display: none !important;
+  }
+
+  .calendar-print-source {
+    display: block;
   }
 
   .print-host {

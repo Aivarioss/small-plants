@@ -58,7 +58,6 @@ const navItems: Array<{ id: MainView; label: string }> = [
 const viewModes: Array<{ id: ViewMode; label: string }> = [
   { id: "month", label: "Mēnesis" },
   { id: "tenDays", label: "10 dienas" },
-  { id: "today", label: "Šodien" },
 ];
 
 const weekdayLabels = ["P", "O", "T", "C", "P", "S", "Sv"];
@@ -137,11 +136,6 @@ export function PlannerApp() {
     .filter((item) => item.date === selectedDate)
     .sort((a, b) => a.sectorName.localeCompare(b.sectorName, "lv"));
   const calendarDays = getCalendarDays(anchorDate, viewMode);
-  const upcomingItems = [...workItems]
-    .filter((item) => item.date >= toIsoDate(new Date()))
-    .sort((a, b) => a.date.localeCompare(b.date))
-    .slice(0, 6);
-
   useEffect(() => {
     let cancelled = false;
 
@@ -716,7 +710,9 @@ export function PlannerApp() {
               selectedDate={selectedDate}
             />
           </section>
-          <MonthlyPrintPlan monthDate={anchorDate} onMonthChange={setAnchorDate} workItems={workItems} />
+          <div className="calendar-print-source">
+            <MonthlyPrintPlan monthDate={anchorDate} onMonthChange={setAnchorDate} workItems={workItems} />
+          </div>
         </>
       ) : null}
 
@@ -788,22 +784,6 @@ export function PlannerApp() {
           </div>
         </section>
       ) : null}
-
-      <section className="panel next-panel">
-        <div className="panel-header">
-          <div>
-            <p className="eyebrow">Tuvākie darbi</p>
-            <h2>Ātrā pārbaude</h2>
-          </div>
-        </div>
-        <div className="upcoming-list">
-          {upcomingItems.map((item) => (
-            <span className={`work-chip work-chip--${item.color}`} key={item.id}>
-              {dateLabel(item.date)} · {item.title} · {item.sectorName}
-            </span>
-          ))}
-        </div>
-      </section>
     </main>
   );
 }
@@ -1389,6 +1369,8 @@ function CalendarPanel({
   viewMode: ViewMode;
   workItems: WorkItem[];
 }) {
+  const rangeDays = calendarDays.filter((day) => day.inCurrentRange);
+
   return (
     <div className="panel calendar-panel no-print">
       <div className="panel-header">
@@ -1397,12 +1379,6 @@ function CalendarPanel({
           <h2>{calendarTitle(anchorDate, viewMode)}</h2>
         </div>
         <div className="calendar-controls">
-          <button type="button" onClick={onRecalculatePlan}>
-            Pārrēķināt plānu
-          </button>
-          <button type="button" onClick={onPreviewBalance}>
-            Izlīdzināt darbus
-          </button>
           <button type="button" onClick={() => onSetAnchorDate(shiftAnchor(anchorDate, viewMode, -1))}>
             ←
           </button>
@@ -1412,7 +1388,6 @@ function CalendarPanel({
               const today = toIsoDate(new Date());
               onSetAnchorDate(today);
               onSelectDate(today);
-              onSetViewMode("today");
             }}
           >
             Šodien
@@ -1420,6 +1395,20 @@ function CalendarPanel({
           <button type="button" onClick={() => onSetAnchorDate(shiftAnchor(anchorDate, viewMode, 1))}>
             →
           </button>
+          <details className="calendar-actions">
+            <summary>⋮ Plāna darbības</summary>
+            <div>
+              <button type="button" onClick={onRecalculatePlan}>
+                Pārrēķināt plānu
+              </button>
+              <button type="button" onClick={onPreviewBalance}>
+                Izlīdzināt darbus
+              </button>
+              <button type="button" onClick={() => window.print()}>
+                Printēt mēnesi
+              </button>
+            </div>
+          </details>
         </div>
       </div>
 
@@ -1427,7 +1416,7 @@ function CalendarPanel({
         <BalancePreview proposals={balancePreview} onApply={onApplyBalance} onCancel={onCancelBalance} />
       ) : null}
 
-      <div className="segmented" aria-label="Kalendāra skata režīms">
+      <div className="segmented calendar-view-toggle" aria-label="Kalendāra skata režīms">
         {viewModes.map((mode) => (
           <button
             className={viewMode === mode.id ? "is-active" : ""}
@@ -1440,44 +1429,83 @@ function CalendarPanel({
         ))}
       </div>
 
-      <div className="calendar-grid">
-        {weekdayLabels.map((day, index) => (
-          <span className="weekday" key={`${day}-${index}`}>
-            {day}
-          </span>
-        ))}
-        {calendarDays.map((day) => {
-          const dayItems = workItems.filter((item) => item.date === day.isoDate);
-          const mainWorkload = countMainWork(dayItems, day.isoDate);
-          const overloaded = mainWorkload > 1;
-          const hasCapacityWarning = dayItems.some((item) => item.capacityWarning);
+      {viewMode === "month" ? (
+        <div className="calendar-grid">
+          {weekdayLabels.map((day, index) => (
+            <span className="weekday" key={`${day}-${index}`}>
+              {day}
+            </span>
+          ))}
+          {calendarDays.map((day) => {
+            const dayItems = workItems.filter((item) => item.date === day.isoDate);
+            const mainWorkload = countMainWork(dayItems, day.isoDate);
+            const overloaded = mainWorkload > 1;
+            const hasCapacityWarning = dayItems.some((item) => item.capacityWarning);
 
-          return (
-            <button
-              className={[
-                "calendar-day",
-                day.inCurrentRange ? "" : "is-muted",
-                day.isoDate === selectedDate ? "is-selected" : "",
-                overloaded ? "is-overloaded" : "",
-                hasCapacityWarning ? "has-capacity-warning" : "",
-              ].join(" ")}
-              key={day.isoDate}
-              onClick={() => onSelectDate(day.isoDate)}
-              type="button"
-            >
-              <span className="calendar-day__number">{day.dayNumber}</span>
-              <span className="calendar-day__items">
-                {dayItems.slice(0, 3).map((item) => (
-                  <span className={`work-chip work-chip--${item.color}`} key={item.id}>
-                    {calendarItemLabel(item)}
-                  </span>
-                ))}
-              </span>
-              {dayItems.length > 3 ? <span className="more">+{dayItems.length - 3}</span> : null}
-            </button>
-          );
-        })}
-      </div>
+            return (
+              <button
+                className={[
+                  "calendar-day",
+                  day.inCurrentRange ? "" : "is-muted",
+                  day.isoDate === selectedDate ? "is-selected" : "",
+                  overloaded ? "is-overloaded" : "",
+                  hasCapacityWarning ? "has-capacity-warning" : "",
+                ].join(" ")}
+                key={day.isoDate}
+                onClick={() => onSelectDate(day.isoDate)}
+                type="button"
+              >
+                <span className="calendar-day__number">{day.dayNumber}</span>
+                <span className="calendar-day__items">
+                  {dayItems.slice(0, 3).map((item) => (
+                    <span className={`work-chip work-chip--${item.color}`} key={item.id}>
+                      {calendarItemLabel(item)}
+                    </span>
+                  ))}
+                </span>
+                {dayItems.length > 3 ? <span className="more">+{dayItems.length - 3}</span> : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="agenda-list">
+          {rangeDays.map((day) => {
+            const dayItems = workItems
+              .filter((item) => item.date === day.isoDate)
+              .sort((a, b) => a.title.localeCompare(b.title, "lv") || a.sectorName.localeCompare(b.sectorName, "lv"));
+            const mainWorkload = countMainWork(dayItems, day.isoDate);
+            const overloaded = mainWorkload > 1;
+
+            return (
+              <button
+                className={[
+                  "agenda-day",
+                  day.isoDate === selectedDate ? "is-selected" : "",
+                  overloaded ? "is-overloaded" : "",
+                ].join(" ")}
+                key={day.isoDate}
+                onClick={() => onSelectDate(day.isoDate)}
+                type="button"
+              >
+                <span className="agenda-day__date">
+                  <strong>{shortDate(day.isoDate)}</strong>
+                  <span>{weekdayName(day.isoDate)}</span>
+                </span>
+                <span className="agenda-day__items">
+                  {dayItems.length === 0 ? <span className="empty-state">Nav darbu</span> : null}
+                  {dayItems.map((item) => (
+                    <span className={`agenda-work work-chip--${item.color}`} key={item.id}>
+                      <strong>{item.title}</strong>
+                      <span>{item.sectorName} · {item.plantCount.toLocaleString("lv-LV")}</span>
+                    </span>
+                  ))}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -2202,6 +2230,12 @@ function shortDate(date: string): string {
   return new Intl.DateTimeFormat("lv-LV", {
     day: "2-digit",
     month: "2-digit",
+  }).format(new Date(`${date}T12:00:00`));
+}
+
+function weekdayName(date: string): string {
+  return new Intl.DateTimeFormat("lv-LV", {
+    weekday: "long",
   }).format(new Date(`${date}T12:00:00`));
 }
 

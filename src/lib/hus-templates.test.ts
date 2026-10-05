@@ -14,6 +14,7 @@ import type { SowingPlanDraft } from "./types";
 
 const draft: SowingPlanDraft = {
   sectorName: "",
+  greenhouseRequiredPlants: "",
   requiredPlants: "",
   extraPlants: "",
   variety: "",

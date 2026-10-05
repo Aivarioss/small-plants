@@ -10,6 +10,7 @@ create type plant_correction_reason as enum ('thinning', 'brownRoots', 'damaged'
 create table sowing_plan_rows (
   id uuid primary key default gen_random_uuid(),
   hus text not null,
+  greenhouse_required_plants integer check (greenhouse_required_plants is null or greenhouse_required_plants > 0),
   required_plants integer not null check (required_plants > 0),
   extra_plants integer not null default 0,
   variety text not null,

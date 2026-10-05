@@ -54,6 +54,7 @@ export type SowingPlanRow = {
   id: string;
   updatedAt?: string;
   sectorName: string;
+  greenhouseRequiredPlants?: number;
   requiredPlants: number;
   extraPlants: number;
   variety: string;
@@ -82,6 +83,7 @@ export type WorksheetDay = {
 
 export type SowingPlanDraft = {
   sectorName: string;
+  greenhouseRequiredPlants: string;
   requiredPlants: string;
   extraPlants: string;
   variety: string;
@@ -96,7 +98,7 @@ export type SowingPlanDraft = {
 
 export type ImportFieldKey =
   | "sectorName"
-  | "agronomistRequiredPlants"
+  | "greenhouseRequiredPlants"
   | "requiredPlants"
   | "extraPlants"
   | "variety"
@@ -116,7 +118,7 @@ export type PlanImportCandidate = {
   warnings: string[];
   fields: {
     sectorName: ImportField<string>;
-    agronomistRequiredPlants: ImportField<number | null>;
+    greenhouseRequiredPlants: ImportField<number | null>;
     requiredPlants: ImportField<number>;
     extraPlants: ImportField<number>;
     variety: ImportField<string>;
@@ -223,9 +225,9 @@ export type BoxPlan = {
 
 export type AvailabilityStatus = {
   availablePlants: number;
-  difference: number;
+  difference: number | null;
   label: string;
-  tone: "ok" | "short";
+  tone: "ok" | "short" | "unknown";
 };
 
 export type WorkItem = {

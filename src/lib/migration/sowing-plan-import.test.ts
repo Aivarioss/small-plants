@@ -9,6 +9,7 @@ import {
 const realRow = {
   id: "local-real-1",
   sectorName: "Hus 4",
+  greenhouseRequiredPlants: 4800,
   requiredPlants: 5000,
   extraPlants: 144,
   variety: "Balta",
@@ -31,6 +32,7 @@ describe("Supabase sowing plan import helpers", () => {
     }
 
     expect(result.row.identityKey).toBe("hus 4|2026-10-07|2026-10-29");
+    expect(result.row.greenhouseRequiredPlants).toBe(4800);
     expect(result.row.plantCount).toBe(5144);
     expect(importIdentityFromValues("  HUS   4 ", "2026-10-07", "2026-10-29")).toBe(result.row.identityKey);
   });

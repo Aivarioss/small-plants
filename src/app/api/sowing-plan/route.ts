@@ -141,6 +141,14 @@ function validateRow(row: unknown): string | null {
     return "Every row must include valid plant counts, cycle length and sector type.";
   }
 
+  if (
+    row.greenhouseRequiredPlants !== undefined &&
+    row.greenhouseRequiredPlants !== null &&
+    (!Number.isFinite(Number(row.greenhouseRequiredPlants)) || Number(row.greenhouseRequiredPlants) <= 0)
+  ) {
+    return "Greenhouse required plants must be a positive number when provided.";
+  }
+
   return null;
 }
 

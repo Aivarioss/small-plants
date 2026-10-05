@@ -41,6 +41,10 @@ import {
   updateDraftMoveOutDate,
   updateDraftSowingDate,
 } from "@/lib/hus-templates";
+import {
+  importCandidateToSowingPlanRow,
+  importCandidateValidationErrors,
+} from "@/lib/production-plan-import";
 import { SowingPlanApiConflictError } from "@/lib/repositories/api-sowing-plan-repository";
 import { sowingPlanRepository } from "@/lib/repositories/sowing-plan-repository";
 import type {
@@ -74,6 +78,7 @@ const weekdayLabels = ["P", "O", "T", "C", "P", "S", "Sv"];
 
 const initialDraft: SowingPlanDraft = {
   sectorName: "",
+  greenhouseRequiredPlants: "",
   requiredPlants: "3400",
   extraPlants: "144",
   variety: "",
@@ -191,6 +196,7 @@ export function PlannerApp() {
   async function addPlanRow(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const requiredPlants = Number(draft.requiredPlants);
+    const greenhouseRequiredPlants = Number(draft.greenhouseRequiredPlants);
     const extraPlants = Number(draft.extraPlants);
     const cycleLength = Number(draft.cycleLength) || deriveCycleLength(draft.sowingDate, draft.harvestDate);
 
@@ -201,6 +207,7 @@ export function PlannerApp() {
     const row: SowingPlanRow = {
       id: crypto.randomUUID(),
       sectorName: draft.sectorName.trim(),
+      greenhouseRequiredPlants: greenhouseRequiredPlants > 0 ? greenhouseRequiredPlants : undefined,
       requiredPlants,
       extraPlants,
       variety: draft.variety.trim(),
@@ -497,7 +504,7 @@ export function PlannerApp() {
           return candidate;
         }
 
-        const numericFields: ImportFieldKey[] = ["agronomistRequiredPlants", "extraPlants", "requiredPlants", "weekNumber"];
+        const numericFields: ImportFieldKey[] = ["greenhouseRequiredPlants", "extraPlants", "requiredPlants", "weekNumber"];
         const nextValue = numericFields.includes(field) ? (value === "" ? null : Number(value)) : value;
         const fields = {
           ...candidate.fields,
@@ -539,6 +546,82 @@ export function PlannerApp() {
           }
         : current,
     );
+  }
+
+  function updateImportCandidateDuplicateAction(id: string, duplicateAction: NonNullable<PlanImportCandidate["duplicateAction"]>) {
+    setImportResult((current) =>
+      current
+        ? {
+            ...current,
+            candidates: current.candidates.map((candidate) =>
+              candidate.id === id ? { ...candidate, duplicateAction } : candidate,
+            ),
+          }
+        : current,
+    );
+  }
+
+  async function confirmProductionPlanImport() {
+    if (!importResult) {
+      return;
+    }
+
+    const selectedCandidates = importResult.candidates.filter((candidate) => candidate.selected);
+    const importableCandidates = selectedCandidates.filter(
+      (candidate) => !candidate.duplicateOf || candidate.duplicateAction === "replace",
+    );
+    const validationErrors = importableCandidates.flatMap((candidate) =>
+      importCandidateValidationErrors(candidate).map((error) => `${candidate.fields.sectorName.value || candidate.id}: ${error}`),
+    );
+
+    if (validationErrors.length > 0) {
+      setImportMessage(`Importu nevar apstiprināt: ${validationErrors.join(" ")}`);
+      return;
+    }
+
+    if (importableCandidates.length === 0) {
+      setImportMessage("Nav izvēlētas jaunas vai atjaunojamas rindas.");
+      return;
+    }
+
+    setRepositoryMessage("Importē Supabase");
+    setImportBusy(true);
+
+    try {
+      for (const candidate of importableCandidates) {
+        const existingRow = candidate.duplicateOf ? planRows.find((row) => row.id === candidate.duplicateOf) : undefined;
+        const row = importCandidateToSowingPlanRow(candidate, {
+          existingRow,
+          id: crypto.randomUUID(),
+          now: new Date().toISOString(),
+          plantsPerBox: plannerConfig.defaultPlantsPerBox,
+        });
+
+        if (existingRow) {
+          await sowingPlanRepository.update(row);
+        } else {
+          await sowingPlanRepository.create(row);
+        }
+      }
+
+      const skippedDuplicates = selectedCandidates.length - importableCandidates.length;
+      await reloadRows(
+        skippedDuplicates > 0
+          ? `Imports pabeigts: ${importableCandidates.length} rindas, ${skippedDuplicates} dublikāti izlaisti`
+          : `Imports pabeigts: ${importableCandidates.length} rindas`,
+      );
+      setImportResult(null);
+      setImportMessage("Foto imports saglabāts Supabase.");
+      setActiveView("sowingPlan");
+    } catch (error) {
+      if (error instanceof SowingPlanApiConflictError) {
+        await reloadRows("Kāds Hus tika mainīts citur. Pārbaudi jaunāko versiju un mēģini importu vēlreiz.");
+      }
+      setImportMessage(error instanceof Error ? error.message : "Neizdevās saglabāt foto importu Supabase.");
+      setRepositoryMessage(error instanceof Error ? error.message : "Neizdevās saglabāt foto importu Supabase");
+    } finally {
+      setImportBusy(false);
+    }
   }
 
   function previewWorkloadBalance() {
@@ -672,6 +755,8 @@ export function PlannerApp() {
             onDeleteDemo={deleteDemoRows}
             onDraftChange={setDraft}
             onImportCandidateChange={updateImportCandidate}
+            onImportConfirm={confirmProductionPlanImport}
+            onImportDuplicateActionChange={updateImportCandidateDuplicateAction}
             onImportFile={importPlanFromFile}
             onImportSelectionChange={updateImportCandidateSelection}
             onOpenRow={(id) => {
@@ -817,6 +902,8 @@ function SowingPlanPanel({
   onDeleteDemo,
   onDraftChange,
   onImportCandidateChange,
+  onImportConfirm,
+  onImportDuplicateActionChange,
   onImportFile,
   onImportSelectionChange,
   onOpenRow,
@@ -835,6 +922,8 @@ function SowingPlanPanel({
   onDeleteDemo: () => void;
   onDraftChange: (draft: SowingPlanDraft) => void;
   onImportCandidateChange: (id: string, field: ImportFieldKey, value: string) => void;
+  onImportConfirm: () => void;
+  onImportDuplicateActionChange: (id: string, duplicateAction: NonNullable<PlanImportCandidate["duplicateAction"]>) => void;
   onImportFile: (file: File) => void;
   onImportSelectionChange: (id: string, selected: boolean) => void;
   onOpenRow: (id: string) => void;
@@ -889,6 +978,8 @@ function SowingPlanPanel({
         <ImportReviewPanel
           importResult={importResult}
           onChange={onImportCandidateChange}
+          onConfirm={onImportConfirm}
+          onDuplicateActionChange={onImportDuplicateActionChange}
           onSelectionChange={onImportSelectionChange}
         />
       ) : null}
@@ -976,6 +1067,15 @@ function SowingPlanPanel({
               />
             </label>
             <label>
+              Siltumnīcai nepieciešams
+              <input
+                min="1"
+                onChange={(event) => onDraftChange({ ...draft, greenhouseRequiredPlants: event.target.value })}
+                type="number"
+                value={draft.greenhouseRequiredPlants}
+              />
+            </label>
+            <label>
               Agronoma sējamais skaits
               <input
                 min="1"
@@ -1033,6 +1133,7 @@ function SowingPlanPanel({
         <div className="plan-row plan-row--head" role="row">
           <span>Hus</span>
           <span>Sēšanas galdi</span>
+          <span>Nepieciešams</span>
           <span>Agronoma sēja</span>
           <span>Extra</span>
           <span>Kopā sēt</span>
@@ -1053,6 +1154,16 @@ function SowingPlanPanel({
                 key={`${row.id}-${row.sowingTables ?? ""}`}
                 value={row.sowingTables ?? ""}
                 onSave={(value) => onUpdateRow(row.id, { sowingTables: value || undefined })}
+              />
+              <input
+                min="1"
+                type="number"
+                value={row.greenhouseRequiredPlants ?? ""}
+                onChange={(event) =>
+                  onUpdateRow(row.id, {
+                    greenhouseRequiredPlants: event.target.value ? Number(event.target.value) : undefined,
+                  })
+                }
               />
               <input
                 min="1"
@@ -1088,12 +1199,21 @@ function SowingPlanPanel({
 function ImportReviewPanel({
   importResult,
   onChange,
+  onConfirm,
+  onDuplicateActionChange,
   onSelectionChange,
 }: {
   importResult: PlanImportResult;
   onChange: (id: string, field: ImportFieldKey, value: string) => void;
+  onConfirm: () => void;
+  onDuplicateActionChange: (id: string, duplicateAction: NonNullable<PlanImportCandidate["duplicateAction"]>) => void;
   onSelectionChange: (id: string, selected: boolean) => void;
 }) {
+  const selectedCount = importResult.candidates.filter((candidate) => candidate.selected).length;
+  const importableCount = importResult.candidates.filter(
+    (candidate) => candidate.selected && (!candidate.duplicateOf || candidate.duplicateAction === "replace"),
+  ).length;
+
   return (
     <section className="import-review">
       <div className="panel-header">
@@ -1106,13 +1226,14 @@ function ImportReviewPanel({
         </span>
       </div>
       <p className="import-note">
-        Šajā etapā nekas netiek saglabāts Supabase. Pārbaudi un izlabo nolasīto plānu; saglabāšanas solis tiks pieslēgts atsevišķi.
+        Pārbaudi, vai OCR nav sajaucis “Siltumnīcai nepieciešams” un “Agronoma sējamais”. Saglabāšana notiek tikai pēc apstiprināšanas.
       </p>
       <div className="import-table" role="table" aria-label="Atpazītā plāna pārbaude">
         <div className="import-row import-row--head" role="row">
           <span>✓</span>
           <span>Hus</span>
           <span>Šķirne</span>
+          <span>Siltumnīcai nepieciešams</span>
           <span>Agronoma sējamais</span>
           <span>+ Rezerve</span>
           <span>Kopā</span>
@@ -1120,6 +1241,7 @@ function ImportReviewPanel({
           <span>Izvākšana</span>
           <span>Cikls</span>
           <span>Statuss</span>
+          <span>Dublikāts</span>
         </div>
         {importResult.candidates.map((candidate) => (
           <div className="import-row" key={candidate.id} role="row">
@@ -1132,6 +1254,7 @@ function ImportReviewPanel({
             </label>
             <ReviewInput candidate={candidate} field="sectorName" onChange={onChange} />
             <ReviewInput candidate={candidate} field="variety" onChange={onChange} />
+            <ReviewInput candidate={candidate} field="greenhouseRequiredPlants" onChange={onChange} type="number" />
             <ReviewInput candidate={candidate} field="requiredPlants" onChange={onChange} type="number" />
             <ReviewInput candidate={candidate} field="extraPlants" onChange={onChange} type="number" />
             <strong>{candidate.operationalTotal.toLocaleString("lv-LV")}</strong>
@@ -1150,10 +1273,36 @@ function ImportReviewPanel({
               )}
               {candidate.duplicateOf ? <small>Iespējams dublikāts ar esošu Hus ciklu.</small> : null}
             </div>
+            <div className="status-cell">
+              {candidate.duplicateOf ? (
+                <select
+                  aria-label="Dublikāta darbība"
+                  value={candidate.duplicateAction ?? "keepExisting"}
+                  onChange={(event) =>
+                    onDuplicateActionChange(candidate.id, event.target.value as NonNullable<PlanImportCandidate["duplicateAction"]>)
+                  }
+                >
+                  <option value="keepExisting">Neimportēt dublikātu</option>
+                  <option value="replace">Atjaunot esošo</option>
+                </select>
+              ) : (
+                <span>Izveidot jaunu</span>
+              )}
+            </div>
           </div>
         ))}
       </div>
       {importResult.candidates.length === 0 ? <p className="empty-state">Nav nolasītu rindu pārbaudei.</p> : null}
+      {importResult.candidates.length > 0 ? (
+        <div className="import-actions">
+          <span>
+            Izvēlētas {selectedCount}; saglabās {importableCount}
+          </span>
+          <button className="primary-action" disabled={importableCount === 0} onClick={onConfirm} type="button">
+            Apstiprināt importu
+          </button>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -1250,11 +1399,13 @@ function WorksheetView({
               <strong className={balance.tone === "short" ? "danger-text" : ""}>{balance.label}</strong>
             </div>
             <div className="plant-balance-grid">
-              <span>Nepieciešams: {balance.requiredPlants.toLocaleString("lv-LV")}</span>
+              <span>
+                Nepieciešams: {balance.requiredPlants === null ? "Nav norādīts" : balance.requiredPlants.toLocaleString("lv-LV")}
+              </span>
               <span>Iesēts: {balance.initialPlants.toLocaleString("lv-LV")}</span>
               <span>Zudumi/korekcijas: {signedNumber(balance.correctionTotal)}</span>
               <span>Faktiski: {balance.actualPlants.toLocaleString("lv-LV")}</span>
-              <span>Starpība: {signedNumber(balance.difference)}</span>
+              <span>Starpība: {balance.difference === null ? "Nav aprēķināma" : signedNumber(balance.difference)}</span>
             </div>
             <button className="secondary-action" type="button" onClick={() => setCorrectionDialogOpen(true)}>
               + Reģistrēt izmaiņu
@@ -1612,8 +1763,8 @@ function fieldWarnings(candidate: PlanImportCandidate): string[] {
 
 function importFieldLabel(field: ImportFieldKey): string {
   const labels: Record<ImportFieldKey, string> = {
-    agronomistRequiredPlants: "Agronoma prasītais skaits",
     extraPlants: "Rezerve",
+    greenhouseRequiredPlants: "Siltumnīcai nepieciešams",
     harvestDate: "Izvākšana",
     requiredPlants: "Agronoma sējamais",
     sectorName: "Hus",
@@ -2131,6 +2282,19 @@ function BatchEditor({
         </select>
       </label>
       <label>
+        Siltumnīcai nepieciešams
+        <input
+          min="1"
+          type="number"
+          value={row.greenhouseRequiredPlants ?? ""}
+          onChange={(event) =>
+            onUpdateRow(row.id, {
+              greenhouseRequiredPlants: event.target.value ? Number(event.target.value) : undefined,
+            })
+          }
+        />
+      </label>
+      <label>
         Agronoma sējamais skaits
         <input
           min="1"
@@ -2326,7 +2490,8 @@ function appendChangeHistory(
   const history = [...(previous.changeHistory ?? [])];
   const tracked: Array<[keyof SowingPlanRow, string]> = [
     ["sectorName", "Hus"],
-    ["requiredPlants", "Nepieciešams"],
+    ["greenhouseRequiredPlants", "Siltumnīcai nepieciešams"],
+    ["requiredPlants", "Agronoma sējamais"],
     ["extraPlants", "Extra"],
     ["variety", "Šķirne"],
     ["weekNumber", "Nedēļa"],

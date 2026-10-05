@@ -9,6 +9,7 @@ vi.mock("@/lib/supabase/server", () => ({
 const baseRecord = {
   id: "11111111-1111-4111-8111-111111111111",
   hus: "Hus 4",
+  greenhouse_required_plants: null,
   required_plants: 3700,
   extra_plants: 100,
   variety: "Baltazsara",

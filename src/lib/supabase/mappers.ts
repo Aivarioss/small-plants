@@ -16,6 +16,7 @@ export function recordToSowingPlanRow(record: SowingPlanRowWithRelations): Sowin
     id: record.id,
     updatedAt: record.updated_at,
     sectorName: record.hus,
+    greenhouseRequiredPlants: record.greenhouse_required_plants ?? undefined,
     requiredPlants: record.required_plants,
     extraPlants: record.extra_plants,
     variety: record.variety,
@@ -57,6 +58,7 @@ export function sowingPlanRowToRecord(row: SowingPlanRow): SowingPlanRowRecord |
   return {
     id: row.id,
     hus: row.sectorName,
+    greenhouse_required_plants: row.greenhouseRequiredPlants ?? null,
     required_plants: row.requiredPlants,
     extra_plants: row.extraPlants,
     variety: row.variety,

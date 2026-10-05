@@ -67,13 +67,13 @@ export type WorkMaterialSummary = {
 };
 
 export type PlantBalanceSummary = {
-  requiredPlants: number;
+  requiredPlants: number | null;
   initialPlants: number;
   correctionTotal: number;
   actualPlants: number;
-  difference: number;
+  difference: number | null;
   label: string;
-  tone: "ok" | "short";
+  tone: "ok" | "short" | "unknown";
 };
 
 export const greenhouseRows: GreenhouseRow[] = [
@@ -175,14 +175,33 @@ export function getActualPlantCount(row: Pick<SowingPlanRow, "requiredPlants" | 
   return Math.max(0, getTotalSow(row) + getPlantCorrectionTotal(row));
 }
 
-export function calculatePlantBalance(row: Pick<SowingPlanRow, "requiredPlants" | "extraPlants" | "correction" | "plantCorrections">): PlantBalanceSummary {
+export function calculatePlantBalance(
+  row: Pick<SowingPlanRow, "greenhouseRequiredPlants" | "requiredPlants" | "extraPlants" | "correction" | "plantCorrections">,
+): PlantBalanceSummary {
   const initialPlants = getTotalSow(row);
   const correctionTotal = getPlantCorrectionTotal(row);
   const actualPlants = Math.max(0, initialPlants + correctionTotal);
-  const difference = actualPlants - row.requiredPlants;
+  const greenhouseRequiredPlants =
+    typeof row.greenhouseRequiredPlants === "number" && row.greenhouseRequiredPlants > 0
+      ? row.greenhouseRequiredPlants
+      : null;
+
+  if (greenhouseRequiredPlants === null) {
+    return {
+      requiredPlants: null,
+      initialPlants,
+      correctionTotal,
+      actualPlants,
+      difference: null,
+      label: "Siltumnīcas nepieciešamais daudzums nav norādīts",
+      tone: "unknown",
+    };
+  }
+
+  const difference = actualPlants - greenhouseRequiredPlants;
 
   return {
-    requiredPlants: row.requiredPlants,
+    requiredPlants: greenhouseRequiredPlants,
     initialPlants,
     correctionTotal,
     actualPlants,
@@ -291,6 +310,15 @@ export function calculateBoxPlan(row: SowingPlanRow): BoxPlan {
 
 export function calculateAvailability(row: SowingPlanRow): AvailabilityStatus {
   const balance = calculatePlantBalance(row);
+
+  if (balance.difference === null) {
+    return {
+      availablePlants: balance.actualPlants,
+      difference: null,
+      label: "Nav norādīts siltumnīcai nepieciešamais skaits",
+      tone: "unknown",
+    };
+  }
 
   if (balance.difference >= 0) {
     return {

@@ -108,6 +108,7 @@ function importRowToRecord(row: ValidatedImportRow): SowingPlanRowRecord {
   return {
     id: stableUuidFromIdentity(row.identityKey),
     hus: row.hus,
+    greenhouse_required_plants: row.greenhouseRequiredPlants,
     required_plants: row.requiredPlants,
     extra_plants: row.extraPlants,
     variety: row.variety,

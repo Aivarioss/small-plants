@@ -1,6 +1,7 @@
 export type SowingPlanRowRecord = {
   id: string;
   hus: string;
+  greenhouse_required_plants: number | null;
   required_plants: number;
   extra_plants: number;
   variety: string;

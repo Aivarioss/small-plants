@@ -36,7 +36,7 @@ function candidate(
     warnings: [],
     fields: {
       sectorName: field(seed.sectorName, confidence.sectorName ?? 0.92),
-      agronomistRequiredPlants: field(null, 1),
+      greenhouseRequiredPlants: field(null, 1),
       requiredPlants: field(seed.requiredPlants, confidence.requiredPlants ?? 0.9),
       extraPlants: field(extraPlants, 1),
       variety: field(seed.variety, confidence.variety ?? 0.88),

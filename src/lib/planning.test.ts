@@ -36,7 +36,7 @@ import {
 } from "./planning";
 import { candidateCycleLength, mockPlanImportService } from "./plan-import-service";
 import { deriveCycleLength } from "./hus-templates";
-import { recordToSowingPlanRow, rowPlantCorrectionsToRecords } from "./supabase/mappers";
+import { recordToSowingPlanRow, rowPlantCorrectionsToRecords, sowingPlanRowToRecord } from "./supabase/mappers";
 import type { SowingPlanRow, WorkItem, WorkType } from "./types";
 
 const row: SowingPlanRow = {
@@ -128,8 +128,9 @@ describe("planning calculations", () => {
   it("calculates actual plant balance from correction history without changing the original sow count", () => {
     const corrected: SowingPlanRow = {
       ...row,
-      requiredPlants: 3700,
-      extraPlants: 107,
+      greenhouseRequiredPlants: 3600,
+      requiredPlants: 3744,
+      extraPlants: 100,
       plantCorrections: [
         { id: "loss-1", amount: -100, date: "2026-10-08", reason: "thinning" },
         { id: "loss-2", amount: -68, date: "2026-10-12", reason: "brownRoots" },
@@ -137,20 +138,49 @@ describe("planning calculations", () => {
       ],
     };
 
-    expect(getTotalSow(corrected)).toBe(3807);
+    expect(getTotalSow(corrected)).toBe(3844);
     expect(getPlantCorrectionTotal(corrected)).toBe(-238);
-    expect(getActualPlantCount(corrected)).toBe(3569);
+    expect(getActualPlantCount(corrected)).toBe(3606);
     expect(calculatePlantBalance(corrected)).toMatchObject({
-      actualPlants: 3569,
+      actualPlants: 3606,
       correctionTotal: -238,
-      difference: -131,
-      label: "Trūkst 131 stādi",
-      tone: "short",
+      difference: 6,
+      label: "Rezerve 6 stādi",
+      tone: "ok",
     });
-    expect(getTotalSow(corrected)).toBe(3807);
+    expect(getTotalSow(corrected)).toBe(3844);
   });
 
-  it("shows reserve when actual plants remain above the required count", () => {
+  it("calculates reserve and shortage against greenhouse required plants", () => {
+    const baseBalanceRow: SowingPlanRow = {
+      ...row,
+      greenhouseRequiredPlants: 3600,
+      requiredPlants: 3744,
+      extraPlants: 100,
+    };
+
+    expect(getTotalSow(baseBalanceRow)).toBe(3844);
+    expect(calculatePlantBalance({ ...baseBalanceRow, plantCorrections: [{ id: "loss", amount: -168, date: "2026-10-08", reason: "thinning" }] })).toMatchObject({
+      actualPlants: 3676,
+      difference: 76,
+      label: "Rezerve 76 stādi",
+      tone: "ok",
+    });
+    expect(calculatePlantBalance({ ...baseBalanceRow, plantCorrections: [{ id: "loss", amount: -244, date: "2026-10-08", reason: "thinning" }] })).toMatchObject({
+      actualPlants: 3600,
+      difference: 0,
+      label: "Rezerve 0 stādi",
+      tone: "ok",
+    });
+    expect(calculatePlantBalance({ ...baseBalanceRow, plantCorrections: [{ id: "loss", amount: -274, date: "2026-10-08", reason: "thinning" }] })).toMatchObject({
+      actualPlants: 3570,
+      difference: -30,
+      label: "Trūkst 30 stādi",
+      tone: "short",
+    });
+  });
+
+  it("does not infer greenhouse required plants from old rows", () => {
     const corrected: SowingPlanRow = {
       ...row,
       requiredPlants: 3700,
@@ -160,9 +190,9 @@ describe("planning calculations", () => {
 
     expect(calculatePlantBalance(corrected)).toMatchObject({
       actualPlants: 3807,
-      difference: 107,
-      label: "Rezerve 107 stādi",
-      tone: "ok",
+      difference: null,
+      label: "Siltumnīcas nepieciešamais daudzums nav norādīts",
+      tone: "unknown",
     });
   });
 
@@ -178,6 +208,7 @@ describe("planning calculations", () => {
     const mapped = recordToSowingPlanRow({
       id: row.id,
       hus: row.sectorName,
+      greenhouse_required_plants: 3300,
       required_plants: row.requiredPlants,
       extra_plants: row.extraPlants,
       variety: row.variety,
@@ -196,6 +227,19 @@ describe("planning calculations", () => {
 
     expect(records).toHaveLength(2);
     expect(mapped.plantCorrections).toEqual(corrected.plantCorrections);
+    expect(mapped.greenhouseRequiredPlants).toBe(3300);
+  });
+
+  it("round-trips greenhouse required plants through Supabase mappers", () => {
+    const record = sowingPlanRowToRecord({ ...row, greenhouseRequiredPlants: 3600 });
+
+    expect(record?.greenhouse_required_plants).toBe(3600);
+    expect(record?.required_plants).toBe(row.requiredPlants);
+    expect(recordToSowingPlanRow({ ...record!, greenhouse_required_plants: null }).greenhouseRequiredPlants).toBeUndefined();
+    expect(recordToSowingPlanRow(record!)).toMatchObject({
+      greenhouseRequiredPlants: 3600,
+      requiredPlants: row.requiredPlants,
+    });
   });
 
   it("does not change scheduler dates when plant corrections are added", () => {
@@ -236,9 +280,10 @@ describe("planning calculations", () => {
     expect(isAllowedMove(row, "sideShoots", "2026-10-11")).toBe(true);
   });
 
-  it("reports available plants after correction against required plants", () => {
-    expect(calculateAvailability({ ...row, correction: -300 }).label).toBe("🔴 Trūkst 158");
-    expect(calculateAvailability({ ...row, correction: -38 }).label).toBe("🟢 +104 extra");
+  it("reports available plants after correction against greenhouse required plants", () => {
+    expect(calculateAvailability({ ...row, greenhouseRequiredPlants: 3300, correction: -300 }).label).toBe("🔴 Trūkst 58");
+    expect(calculateAvailability({ ...row, greenhouseRequiredPlants: 3300, correction: -38 }).label).toBe("🟢 +204 extra");
+    expect(calculateAvailability({ ...row, correction: -38 }).label).toBe("Nav norādīts siltumnīcai nepieciešamais skaits");
   });
 
   it("detects a fourth overlapping batch capacity conflict", () => {

@@ -709,6 +709,7 @@ button:focus-visible {
   grid-template-columns:
     minmax(110px, 0.9fr)
     minmax(110px, 0.65fr)
+    minmax(120px, 0.65fr)
     minmax(120px, 0.75fr)
     minmax(90px, 0.55fr)
     minmax(100px, 0.55fr)
@@ -717,7 +718,7 @@ button:focus-visible {
     minmax(145px, 0.8fr)
     minmax(170px, 0.8fr);
   gap: 8px;
-  min-width: 1160px;
+  min-width: 1280px;
   align-items: center;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -771,6 +772,11 @@ button:focus-visible {
 .availability--short {
   background: var(--red-soft);
   color: var(--red);
+}
+
+.availability--unknown {
+  background: #fff5d9;
+  color: #7a5200;
 }
 
 .capacity-note,
@@ -829,14 +835,16 @@ button:focus-visible {
     minmax(100px, 0.7fr)
     minmax(130px, 0.9fr)
     minmax(130px, 0.85fr)
+    minmax(145px, 0.85fr)
     minmax(100px, 0.65fr)
     minmax(96px, 0.55fr)
     minmax(130px, 0.8fr)
     minmax(130px, 0.8fr)
     minmax(90px, 0.55fr)
-    minmax(240px, 1.2fr);
+    minmax(240px, 1.2fr)
+    minmax(150px, 0.8fr);
   gap: 8px;
-  min-width: 1260px;
+  min-width: 1560px;
   align-items: start;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -878,6 +886,14 @@ button:focus-visible {
 
 .checkbox-cell {
   justify-items: center;
+}
+
+.import-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
 }
 
 .status-cell ul {

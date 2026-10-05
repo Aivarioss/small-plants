@@ -1,5 +1,5 @@
 import { deriveCycleLength, findHusTemplate, sectorTypeForOperationalTotal } from "./hus-templates";
-import type { PlanImportCandidate, PlanImportResult } from "./types";
+import type { ChangeHistoryEntry, PlanImportCandidate, PlanImportResult, SowingPlanRow } from "./types";
 
 export const DEFAULT_IMPORT_WORKER_EXTRA = 100;
 
@@ -71,7 +71,7 @@ export function extractedRowToCandidate(row: ExtractedProductionPlanRow, index =
     warnings,
     fields: {
       sectorName: field(hus, confidence(row, "hus"), !hus || !template),
-      agronomistRequiredPlants: field(agronomistRequiredPlants, confidence(row, "agronomistRequiredPlants"), false),
+      greenhouseRequiredPlants: field(agronomistRequiredPlants, confidence(row, "agronomistRequiredPlants"), false),
       requiredPlants: field(sowingCount ?? 0, confidence(row, "sowingCount"), !sowingCount),
       extraPlants: field(extraPlants, 1, false),
       variety: field(String(row.variety ?? template?.variety ?? "").trim(), confidence(row, "variety"), !row.variety),
@@ -111,6 +111,106 @@ export function normalizePlanDate(value: unknown, fallbackYear = 2026): string |
 
 export function importCandidateSectorType(candidate: PlanImportCandidate) {
   return sectorTypeForOperationalTotal(candidate.operationalTotal);
+}
+
+export function importCandidateValidationErrors(candidate: PlanImportCandidate): string[] {
+  const errors: string[] = [];
+  const sectorName = candidate.fields.sectorName.value.trim();
+  const variety = candidate.fields.variety.value.trim();
+  const greenhouseRequiredPlants = candidate.fields.greenhouseRequiredPlants.value;
+  const requiredPlants = Number(candidate.fields.requiredPlants.value);
+  const extraPlants = Number(candidate.fields.extraPlants.value);
+
+  if (!sectorName) {
+    errors.push("Nav norādīts Hus.");
+  }
+
+  if (!variety) {
+    errors.push("Nav norādīta šķirne.");
+  }
+
+  if (!candidate.fields.sowingDate.value) {
+    errors.push("Nav norādīts sēšanas datums.");
+  }
+
+  if (!candidate.fields.harvestDate.value) {
+    errors.push("Nav norādīts izvākšanas datums.");
+  }
+
+  if (!Number.isFinite(requiredPlants) || requiredPlants <= 0) {
+    errors.push("Agronoma sējamais skaits nav derīgs.");
+  }
+
+  if (!Number.isFinite(extraPlants)) {
+    errors.push("Rezerve nav derīga.");
+  }
+
+  if (greenhouseRequiredPlants !== null && (!Number.isFinite(Number(greenhouseRequiredPlants)) || Number(greenhouseRequiredPlants) <= 0)) {
+    errors.push("Siltumnīcai nepieciešamais skaits nav derīgs.");
+  }
+
+  if (!candidate.cycleLength || candidate.cycleLength <= 0) {
+    errors.push("Cikla garums nav derīgs.");
+  }
+
+  return errors;
+}
+
+export function importCandidateToSowingPlanRow(
+  candidate: PlanImportCandidate,
+  options: {
+    existingRow?: SowingPlanRow;
+    id: string;
+    now: string;
+    plantsPerBox: number;
+  },
+): SowingPlanRow {
+  const validationErrors = importCandidateValidationErrors(candidate);
+  if (validationErrors.length > 0) {
+    throw new Error(validationErrors.join(" "));
+  }
+
+  const requiredPlants = Number(candidate.fields.requiredPlants.value);
+  const extraPlants = Number(candidate.fields.extraPlants.value);
+  const greenhouseRequiredPlants = candidate.fields.greenhouseRequiredPlants.value;
+  const sowingDate = candidate.fields.sowingDate.value;
+  const harvestDate = candidate.fields.harvestDate.value;
+  const cycleLength = deriveCycleLength(sowingDate, harvestDate);
+  const base = options.existingRow;
+  const note = base ? "Atjaunots no production-plan foto importa" : "Izveidots no production-plan foto importa";
+  const history: ChangeHistoryEntry = {
+    id: `${options.id}-history`,
+    field: base ? "Foto imports" : "Rinda izveidota",
+    from: base ? `${base.sectorName} ${base.sowingDate}` : "",
+    note,
+    timestamp: options.now,
+    to: `${candidate.fields.sectorName.value.trim()} ${sowingDate}`,
+  };
+
+  return {
+    ...(base ?? {}),
+    id: base?.id ?? options.id,
+    updatedAt: base?.updatedAt,
+    sectorName: candidate.fields.sectorName.value.trim(),
+    greenhouseRequiredPlants:
+      typeof greenhouseRequiredPlants === "number" && greenhouseRequiredPlants > 0 ? greenhouseRequiredPlants : undefined,
+    requiredPlants,
+    extraPlants,
+    variety: candidate.fields.variety.value.trim(),
+    weekNumber:
+      typeof candidate.fields.weekNumber.value === "number" && Number.isFinite(candidate.fields.weekNumber.value)
+        ? candidate.fields.weekNumber.value
+        : undefined,
+    sowingDate,
+    harvestDate,
+    cycleLength,
+    sectorType: importCandidateSectorType(candidate),
+    plantsPerBox: base?.plantsPerBox ?? options.plantsPerBox,
+    correction: base?.correction ?? 0,
+    status: "imported",
+    changeHistory: [...(base?.changeHistory ?? []), history],
+    source: "import",
+  };
 }
 
 function candidateWarnings(input: {

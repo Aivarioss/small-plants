@@ -280,6 +280,7 @@ function rowRecordUpdatePatch(record: NonNullable<ReturnType<typeof sowingPlanRo
     correction: record.correction,
     cycle_length: record.cycle_length,
     extra_plants: record.extra_plants,
+    greenhouse_required_plants: record.greenhouse_required_plants,
     hus: record.hus,
     move_out_date: record.move_out_date,
     previcure_date: record.previcure_date,

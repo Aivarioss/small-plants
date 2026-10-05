@@ -9,6 +9,7 @@ export type SupabaseImportMode = "preview" | "import";
 export type ValidatedImportRow = {
   clientId: string;
   hus: string;
+  greenhouseRequiredPlants: number | null;
   requiredPlants: number;
   extraPlants: number;
   variety: string;
@@ -56,6 +57,7 @@ export function validateImportRow(candidate: unknown): ImportValidationResult {
   const sowingDate = stringValue(candidate.sowingDate);
   const moveOutDate = stringValue(candidate.harvestDate);
   const requiredPlants = numberValue(candidate.requiredPlants);
+  const greenhouseRequiredPlants = positiveNumberOrNull(candidate.greenhouseRequiredPlants);
   const extraPlants = numberValue(candidate.extraPlants ?? 0);
   const sectorType = numberValue(candidate.sectorType) as SectorType;
 
@@ -112,6 +114,7 @@ export function validateImportRow(candidate: unknown): ImportValidationResult {
     row: {
       clientId,
       hus,
+      greenhouseRequiredPlants,
       requiredPlants,
       extraPlants,
       variety,
@@ -204,6 +207,11 @@ function stringValue(value: unknown): string {
 function numberValue(value: unknown): number {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function positiveNumberOrNull(value: unknown): number | null {
+  const numeric = numberValue(value);
+  return numeric > 0 ? numeric : null;
 }
 
 function isIsoDate(value: string): boolean {

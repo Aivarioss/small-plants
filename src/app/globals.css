@@ -1628,14 +1628,18 @@ button:focus-visible {
     -webkit-print-color-adjust: exact;
   }
 
-  /* HUS worksheet print: put the line on every cell so each handwritten day row prints clearly. */
+  /* HUS worksheet print: reuse the screen worksheet grid and make every printed cell explicit. */
   .worksheet-page .worksheet-table {
     border-collapse: collapse;
+    border-spacing: 0;
+    empty-cells: show;
   }
 
   .worksheet-page .worksheet-table th,
   .worksheet-page .worksheet-table td {
-    border: 0.35mm solid #000000 !important;
+    border-color: #000000 !important;
+    border-style: solid !important;
+    border-width: 1px !important;
   }
 
   .worksheet-table td {

@@ -1271,6 +1271,11 @@ button:focus-visible {
   height: 30px;
 }
 
+.worksheet-table tbody td {
+  border-top-color: #111111;
+  border-bottom-color: #111111;
+}
+
 .worksheet-table th:nth-child(1),
 .worksheet-table td:nth-child(1) {
   width: 9%;
@@ -1324,11 +1329,11 @@ button:focus-visible {
 }
 
 .month-print-table tbody tr.month-print-row--new-date td {
-  border-top-width: 2px;
+  border-top: 3px solid #111111;
 }
 
 .month-print-table tbody tr:first-child td {
-  border-top-width: 1px;
+  border-top: 1px solid #222222;
 }
 
 .month-print-date-group {
@@ -1602,6 +1607,14 @@ button:focus-visible {
     page-break-inside: avoid;
   }
 
+  .month-print-table tbody tr.month-print-row--new-date td {
+    border-top: 0.75mm solid #000000;
+  }
+
+  .month-print-table tbody tr:first-child td {
+    border-top: 0.25mm solid #000000;
+  }
+
   .worksheet-table th,
   .worksheet-table td,
   .month-print-table th,
@@ -1611,7 +1624,9 @@ button:focus-visible {
   }
 
   .worksheet-table td {
-    height: 8.1mm;
+    border-top: 0.3mm solid #000000;
+    border-bottom: 0.3mm solid #000000;
+    height: 8.5mm;
   }
 
   .month-print-header {

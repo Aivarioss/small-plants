@@ -1328,11 +1328,12 @@ button:focus-visible {
   text-align: right;
 }
 
-.month-print-table tbody tr.month-print-row--new-date td {
+/* Common work-plan table: date groups start on this row, so the border belongs on each td. */
+.month-print-table > tbody.month-print-date-group > tr.month-print-row--new-date > td {
   border-top: 3px solid #111111;
 }
 
-.month-print-table tbody tr:first-child td {
+.month-print-table > tbody.month-print-date-group:first-of-type > tr.month-print-row--new-date > td {
   border-top: 1px solid #222222;
 }
 
@@ -1597,6 +1598,7 @@ button:focus-visible {
     display: table-header-group;
   }
 
+  /* Common work-plan print: keep each date group together where possible, but never hide overflow. */
   .month-print-date-group {
     break-inside: avoid;
     page-break-inside: avoid;
@@ -1607,12 +1609,13 @@ button:focus-visible {
     page-break-inside: avoid;
   }
 
-  .month-print-table tbody tr.month-print-row--new-date td {
-    border-top: 0.75mm solid #000000;
+  /* Common work-plan print: Chromium prints cell borders more reliably than tr/tbody borders. */
+  .month-print-table > tbody.month-print-date-group > tr.month-print-row--new-date > td {
+    border-top: 1mm solid #000000 !important;
   }
 
-  .month-print-table tbody tr:first-child td {
-    border-top: 0.25mm solid #000000;
+  .month-print-table > tbody.month-print-date-group:first-of-type > tr.month-print-row--new-date > td {
+    border-top: 0.35mm solid #000000 !important;
   }
 
   .worksheet-table th,
@@ -1621,11 +1624,21 @@ button:focus-visible {
   .month-print-table td {
     border-color: #000000;
     padding: 1.5mm;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  /* HUS worksheet print: put the line on every cell so each handwritten day row prints clearly. */
+  .worksheet-page .worksheet-table {
+    border-collapse: collapse;
+  }
+
+  .worksheet-page .worksheet-table th,
+  .worksheet-page .worksheet-table td {
+    border: 0.35mm solid #000000 !important;
   }
 
   .worksheet-table td {
-    border-top: 0.3mm solid #000000;
-    border-bottom: 0.3mm solid #000000;
     height: 8.5mm;
   }
 

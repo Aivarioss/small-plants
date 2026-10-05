@@ -1273,6 +1273,11 @@ button:focus-visible {
   border-top-width: 1px;
 }
 
+.month-print-date-group {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
 .month-controls {
   align-items: end;
 }
@@ -1481,6 +1486,13 @@ button:focus-visible {
     page-break-after: auto;
   }
 
+  .print-page.month-page {
+    max-height: none;
+    min-height: auto;
+    overflow: visible;
+    page-break-after: auto;
+  }
+
   .worksheet-header {
     gap: 5mm;
     margin-bottom: 4mm;
@@ -1516,6 +1528,20 @@ button:focus-visible {
   .month-print-table {
     font-size: 8.3pt;
     line-height: 1.12;
+  }
+
+  .month-print-table thead {
+    display: table-header-group;
+  }
+
+  .month-print-date-group {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .month-print-date-group tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
   }
 
   .worksheet-table th,

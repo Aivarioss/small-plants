@@ -54,6 +54,11 @@ export type GroupedMonthlyPrintRow = MonthlyPrintRow & {
   startsNewDate: boolean;
 };
 
+export type MonthlyPrintDateGroup = {
+  date: string;
+  rows: GroupedMonthlyPrintRow[];
+};
+
 export const greenhouseRows: GreenhouseRow[] = [
   { id: "A", label: "Rinda A", capacity: 26, standard: true },
   { id: "B", label: "Rinda B", capacity: 26, standard: true },
@@ -1052,6 +1057,10 @@ export function compactMonthlyPrintRows(workItems: WorkItem[]): MonthlyPrintRow[
     );
 }
 
+export function continuousWorkPlanPrintRows(workItems: WorkItem[], startDate: string): MonthlyPrintRow[] {
+  return compactMonthlyPrintRows(workItems.filter((item) => item.date >= startDate));
+}
+
 export function groupMonthlyPrintRowsByDate(rows: MonthlyPrintRow[]): GroupedMonthlyPrintRow[] {
   return rows.map((row, index) => {
     const previous = rows[index - 1];
@@ -1063,6 +1072,19 @@ export function groupMonthlyPrintRowsByDate(rows: MonthlyPrintRow[]): GroupedMon
       startsNewDate,
     };
   });
+}
+
+export function groupMonthlyPrintRowsIntoDateGroups(rows: MonthlyPrintRow[]): MonthlyPrintDateGroup[] {
+  return groupMonthlyPrintRowsByDate(rows).reduce<MonthlyPrintDateGroup[]>((groups, row) => {
+    const current = groups.at(-1);
+
+    if (current && current.date === row.date) {
+      current.rows.push(row);
+      return groups;
+    }
+
+    return [...groups, { date: row.date, rows: [row] }];
+  }, []);
 }
 
 function item(

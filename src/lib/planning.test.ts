@@ -11,6 +11,7 @@ import {
   balanceWorkload,
   countMainWork,
   createPlacementPlan,
+  continuousWorkPlanPrintRows,
   daysBetween,
   getAllCapacityConflicts,
   applyWorkloadBalanceProposals,
@@ -22,6 +23,7 @@ import {
   generateWorkItemsForRows,
   getTotalSow,
   groupMonthlyPrintRowsByDate,
+  groupMonthlyPrintRowsIntoDateGroups,
   formatSowingTableSelection,
   isAllowedMove,
   parseSowingTableSelection,
@@ -45,6 +47,31 @@ const row: SowingPlanRow = {
   plantsPerBox: 30,
   correction: 0,
 };
+
+function printWorkItem(overrides: Partial<WorkItem> & Pick<WorkItem, "date" | "planRowId" | "sectorName" | "type">): WorkItem {
+  return {
+    id: `${overrides.planRowId}-${overrides.type}-${overrides.date}`,
+    variety: "Baltazsara",
+    title:
+      overrides.type === "removeFilm"
+        ? "Noņemt plēvi"
+        : overrides.type === "addAgrofilm"
+          ? "Uzlikt agroplēvi"
+          : overrides.type === "previcur"
+            ? "Previcur"
+          : overrides.type === "harvest"
+            ? "Izvākšana"
+            : "Retināšana",
+    cycleDay: 1,
+    plantCount: 3600,
+    fixed: false,
+    scheduleKind: "fixed",
+    workloadWeight: 0,
+    color: "mint",
+    details: [],
+    ...overrides,
+  };
+}
 
 describe("planning calculations", () => {
   it("calculates cycle length inclusively from sowing and harvest dates", () => {
@@ -278,6 +305,51 @@ describe("planning calculations", () => {
 
     expect(grouped.map((item) => item.showDate)).toEqual([true, false, true]);
     expect(grouped.map((item) => item.startsNewDate)).toEqual([true, false, true]);
+  });
+
+  it("prints a continuous work plan across month boundaries", () => {
+    const rows = continuousWorkPlanPrintRows(
+      [
+        printWorkItem({ date: "2026-09-30", planRowId: "old", sectorName: "Hus Old", type: "thinning" }),
+        printWorkItem({ date: "2026-11-01", planRowId: "november", sectorName: "Hus 9", type: "harvest" }),
+        printWorkItem({ date: "2026-10-31", planRowId: "october", sectorName: "Hus 8", type: "thinning" }),
+      ],
+      "2026-10-01",
+    );
+
+    expect(rows.map((item) => item.date)).toEqual(["2026-10-31", "2026-11-01"]);
+  });
+
+  it("keeps every print row inside date groups without dropping rows", () => {
+    const rows = [
+      { date: "2026-10-31", planRowId: "a", sectorName: "Hus 8", plantCount: 3457, workTitle: "Retināšana", notes: "Previcur" },
+      { date: "2026-10-31", planRowId: "b", sectorName: "Hus 9", plantCount: 3707, workTitle: "Gredzeni", notes: "" },
+      { date: "2026-11-01", planRowId: "c", sectorName: "Hus 10A", plantCount: 4195, workTitle: "Izvākšana", notes: "Nomiglot galdus" },
+    ];
+    const groups = groupMonthlyPrintRowsIntoDateGroups(rows);
+
+    expect(groups.map((group) => group.date)).toEqual(["2026-10-31", "2026-11-01"]);
+    expect(groups[0].rows.map((item) => item.planRowId)).toEqual(["a", "b"]);
+    expect(groups.flatMap((group) => group.rows)).toHaveLength(rows.length);
+    expect(groups[0].rows.map((item) => item.showDate)).toEqual([true, false]);
+  });
+
+  it("keeps major work in work title and minor work in notes for continuous print rows", () => {
+    const rows = compactMonthlyPrintRows([
+      printWorkItem({ date: "2026-10-31", planRowId: "major-minor", sectorName: "Hus 8", type: "thinning" }),
+      printWorkItem({ date: "2026-10-31", planRowId: "major-minor", sectorName: "Hus 8", type: "previcur" }),
+      printWorkItem({ date: "2026-11-01", planRowId: "minor-only", sectorName: "Hus 9", type: "removeFilm" }),
+      printWorkItem({ date: "2026-11-01", planRowId: "minor-only", sectorName: "Hus 9", type: "addAgrofilm" }),
+    ]);
+
+    expect(rows.find((item) => item.planRowId === "major-minor")).toMatchObject({
+      workTitle: "Retināšana",
+      notes: "Previcur",
+    });
+    expect(rows.find((item) => item.planRowId === "minor-only")).toMatchObject({
+      workTitle: "—",
+      notes: "Noņemt plēvi · Uzlikt agroplēvi",
+    });
   });
 
   it("renders flexible work on every manually selected work date", () => {

@@ -8,7 +8,7 @@ import {
   buildGreenhouseSnapshot,
   calculateBoxPlan,
   calculateAvailability,
-  compactMonthlyPrintRows,
+  continuousWorkPlanPrintRows,
   countMainWork,
   calculateSowingPlan,
   calculateThinningPlan,
@@ -19,7 +19,7 @@ import {
   generateWorksheetDaysFromWorkItems,
   generateWorkItemsForRows,
   getTotalSow,
-  groupMonthlyPrintRowsByDate,
+  groupMonthlyPrintRowsIntoDateGroups,
   greenhouseRows,
   hasManualWorkMoves,
   isAllowedMove,
@@ -719,7 +719,11 @@ export function PlannerApp() {
             />
           </section>
           <div className="calendar-print-source">
-            <MonthlyPrintPlan monthDate={anchorDate} onMonthChange={setAnchorDate} workItems={workItems} />
+            <MonthlyPrintPlan
+              onStartChange={setAnchorDate}
+              startDate={printPlanStartDate(anchorDate, viewMode)}
+              workItems={workItems}
+            />
           </div>
         </>
       ) : null}
@@ -752,8 +756,8 @@ export function PlannerApp() {
 
       {activeView === "monthPlan" ? (
         <MonthlyPrintPlan
-          monthDate={anchorDate}
-          onMonthChange={setAnchorDate}
+          onStartChange={setAnchorDate}
+          startDate={printPlanStartDate(anchorDate, viewMode)}
           workItems={workItems}
         />
       ) : null}
@@ -1276,41 +1280,42 @@ function WorksheetView({
 }
 
 function MonthlyPrintPlan({
-  monthDate,
-  onMonthChange,
+  onStartChange,
+  startDate,
   workItems,
 }: {
-  monthDate: string;
-  onMonthChange: (date: string) => void;
+  onStartChange: (date: string) => void;
+  startDate: string;
   workItems: WorkItem[];
 }) {
-  const items = groupMonthlyPrintRowsByDate(compactMonthlyPrintRows(monthlyWorkItems(workItems, monthDate)));
+  const items = continuousWorkPlanPrintRows(workItems, startDate);
+  const groups = groupMonthlyPrintRowsIntoDateGroups(items);
 
   return (
     <section className="print-host">
       <div className="panel panel-header no-print">
         <div>
           <p className="eyebrow">Drukājams kopsavilkums</p>
-          <h2>Mēneša darba plāns</h2>
+          <h2>Darba plāns</h2>
         </div>
         <div className="button-row month-controls">
           <label>
-            Mēnesis
+            Sākuma mēnesis
             <input
               type="month"
-              value={monthInputValue(monthDate)}
-              onChange={(event) => onMonthChange(`${event.target.value}-01`)}
+              value={monthInputValue(startDate)}
+              onChange={(event) => onStartChange(`${event.target.value}-01`)}
             />
           </label>
           <button className="primary-action" type="button" onClick={() => window.print()}>
-            Printēt mēnesi
+            Printēt darba plānu
           </button>
         </div>
       </div>
 
       <article className="print-page month-page">
         <header className="month-print-header">
-          <h1>{monthTitle(monthDate)}</h1>
+          <h1>{workPlanPrintTitle(items)}</h1>
           <p>Kopējais darba plāns visiem Hus</p>
         </header>
         <table className="month-print-table">
@@ -1323,22 +1328,26 @@ function MonthlyPrintPlan({
               <th>Piezīmes</th>
             </tr>
           </thead>
-          <tbody>
-            {items.length === 0 ? (
+          {groups.length === 0 ? (
+            <tbody>
               <tr>
-                <td colSpan={5}>Šajā mēnesī nav ieplānotu darbu.</td>
+                <td colSpan={5}>No izvēlētā sākuma datuma nav ieplānotu darbu.</td>
               </tr>
-            ) : null}
-            {items.map((item) => (
-              <tr className={item.startsNewDate ? "month-print-row--new-date" : ""} key={`${item.date}-${item.planRowId}`}>
-                <td>{item.showDate ? shortDate(item.date) : ""}</td>
-                <td>{item.sectorName}</td>
-                <td>{item.workTitle}</td>
-                <td>{item.plantCount.toLocaleString("lv-LV")}</td>
-                <td>{item.notes}</td>
-              </tr>
-            ))}
-          </tbody>
+            </tbody>
+          ) : null}
+          {groups.map((group) => (
+            <tbody className="month-print-date-group" key={group.date}>
+              {group.rows.map((item) => (
+                <tr className={item.startsNewDate ? "month-print-row--new-date" : ""} key={`${item.date}-${item.planRowId}`}>
+                  <td>{item.showDate ? shortDate(item.date) : ""}</td>
+                  <td>{item.sectorName}</td>
+                  <td>{item.workTitle}</td>
+                  <td>{item.plantCount.toLocaleString("lv-LV")}</td>
+                  <td>{item.notes}</td>
+                </tr>
+              ))}
+            </tbody>
+          ))}
         </table>
       </article>
     </section>
@@ -1536,7 +1545,7 @@ function CalendarPanel({
                 Izlīdzināt darbus
               </button>
               <button type="button" onClick={() => window.print()}>
-                Printēt mēnesi
+                Printēt darba plānu
               </button>
             </div>
           </details>
@@ -2350,19 +2359,6 @@ function calendarTitle(anchorDate: string, viewMode: ViewMode): string {
   return first === last ? dateLabel(first) : `${dateLabel(first)} - ${dateLabel(last)}`;
 }
 
-function monthlyWorkItems(workItems: WorkItem[], monthDate: string): WorkItem[] {
-  const anchor = new Date(`${monthDate}T12:00:00`);
-  const month = anchor.getMonth();
-  const year = anchor.getFullYear();
-
-  return workItems
-    .filter((item) => {
-      const date = new Date(`${item.date}T12:00:00`);
-      return date.getFullYear() === year && date.getMonth() === month;
-    })
-    .sort((a, b) => a.date.localeCompare(b.date) || a.sectorName.localeCompare(b.sectorName, "lv"));
-}
-
 function shortDate(date: string): string {
   return new Intl.DateTimeFormat("lv-LV", {
     day: "2-digit",
@@ -2380,11 +2376,41 @@ function monthInputValue(date: string): string {
   return date.slice(0, 7);
 }
 
-function monthTitle(date: string): string {
-  return new Intl.DateTimeFormat("lv-LV", {
-    month: "long",
-    year: "numeric",
-  }).format(new Date(`${date}T12:00:00`)).toUpperCase();
+function printPlanStartDate(anchorDate: string, viewMode: ViewMode): string {
+  if (viewMode !== "month") {
+    return anchorDate;
+  }
+
+  const anchor = new Date(`${anchorDate}T12:00:00`);
+  return toIsoDate(new Date(anchor.getFullYear(), anchor.getMonth(), 1, 12));
+}
+
+function workPlanPrintTitle(items: ReturnType<typeof continuousWorkPlanPrintRows>): string {
+  const first = items[0]?.date;
+  const last = items.at(-1)?.date;
+
+  if (!first || !last) {
+    return "DARBA PLĀNS";
+  }
+
+  return `DARBA PLĀNS · ${printDateRange(first, last)}`;
+}
+
+function printDateRange(first: string, last: string): string {
+  const firstDate = new Date(`${first}T12:00:00`);
+  const lastDate = new Date(`${last}T12:00:00`);
+  const firstYear = firstDate.getFullYear();
+  const lastYear = lastDate.getFullYear();
+
+  if (first === last) {
+    return `${shortDate(first)}${firstYear}`;
+  }
+
+  if (firstYear === lastYear) {
+    return `${shortDate(first)}–${shortDate(last)}${lastYear}`;
+  }
+
+  return `${shortDate(first)}${firstYear}–${shortDate(last)}${lastYear}`;
 }
 
 function formatDateRange(dates: string[]): string {

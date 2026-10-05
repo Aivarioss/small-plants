@@ -5,6 +5,7 @@ import {
   calculateBoxPlan,
   calculateBoxesNeeded,
   calculateRecommendedTables,
+  compactMonthlyPrintRows,
   calculateSowingPlan,
   calculateThinningPlan,
   balanceWorkload,
@@ -20,7 +21,9 @@ import {
   generateWorkItems,
   generateWorkItemsForRows,
   getTotalSow,
+  formatSowingTableSelection,
   isAllowedMove,
+  parseSowingTableSelection,
 } from "./planning";
 import { candidateCycleLength, mockPlanImportService } from "./plan-import-service";
 import { deriveCycleLength } from "./hus-templates";
@@ -180,10 +183,10 @@ describe("planning calculations", () => {
     );
   });
 
-  it("generates printable worksheet rows through the cycle and post-move-out work", () => {
-    expect(generateWorksheetDays({ ...row, cycleLength: 21, harvestDate: "2026-10-15" }, { defaultPlantsPerBox: 30 })).toHaveLength(22);
-    expect(generateWorksheetDays(row, { defaultPlantsPerBox: 30 })).toHaveLength(23);
-    expect(generateWorksheetDays({ ...row, cycleLength: 23, harvestDate: "2026-10-17" }, { defaultPlantsPerBox: 30 })).toHaveLength(24);
+  it("generates printable worksheet rows for the cycle without adding an extra spray-tables day", () => {
+    expect(generateWorksheetDays({ ...row, cycleLength: 21, harvestDate: "2026-10-15" }, { defaultPlantsPerBox: 30 })).toHaveLength(21);
+    expect(generateWorksheetDays(row, { defaultPlantsPerBox: 30 })).toHaveLength(22);
+    expect(generateWorksheetDays({ ...row, cycleLength: 23, harvestDate: "2026-10-17" }, { defaultPlantsPerBox: 30 })).toHaveLength(23);
   });
 
   it("places previcure into the printable worksheet and monthly plan when set", () => {
@@ -222,9 +225,31 @@ describe("planning calculations", () => {
     expect(byType.removeAgrofilm.date).toBe(cycleDayDateForTest(row, 5));
     expect(byType.previcur.date).toBe(byType.thinning.date);
     expect(byType.disinfectTables.date).toBe(byType.thinning.date);
-    expect(byType.sprayTables.date).toBe(addDays(row.harvestDate, 1));
+    expect(byType.sprayTables.date).toBe(row.harvestDate);
     expect(countMainWork(items, byType.thinning.date)).toBe(1);
     expect(countMainWork(items, cycleDayDateForTest(row, 3))).toBe(0);
+  });
+
+  it("formats sowing table selections as compact ranges", () => {
+    expect(formatSowingTableSelection(["A3", "A4", "A5", "A6", "A7"])).toBe("A3–A7");
+    expect(formatSowingTableSelection(["A1", "A2", "A5"])).toBe("A1–A2, A5");
+    expect(parseSowingTableSelection("A3–A7")).toEqual(["A3", "A4", "A5", "A6", "A7"]);
+    expect(parseSowingTableSelection("A1-A2, A5")).toEqual(["A1", "A2", "A5"]);
+  });
+
+  it("prints minor monthly work as notes instead of separate rows", () => {
+    const items = generateWorkItems(row, { defaultPlantsPerBox: 30 });
+    const compactRows = compactMonthlyPrintRows(items);
+    const thinningRow = compactRows.find((item) => item.workTitle === "Retināšana");
+    const harvestRow = compactRows.find((item) => item.workTitle === "Izvākšana");
+    const dayThreeRow = compactRows.find((item) => item.date === cycleDayDateForTest(row, 3));
+
+    expect(thinningRow?.notes).toContain("Previcur");
+    expect(thinningRow?.notes).toContain("Dezinficēt galdus");
+    expect(harvestRow?.notes).toContain("Nomiglot galdus");
+    expect(dayThreeRow?.workTitle).toBe("—");
+    expect(dayThreeRow?.notes).toBe("Noņemt plēvi · Uzlikt agroplēvi");
+    expect(compactRows.some((item) => item.workTitle === "Nomiglot galdus")).toBe(false);
   });
 
   it("renders flexible work on every manually selected work date", () => {

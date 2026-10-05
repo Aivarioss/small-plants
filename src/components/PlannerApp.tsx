@@ -8,18 +8,22 @@ import {
   buildGreenhouseSnapshot,
   calculateBoxPlan,
   calculateAvailability,
+  compactMonthlyPrintRows,
   countMainWork,
   calculateSowingPlan,
   calculateThinningPlan,
   createPlacementPlan,
   dateLabel,
   eachDate,
+  formatSowingTableSelection,
   generateWorksheetDaysFromWorkItems,
   generateWorkItemsForRows,
   getTotalSow,
   greenhouseRows,
   hasManualWorkMoves,
   isAllowedMove,
+  parseSowingTableSelection,
+  sowingTableIds,
   toIsoDate,
 } from "@/lib/planning";
 import {
@@ -995,14 +999,7 @@ function SowingPlanPanel({
                 value={draft.variety}
               />
             </label>
-            <label>
-              Sēšanas galdi
-              <input
-                onChange={(event) => onDraftChange({ ...draft, sowingTables: event.target.value })}
-                placeholder="A3-A7"
-                value={draft.sowingTables}
-              />
-            </label>
+            <SowingTablesPicker value={draft.sowingTables} onSave={(value) => onDraftChange({ ...draft, sowingTables: value })} />
             <label>
               Sektora galdi
               <select
@@ -1040,10 +1037,11 @@ function SowingPlanPanel({
           return (
             <div className="plan-row" role="row" key={row.id}>
               <input value={row.sectorName} onChange={(event) => onUpdateRow(row.id, { sectorName: event.target.value })} />
-              <input
-                placeholder="A3-A7"
+              <SowingTablesPicker
+                compact
+                key={`${row.id}-${row.sowingTables ?? ""}`}
                 value={row.sowingTables ?? ""}
-                onChange={(event) => onUpdateRow(row.id, { sowingTables: event.target.value || undefined })}
+                onSave={(value) => onUpdateRow(row.id, { sowingTables: value || undefined })}
               />
               <input
                 min="1"
@@ -1284,7 +1282,7 @@ function MonthlyPrintPlan({
   onMonthChange: (date: string) => void;
   workItems: WorkItem[];
 }) {
-  const items = monthlyWorkItems(workItems, monthDate);
+  const items = compactMonthlyPrintRows(monthlyWorkItems(workItems, monthDate));
 
   return (
     <section className="print-host">
@@ -1330,18 +1328,61 @@ function MonthlyPrintPlan({
               </tr>
             ) : null}
             {items.map((item) => (
-              <tr key={item.id}>
+              <tr key={`${item.date}-${item.planRowId}`}>
                 <td>{shortDate(item.date)}</td>
                 <td>{item.sectorName}</td>
-                <td>{item.title}</td>
+                <td>{item.workTitle}</td>
                 <td>{item.plantCount.toLocaleString("lv-LV")}</td>
-                <td>{item.capacityWarning ? `Kapacitāte: ${item.capacityWarning}` : ""}</td>
+                <td>{item.notes}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </article>
     </section>
+  );
+}
+
+function SowingTablesPicker({
+  compact = false,
+  onSave,
+  value,
+}: {
+  compact?: boolean;
+  onSave: (value: string) => void;
+  value: string;
+}) {
+  const [selected, setSelected] = useState<string[]>(() => parseSowingTableSelection(value));
+  const formatted = formatSowingTableSelection(selected);
+
+  function toggle(table: string) {
+    setSelected((current) =>
+      current.includes(table) ? current.filter((item) => item !== table) : sowingTableIds.filter((item) => item === table || current.includes(item)),
+    );
+  }
+
+  return (
+    <div className={compact ? "sowing-tables sowing-tables--compact" : "sowing-tables"}>
+      <span>Sēšanas galdi</span>
+      <div className="sowing-table-options" aria-label="Sēšanas galdi A1 līdz A13">
+        {sowingTableIds.map((table) => (
+          <button
+            className={selected.includes(table) ? "is-active" : ""}
+            key={table}
+            onClick={() => toggle(table)}
+            type="button"
+          >
+            {table}
+          </button>
+        ))}
+      </div>
+      <div className="sowing-tables__summary">
+        <strong>{formatted || "Nav norādīti"}</strong>
+        <button className="secondary-action" type="button" onClick={() => onSave(formatted)}>
+          Saglabāt
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -1871,14 +1912,11 @@ function BatchEditor({
         Šķirne
         <input value={row.variety} onChange={(event) => onUpdateRow(row.id, { variety: event.target.value })} />
       </label>
-      <label>
-        Sēšanas galdi
-        <input
-          placeholder="A3-A7"
-          value={row.sowingTables ?? ""}
-          onChange={(event) => onUpdateRow(row.id, { sowingTables: event.target.value || undefined })}
-        />
-      </label>
+      <SowingTablesPicker
+        key={`${row.id}-${row.sowingTables ?? ""}`}
+        value={row.sowingTables ?? ""}
+        onSave={(value) => onUpdateRow(row.id, { sowingTables: value || undefined })}
+      />
       <label>
         Nedēļas numurs
         <input

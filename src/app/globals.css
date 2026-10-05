@@ -609,6 +609,54 @@ button:focus-visible {
   margin-top: 12px;
 }
 
+.sowing-tables {
+  display: grid;
+  gap: 7px;
+  font-weight: 720;
+}
+
+.sowing-table-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(44px, 1fr));
+  gap: 6px;
+}
+
+.sowing-table-options button {
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--green-dark);
+  font-weight: 800;
+}
+
+.sowing-table-options button.is-active {
+  border-color: var(--green);
+  background: var(--green);
+  color: #ffffff;
+}
+
+.sowing-tables__summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.sowing-tables__summary strong {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.sowing-tables--compact .sowing-table-options {
+  grid-template-columns: repeat(4, minmax(38px, 1fr));
+}
+
+.sowing-tables--compact .sowing-tables__summary {
+  grid-template-columns: 1fr;
+}
+
 .plan-table {
   display: grid;
   gap: 8px;

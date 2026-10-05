@@ -40,6 +40,15 @@ type WorkloadMetrics = {
   maxDailyWorkload: number;
 };
 
+export type MonthlyPrintRow = {
+  date: string;
+  planRowId: string;
+  sectorName: string;
+  plantCount: number;
+  workTitle: string;
+  notes: string;
+};
+
 export const greenhouseRows: GreenhouseRow[] = [
   { id: "A", label: "Rinda A", capacity: 26, standard: true },
   { id: "B", label: "Rinda B", capacity: 26, standard: true },
@@ -62,6 +71,10 @@ export const workTypeMeta: Record<WorkType, { title: string; color: string }> = 
   harvest: { title: "Izvākšana", color: "green" },
   sprayTables: { title: "Nomiglot galdus", color: "green" },
 };
+
+export const sowingTableIds = Array.from({ length: 13 }, (_, index) => `A${index + 1}`);
+
+const majorPrintWorkTypes = new Set<WorkType>(["sowing", "thinning", "sideShoots", "sticks", "rings", "harvest"]);
 
 const workTypeSortOrder: WorkType[] = [
   "sowing",
@@ -244,6 +257,62 @@ export function calculateAvailability(row: SowingPlanRow): AvailabilityStatus {
     label: `🔴 Trūkst ${Math.abs(difference)}`,
     tone: "short",
   };
+}
+
+export function parseSowingTableSelection(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+
+  const selected = new Set<string>();
+  value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .forEach((part) => {
+      const rangeMatch = /^A(\d{1,2})\s*[-–]\s*A?(\d{1,2})$/i.exec(part);
+      if (rangeMatch) {
+        const start = Number(rangeMatch[1]);
+        const end = Number(rangeMatch[2]);
+        const from = Math.min(start, end);
+        const to = Math.max(start, end);
+        for (let table = from; table <= to; table += 1) {
+          if (table >= 1 && table <= 13) {
+            selected.add(`A${table}`);
+          }
+        }
+        return;
+      }
+
+      const tableMatch = /^A?(\d{1,2})$/i.exec(part);
+      if (tableMatch) {
+        const table = Number(tableMatch[1]);
+        if (table >= 1 && table <= 13) {
+          selected.add(`A${table}`);
+        }
+      }
+    });
+
+  return sowingTableIds.filter((table) => selected.has(table));
+}
+
+export function formatSowingTableSelection(tables: string[]): string {
+  const sorted = sowingTableIds.filter((table) => tables.includes(table));
+  const ranges: string[] = [];
+
+  for (let index = 0; index < sorted.length; index += 1) {
+    const start = Number(sorted[index].slice(1));
+    let end = start;
+
+    while (index + 1 < sorted.length && Number(sorted[index + 1].slice(1)) === end + 1) {
+      index += 1;
+      end = Number(sorted[index].slice(1));
+    }
+
+    ranges.push(start === end ? `A${start}` : `A${start}–A${end}`);
+  }
+
+  return ranges.join(", ");
 }
 
 export function isAllowedMove(row: SowingPlanRow, type: WorkType, date: string): boolean {
@@ -496,7 +565,7 @@ function generateSmallWorkItems(rows: SowingPlanRow[], baseItems: WorkItem[]): W
       smallWorkItem(row, "removeFilm", cycleDayDate(row, 3), "Saistīts ar sēšanu"),
       smallWorkItem(row, "addAgrofilm", cycleDayDate(row, 3), "Saistīts ar sēšanu"),
       smallWorkItem(row, "removeAgrofilm", cycleDayDate(row, 5), "Saistīts ar sēšanu"),
-      smallWorkItem(row, "sprayTables", addDays(row.harvestDate, 1), "Pēc izvākšanas"),
+      smallWorkItem(row, "sprayTables", row.harvestDate, "Pēc izvākšanas"),
     ];
 
     if (thinningDate) {
@@ -928,6 +997,42 @@ export function generateMonthlyWorkPlan(
       return date.getFullYear() === year && date.getMonth() === month;
     })
     .sort((a, b) => a.date.localeCompare(b.date) || a.sectorName.localeCompare(b.sectorName, "lv"));
+}
+
+export function compactMonthlyPrintRows(workItems: WorkItem[]): MonthlyPrintRow[] {
+  const groups = new Map<string, WorkItem[]>();
+
+  workItems.forEach((item) => {
+    const key = `${item.date}:${item.planRowId}`;
+    groups.set(key, [...(groups.get(key) ?? []), item]);
+  });
+
+  return Array.from(groups.values())
+    .map((items) => {
+      const sorted = items.slice().sort((left, right) => workTypeSortOrder.indexOf(left.type) - workTypeSortOrder.indexOf(right.type));
+      const first = sorted[0];
+      const major = sorted.filter((item) => majorPrintWorkTypes.has(item.type));
+      const minor = sorted.filter((item) => !majorPrintWorkTypes.has(item.type));
+      const capacityNotes = sorted
+        .map((item) => item.capacityWarning)
+        .filter((note): note is string => Boolean(note));
+      const notes = [...minor.map((item) => item.title), ...capacityNotes].join(" · ");
+
+      return {
+        date: first.date,
+        planRowId: first.planRowId,
+        sectorName: first.sectorName,
+        plantCount: first.plantCount,
+        workTitle: major.length > 0 ? major.map((item) => item.title).join(" · ") : "—",
+        notes,
+      };
+    })
+    .sort(
+      (left, right) =>
+        left.date.localeCompare(right.date) ||
+        left.sectorName.localeCompare(right.sectorName, "lv", { numeric: true }) ||
+        left.workTitle.localeCompare(right.workTitle, "lv"),
+    );
 }
 
 function item(

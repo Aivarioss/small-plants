@@ -21,6 +21,7 @@ import {
   generateWorkItems,
   generateWorkItemsForRows,
   getTotalSow,
+  groupMonthlyPrintRowsByDate,
   formatSowingTableSelection,
   isAllowedMove,
   parseSowingTableSelection,
@@ -266,6 +267,17 @@ describe("planning calculations", () => {
     expect(dayThreeRow?.workTitle).toBe("—");
     expect(dayThreeRow?.notes).toBe("Noņemt plēvi · Uzlikt agroplēvi");
     expect(compactRows.some((item) => item.workTitle === "Nomiglot galdus")).toBe(false);
+  });
+
+  it("marks only the first monthly print row for each date to show the date", () => {
+    const grouped = groupMonthlyPrintRowsByDate([
+      { date: "2026-10-01", planRowId: "a", sectorName: "Hus 4", plantCount: 3919, workTitle: "Retināšana", notes: "Previcur" },
+      { date: "2026-10-01", planRowId: "b", sectorName: "Hus 6", plantCount: 3656, workTitle: "—", notes: "Noņemt plēvi" },
+      { date: "2026-10-02", planRowId: "c", sectorName: "Hus 10B", plantCount: 3684, workTitle: "Izvākšana", notes: "Nomiglot galdus" },
+    ]);
+
+    expect(grouped.map((item) => item.showDate)).toEqual([true, false, true]);
+    expect(grouped.map((item) => item.startsNewDate)).toEqual([true, false, true]);
   });
 
   it("renders flexible work on every manually selected work date", () => {

@@ -19,6 +19,7 @@ import {
   generateWorksheetDaysFromWorkItems,
   generateWorkItemsForRows,
   getTotalSow,
+  groupMonthlyPrintRowsByDate,
   greenhouseRows,
   hasManualWorkMoves,
   isAllowedMove,
@@ -1283,7 +1284,7 @@ function MonthlyPrintPlan({
   onMonthChange: (date: string) => void;
   workItems: WorkItem[];
 }) {
-  const items = compactMonthlyPrintRows(monthlyWorkItems(workItems, monthDate));
+  const items = groupMonthlyPrintRowsByDate(compactMonthlyPrintRows(monthlyWorkItems(workItems, monthDate)));
 
   return (
     <section className="print-host">
@@ -1329,8 +1330,8 @@ function MonthlyPrintPlan({
               </tr>
             ) : null}
             {items.map((item) => (
-              <tr key={`${item.date}-${item.planRowId}`}>
-                <td>{shortDate(item.date)}</td>
+              <tr className={item.startsNewDate ? "month-print-row--new-date" : ""} key={`${item.date}-${item.planRowId}`}>
+                <td>{item.showDate ? shortDate(item.date) : ""}</td>
                 <td>{item.sectorName}</td>
                 <td>{item.workTitle}</td>
                 <td>{item.plantCount.toLocaleString("lv-LV")}</td>

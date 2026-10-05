@@ -1241,12 +1241,12 @@ button:focus-visible {
   align-items: end;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
 }
 
 .month-print-table th:nth-child(1),
 .month-print-table td:nth-child(1) {
-  width: 15%;
+  width: 12%;
 }
 
 .month-print-table th:nth-child(2),
@@ -1261,8 +1261,16 @@ button:focus-visible {
 
 .month-print-table th:nth-child(4),
 .month-print-table td:nth-child(4) {
-  width: 14%;
+  width: 12%;
   text-align: right;
+}
+
+.month-print-table tbody tr.month-print-row--new-date td {
+  border-top-width: 2px;
+}
+
+.month-print-table tbody tr:first-child td {
+  border-top-width: 1px;
 }
 
 .month-controls {
@@ -1484,6 +1492,10 @@ button:focus-visible {
     line-height: 1;
   }
 
+  .month-print-header h1 {
+    font-size: 22pt;
+  }
+
   .print-only-title {
     display: block;
   }
@@ -1501,6 +1513,11 @@ button:focus-visible {
     font-size: 8.8pt;
   }
 
+  .month-print-table {
+    font-size: 8.3pt;
+    line-height: 1.12;
+  }
+
   .worksheet-table th,
   .worksheet-table td,
   .month-print-table th,
@@ -1514,10 +1531,15 @@ button:focus-visible {
   }
 
   .month-print-header {
-    margin-bottom: 5mm;
+    margin-bottom: 2.5mm;
   }
 
   .month-print-table td {
-    min-height: 7mm;
+    min-height: 0;
+  }
+
+  .month-print-table th,
+  .month-print-table td {
+    padding: 1mm 1.2mm;
   }
 }

@@ -49,6 +49,11 @@ export type MonthlyPrintRow = {
   notes: string;
 };
 
+export type GroupedMonthlyPrintRow = MonthlyPrintRow & {
+  showDate: boolean;
+  startsNewDate: boolean;
+};
+
 export const greenhouseRows: GreenhouseRow[] = [
   { id: "A", label: "Rinda A", capacity: 26, standard: true },
   { id: "B", label: "Rinda B", capacity: 26, standard: true },
@@ -1045,6 +1050,19 @@ export function compactMonthlyPrintRows(workItems: WorkItem[]): MonthlyPrintRow[
         left.sectorName.localeCompare(right.sectorName, "lv", { numeric: true }) ||
         left.workTitle.localeCompare(right.workTitle, "lv"),
     );
+}
+
+export function groupMonthlyPrintRowsByDate(rows: MonthlyPrintRow[]): GroupedMonthlyPrintRow[] {
+  return rows.map((row, index) => {
+    const previous = rows[index - 1];
+    const startsNewDate = !previous || previous.date !== row.date;
+
+    return {
+      ...row,
+      showDate: startsNewDate,
+      startsNewDate,
+    };
+  });
 }
 
 function item(

@@ -1271,6 +1271,10 @@ button:focus-visible {
   height: 30px;
 }
 
+.worksheet-empty-cell {
+  visibility: hidden;
+}
+
 .worksheet-table tbody td {
   border-top-color: #111111;
   border-bottom-color: #111111;

@@ -1271,10 +1271,6 @@ button:focus-visible {
   height: 30px;
 }
 
-.worksheet-empty-cell {
-  visibility: hidden;
-}
-
 .worksheet-table tbody td {
   border-top-color: #111111;
   border-bottom-color: #111111;
@@ -1622,32 +1618,12 @@ button:focus-visible {
     border-top: 0.35mm solid #000000 !important;
   }
 
-  .worksheet-table th,
-  .worksheet-table td,
   .month-print-table th,
   .month-print-table td {
     border-color: #000000;
     padding: 1.5mm;
     print-color-adjust: exact;
     -webkit-print-color-adjust: exact;
-  }
-
-  /* HUS worksheet print: reuse the screen worksheet grid and make every printed cell explicit. */
-  .worksheet-page .worksheet-table {
-    border-collapse: collapse;
-    border-spacing: 0;
-    empty-cells: show;
-  }
-
-  .worksheet-page .worksheet-table th,
-  .worksheet-page .worksheet-table td {
-    border-color: #000000 !important;
-    border-style: solid !important;
-    border-width: 1px !important;
-  }
-
-  .worksheet-table td {
-    height: 8.5mm;
   }
 
   .month-print-header {

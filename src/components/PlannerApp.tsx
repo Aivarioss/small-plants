@@ -1340,9 +1340,9 @@ function WorksheetView({
               <tr key={day.day}>
                 <td>{day.day}</td>
                 <td>{shortDate(day.date)}</td>
-                <td aria-label="Water min"><span aria-hidden="true" className="worksheet-empty-cell">&nbsp;</span></td>
-                <td aria-label="Temp"><span aria-hidden="true" className="worksheet-empty-cell">&nbsp;</span></td>
-                <td aria-label="Plants out"><span aria-hidden="true" className="worksheet-empty-cell">&nbsp;</span></td>
+                <td aria-label="Water min" />
+                <td aria-label="Temp" />
+                <td aria-label="Plants out" />
                 <td>{day.works.map((work) => work.title).join(" + ")}</td>
               </tr>
             ))}

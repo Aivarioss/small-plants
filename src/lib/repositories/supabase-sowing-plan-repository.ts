@@ -49,6 +49,19 @@ async function loadRowsFromSupabase(): Promise<SowingPlanRow[]> {
     .select("*, work_adjustments(*), table_placements(*), change_history(*), plant_corrections(*)")
     .order("sowing_date", { ascending: true });
 
+  if (error && isPlantCorrectionsRelationError(error)) {
+    const fallback = await client
+      .from("sowing_plan_rows")
+      .select("*, work_adjustments(*), table_placements(*), change_history(*)")
+      .order("sowing_date", { ascending: true });
+
+    if (fallback.error) {
+      throw fallback.error;
+    }
+
+    return ((fallback.data ?? []) as SowingPlanRowWithRelations[]).map(recordToSowingPlanRow);
+  }
+
   if (error) {
     throw error;
   }
@@ -138,6 +151,20 @@ async function loadRowById(id: string): Promise<SowingPlanRow> {
     .eq("id", id)
     .single();
 
+  if (error && isPlantCorrectionsRelationError(error)) {
+    const fallback = await client
+      .from("sowing_plan_rows")
+      .select("*, work_adjustments(*), table_placements(*), change_history(*)")
+      .eq("id", id)
+      .single();
+
+    if (fallback.error) {
+      throw fallback.error;
+    }
+
+    return recordToSowingPlanRow(fallback.data as SowingPlanRowWithRelations);
+  }
+
   if (error) {
     throw error;
   }
@@ -214,6 +241,9 @@ async function replacePlantCorrections(row: SowingPlanRow): Promise<void> {
   const client = createSupabaseServerClient();
 
   const { error: deleteError } = await client.from("plant_corrections").delete().eq("sowing_plan_row_id", row.id);
+  if (deleteError && isPlantCorrectionsRelationError(deleteError) && (row.plantCorrections ?? []).length === 0) {
+    return;
+  }
   if (deleteError) {
     throw deleteError;
   }
@@ -262,4 +292,21 @@ function rowRecordUpdatePatch(record: NonNullable<ReturnType<typeof sowingPlanRo
     variety: record.variety,
     week_number: record.week_number,
   };
+}
+
+function isPlantCorrectionsRelationError(error: unknown): boolean {
+  const candidate = error as { code?: unknown; message?: unknown };
+  const code = typeof candidate.code === "string" ? candidate.code : "";
+  const message = typeof candidate.message === "string" ? candidate.message : "";
+  const haystack = `${code} ${message}`.toLowerCase();
+
+  return (
+    haystack.includes("plant_corrections") &&
+    (haystack.includes("pgrst200") ||
+      haystack.includes("pgrst205") ||
+      haystack.includes("42p01") ||
+      haystack.includes("relationship") ||
+      haystack.includes("schema cache") ||
+      haystack.includes("does not exist"))
+  );
 }

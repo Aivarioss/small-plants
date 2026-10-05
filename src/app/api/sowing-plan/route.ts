@@ -20,10 +20,14 @@ export async function GET(request: NextRequest) {
     return guard;
   }
 
-  const repository = createSupabaseSowingPlanRepository();
-  const rows = await repository.load();
+  try {
+    const repository = createSupabaseSowingPlanRepository();
+    const rows = await repository.load();
 
-  return NextResponse.json({ rows });
+    return NextResponse.json({ rows });
+  } catch (error) {
+    return errorResponse(error);
+  }
 }
 
 export async function POST(request: NextRequest) {

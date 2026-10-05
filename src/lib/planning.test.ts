@@ -4,10 +4,12 @@ import {
   calculateAvailability,
   calculateBoxPlan,
   calculateBoxesNeeded,
+  calculatePlantBalance,
   calculateRecommendedTables,
   compactMonthlyPrintRows,
   calculateSowingPlan,
   calculateThinningPlan,
+  calculateWorkMaterialSummary,
   balanceWorkload,
   countMainWork,
   createPlacementPlan,
@@ -21,6 +23,8 @@ import {
   generateWorksheetDaysFromWorkItems,
   generateWorkItems,
   generateWorkItemsForRows,
+  getActualPlantCount,
+  getPlantCorrectionTotal,
   getTotalSow,
   groupMonthlyPrintRowsByDate,
   groupMonthlyPrintRowsIntoDateGroups,
@@ -32,6 +36,7 @@ import {
 } from "./planning";
 import { candidateCycleLength, mockPlanImportService } from "./plan-import-service";
 import { deriveCycleLength } from "./hus-templates";
+import { recordToSowingPlanRow, rowPlantCorrectionsToRecords } from "./supabase/mappers";
 import type { SowingPlanRow, WorkItem, WorkType } from "./types";
 
 const row: SowingPlanRow = {
@@ -102,6 +107,108 @@ describe("planning calculations", () => {
 
   it("calculates box count with ceiling", () => {
     expect(calculateBoxesNeeded(101, 25)).toBe(5);
+  });
+
+  it("keeps material summaries consistent between work items and print rows", () => {
+    const items = generateWorkItems(row, { defaultPlantsPerBox: 30 });
+    const materials = calculateWorkMaterialSummary(row);
+    const sowing = items.find((item) => item.type === "sowing");
+    const thinning = items.find((item) => item.type === "thinning");
+    const harvest = items.find((item) => item.type === "harvest");
+    const printRows = compactMonthlyPrintRows(items);
+
+    expect(sowing?.details).toContain(materials.sowing);
+    expect(thinning?.details).toContain(materials.thinning);
+    expect(harvest?.details).toContain(materials.harvest);
+    expect(printRows.find((item) => item.workTitle === "Sēšana")?.notes).toContain(materials.sowing);
+    expect(printRows.find((item) => item.workTitle === "Retināšana")?.notes).toContain(materials.thinning);
+    expect(printRows.find((item) => item.workTitle === "Izvākšana")?.notes).toContain(materials.harvest);
+  });
+
+  it("calculates actual plant balance from correction history without changing the original sow count", () => {
+    const corrected: SowingPlanRow = {
+      ...row,
+      requiredPlants: 3700,
+      extraPlants: 107,
+      plantCorrections: [
+        { id: "loss-1", amount: -100, date: "2026-10-08", reason: "thinning" },
+        { id: "loss-2", amount: -68, date: "2026-10-12", reason: "brownRoots" },
+        { id: "loss-3", amount: -70, date: "2026-10-13", reason: "brownRoots" },
+      ],
+    };
+
+    expect(getTotalSow(corrected)).toBe(3807);
+    expect(getPlantCorrectionTotal(corrected)).toBe(-238);
+    expect(getActualPlantCount(corrected)).toBe(3569);
+    expect(calculatePlantBalance(corrected)).toMatchObject({
+      actualPlants: 3569,
+      correctionTotal: -238,
+      difference: -131,
+      label: "Trūkst 131 stādi",
+      tone: "short",
+    });
+    expect(getTotalSow(corrected)).toBe(3807);
+  });
+
+  it("shows reserve when actual plants remain above the required count", () => {
+    const corrected: SowingPlanRow = {
+      ...row,
+      requiredPlants: 3700,
+      extraPlants: 207,
+      plantCorrections: [{ id: "gain", amount: -100, date: "2026-10-08", reason: "thinning" }],
+    };
+
+    expect(calculatePlantBalance(corrected)).toMatchObject({
+      actualPlants: 3807,
+      difference: 107,
+      label: "Rezerve 107 stādi",
+      tone: "ok",
+    });
+  });
+
+  it("maps plant correction history as separate persistent events", () => {
+    const corrected: SowingPlanRow = {
+      ...row,
+      plantCorrections: [
+        { id: "loss-1", amount: -100, date: "2026-10-08", reason: "thinning" },
+        { id: "loss-2", amount: -68, date: "2026-10-12", reason: "brownRoots", note: "2 galdi" },
+      ],
+    };
+    const records = rowPlantCorrectionsToRecords(corrected);
+    const mapped = recordToSowingPlanRow({
+      id: row.id,
+      hus: row.sectorName,
+      required_plants: row.requiredPlants,
+      extra_plants: row.extraPlants,
+      variety: row.variety,
+      week_number: null,
+      sowing_tables: null,
+      sowing_date: row.sowingDate,
+      move_out_date: row.harvestDate,
+      previcure_date: null,
+      cycle_length: row.cycleLength,
+      sector_type: row.sectorType,
+      correction: row.correction,
+      status: "planned",
+      source: "user",
+      plant_corrections: records,
+    });
+
+    expect(records).toHaveLength(2);
+    expect(mapped.plantCorrections).toEqual(corrected.plantCorrections);
+  });
+
+  it("does not change scheduler dates when plant corrections are added", () => {
+    const before = generateWorkItems(row, { defaultPlantsPerBox: 30 }).map((item) => `${item.type}:${item.date}`);
+    const after = generateWorkItems(
+      {
+        ...row,
+        plantCorrections: [{ id: "loss", amount: -100, date: "2026-10-08", reason: "thinning" }],
+      },
+      { defaultPlantsPerBox: 30 },
+    ).map((item) => `${item.type}:${item.date}`);
+
+    expect(after).toEqual(before);
   });
 
   it("keeps 3500 and 4200 plant batches in one 26 table row", () => {

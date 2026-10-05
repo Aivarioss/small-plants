@@ -1121,7 +1121,49 @@ button:focus-visible {
 }
 
 .hus-work-panel {
+  display: grid;
+  gap: 12px;
   box-shadow: none;
+}
+
+.plant-balance-box {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 12px;
+}
+
+.plant-balance-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 6px 12px;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.plant-correction-list {
+  display: grid;
+  gap: 6px;
+  padding: 0;
+  list-style: none;
+}
+
+.plant-correction-list li {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.plant-correction-list time {
+  color: var(--green-dark);
+  font-weight: 800;
+}
+
+.danger-text {
+  color: #9f1d1d;
 }
 
 .hus-work-row {
@@ -1144,6 +1186,14 @@ button:focus-visible {
 .hus-work-row span {
   display: block;
   margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.hus-work-row ul {
+  display: grid;
+  gap: 3px;
+  margin: 7px 0 0 18px;
   color: var(--muted);
   font-size: 0.86rem;
 }
@@ -1184,6 +1234,14 @@ button:focus-visible {
   gap: 8px 18px;
   border: 1px solid #222222;
   padding: 10px;
+}
+
+.worksheet-needed {
+  display: grid;
+  gap: 4px;
+  border: 1px solid #222222;
+  padding: 8px 10px;
+  font-size: 0.92rem;
 }
 
 .worksheet-table,

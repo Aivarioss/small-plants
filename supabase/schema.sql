@@ -5,6 +5,7 @@ create type plan_row_source as enum ('user', 'import');
 create type work_adjustment_type as enum ('thinning', 'sideShoots', 'sticks');
 create type work_adjustment_source as enum ('manual', 'optimizer');
 create type greenhouse_row_id as enum ('A', 'B', 'C', 'D');
+create type plant_correction_reason as enum ('thinning', 'brownRoots', 'damaged', 'other');
 
 create table sowing_plan_rows (
   id uuid primary key default gen_random_uuid(),
@@ -62,12 +63,24 @@ create table change_history (
   created_at timestamptz not null default now()
 );
 
+create table plant_corrections (
+  id uuid primary key default gen_random_uuid(),
+  sowing_plan_row_id uuid not null references sowing_plan_rows (id) on delete cascade,
+  correction_date date not null,
+  amount integer not null check (amount <> 0),
+  reason plant_correction_reason not null,
+  note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create index sowing_plan_rows_sowing_date_idx on sowing_plan_rows (sowing_date);
 create index sowing_plan_rows_move_out_date_idx on sowing_plan_rows (move_out_date);
 create index sowing_plan_rows_hus_idx on sowing_plan_rows (hus);
 create index work_adjustments_plan_row_idx on work_adjustments (sowing_plan_row_id);
 create index table_placements_plan_row_idx on table_placements (sowing_plan_row_id);
 create index change_history_plan_row_created_idx on change_history (sowing_plan_row_id, created_at desc);
+create index plant_corrections_plan_row_date_idx on plant_corrections (sowing_plan_row_id, correction_date);
 
 create or replace function set_updated_at()
 returns trigger
@@ -91,10 +104,15 @@ create trigger table_placements_set_updated_at
 before update on table_placements
 for each row execute function set_updated_at();
 
+create trigger plant_corrections_set_updated_at
+before update on plant_corrections
+for each row execute function set_updated_at();
+
 alter table sowing_plan_rows enable row level security;
 alter table work_adjustments enable row level security;
 alter table table_placements enable row level security;
 alter table change_history enable row level security;
+alter table plant_corrections enable row level security;
 
 -- Shared-password app model:
 -- The browser must not receive Supabase credentials and should have no direct table access.

@@ -2,6 +2,7 @@ import "server-only";
 import type { SowingPlanRow } from "@/lib/types";
 import type {
   ChangeHistoryRecord,
+  PlantCorrectionRecord,
   SowingPlanRowWithRelations,
   TablePlacementRecord,
   WorkAdjustmentRecord,
@@ -10,6 +11,7 @@ import {
   recordToSowingPlanRow,
   rowAdjustmentsToRecords,
   rowChangeHistoryToRecords,
+  rowPlantCorrectionsToRecords,
   rowPlacementToRecord,
   sowingPlanRowToRecord,
 } from "@/lib/supabase/mappers";
@@ -44,7 +46,7 @@ async function loadRowsFromSupabase(): Promise<SowingPlanRow[]> {
 
   const { data, error } = await client
     .from("sowing_plan_rows")
-    .select("*, work_adjustments(*), table_placements(*), change_history(*)")
+    .select("*, work_adjustments(*), table_placements(*), change_history(*), plant_corrections(*)")
     .order("sowing_date", { ascending: true });
 
   if (error) {
@@ -69,6 +71,7 @@ async function createRowInSupabase(row: SowingPlanRow): Promise<SowingPlanRow> {
 
   await replaceWorkAdjustments(row);
   await replaceTablePlacement(row);
+  await replacePlantCorrections(row);
   await upsertChangeHistory(row);
 
   return loadRowById(row.id);
@@ -101,6 +104,7 @@ async function updateRowInSupabase(row: SowingPlanRow, expectedUpdatedAt?: strin
 
   await replaceWorkAdjustments(row);
   await replaceTablePlacement(row);
+  await replacePlantCorrections(row);
   await upsertChangeHistory(row);
 
   return loadRowById(row.id);
@@ -130,7 +134,7 @@ async function loadRowById(id: string): Promise<SowingPlanRow> {
   const client = createSupabaseServerClient();
   const { data, error } = await client
     .from("sowing_plan_rows")
-    .select("*, work_adjustments(*), table_placements(*), change_history(*)")
+    .select("*, work_adjustments(*), table_placements(*), change_history(*), plant_corrections(*)")
     .eq("id", id)
     .single();
 
@@ -200,6 +204,26 @@ async function replaceTablePlacement(row: SowingPlanRow): Promise<void> {
   const { error } = await client.from("table_placements").upsert(record as TablePlacementRecord, {
     onConflict: "sowing_plan_row_id",
   });
+
+  if (error) {
+    throw error;
+  }
+}
+
+async function replacePlantCorrections(row: SowingPlanRow): Promise<void> {
+  const client = createSupabaseServerClient();
+
+  const { error: deleteError } = await client.from("plant_corrections").delete().eq("sowing_plan_row_id", row.id);
+  if (deleteError) {
+    throw deleteError;
+  }
+
+  const records = rowPlantCorrectionsToRecords(row);
+  if (records.length === 0) {
+    return;
+  }
+
+  const { error } = await client.from("plant_corrections").upsert(records as PlantCorrectionRecord[], { onConflict: "id" });
 
   if (error) {
     throw error;

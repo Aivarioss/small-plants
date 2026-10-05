@@ -49,8 +49,20 @@ export type ChangeHistoryRecord = {
   created_at: string;
 };
 
+export type PlantCorrectionRecord = {
+  id: string;
+  sowing_plan_row_id: string;
+  correction_date: string;
+  amount: number;
+  reason: "thinning" | "brownRoots" | "damaged" | "other";
+  note: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
 export type SowingPlanRowWithRelations = SowingPlanRowRecord & {
   work_adjustments?: WorkAdjustmentRecord[];
   table_placements?: TablePlacementRecord[] | TablePlacementRecord;
   change_history?: ChangeHistoryRecord[];
+  plant_corrections?: PlantCorrectionRecord[];
 };

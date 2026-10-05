@@ -141,6 +141,7 @@ function normalizePlanRow(candidate: Partial<SowingPlanRow>): SowingPlanRow | nu
     correction,
     status: candidate.status ?? (candidate.source === "import" ? "imported" : "planned"),
     changeHistory: Array.isArray(candidate.changeHistory) ? candidate.changeHistory : [],
+    plantCorrections: Array.isArray(candidate.plantCorrections) ? candidate.plantCorrections : [],
     placement: candidate.placement,
     adjustments: candidate.adjustments,
     source: candidate.source === "demo" ? "demo" : candidate.source === "import" ? "import" : "user",

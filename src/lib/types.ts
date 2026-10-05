@@ -40,6 +40,16 @@ export type ChangeHistoryEntry = {
   note: string;
 };
 
+export type PlantCorrectionReason = "thinning" | "brownRoots" | "damaged" | "other";
+
+export type PlantCorrectionEntry = {
+  id: string;
+  date: string;
+  amount: number;
+  reason: PlantCorrectionReason;
+  note?: string;
+};
+
 export type SowingPlanRow = {
   id: string;
   updatedAt?: string;
@@ -58,6 +68,7 @@ export type SowingPlanRow = {
   correction: number;
   status?: "planned" | "imported" | "active" | "done";
   changeHistory?: ChangeHistoryEntry[];
+  plantCorrections?: PlantCorrectionEntry[];
   placement?: TablePlacement;
   adjustments?: WorkAdjustments;
   source?: "demo" | "user" | "import";

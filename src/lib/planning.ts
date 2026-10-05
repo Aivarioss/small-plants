@@ -59,6 +59,23 @@ export type MonthlyPrintDateGroup = {
   rows: GroupedMonthlyPrintRow[];
 };
 
+export type WorkMaterialSummary = {
+  sowing: string;
+  sowingTables: string;
+  thinning: string;
+  harvest: string;
+};
+
+export type PlantBalanceSummary = {
+  requiredPlants: number;
+  initialPlants: number;
+  correctionTotal: number;
+  actualPlants: number;
+  difference: number;
+  label: string;
+  tone: "ok" | "short";
+};
+
 export const greenhouseRows: GreenhouseRow[] = [
   { id: "A", label: "Rinda A", capacity: 26, standard: true },
   { id: "B", label: "Rinda B", capacity: 26, standard: true },
@@ -150,6 +167,31 @@ export function getTotalSow(row: Pick<SowingPlanRow, "requiredPlants" | "extraPl
   return Math.max(0, row.requiredPlants + row.extraPlants);
 }
 
+export function getPlantCorrectionTotal(row: Pick<SowingPlanRow, "correction" | "plantCorrections">): number {
+  return row.correction + (row.plantCorrections ?? []).reduce((sum, entry) => sum + entry.amount, 0);
+}
+
+export function getActualPlantCount(row: Pick<SowingPlanRow, "requiredPlants" | "extraPlants" | "correction" | "plantCorrections">): number {
+  return Math.max(0, getTotalSow(row) + getPlantCorrectionTotal(row));
+}
+
+export function calculatePlantBalance(row: Pick<SowingPlanRow, "requiredPlants" | "extraPlants" | "correction" | "plantCorrections">): PlantBalanceSummary {
+  const initialPlants = getTotalSow(row);
+  const correctionTotal = getPlantCorrectionTotal(row);
+  const actualPlants = Math.max(0, initialPlants + correctionTotal);
+  const difference = actualPlants - row.requiredPlants;
+
+  return {
+    requiredPlants: row.requiredPlants,
+    initialPlants,
+    correctionTotal,
+    actualPlants,
+    difference,
+    label: difference >= 0 ? `Rezerve ${difference} stādi` : `Trūkst ${Math.abs(difference)} stādi`,
+    tone: difference >= 0 ? "ok" : "short",
+  };
+}
+
 export function calculateSowingPlan(plantCount: number): SowingPlan {
   const fullTables = Math.floor(plantCount / FULL_TABLE_PLANTS);
   const remainder = plantCount % FULL_TABLE_PLANTS;
@@ -226,8 +268,7 @@ export function calculateBoxesNeeded(plantCount: number, plantsPerBox: number): 
 }
 
 export function calculateBoxPlan(row: SowingPlanRow): BoxPlan {
-  const planned = getTotalSow(row);
-  const plants = row.correction === 0 ? planned : Math.max(0, planned + row.correction);
+  const plants = getActualPlantCount(row);
   const totalBoxes = Math.ceil(plants / BOX_SIZE);
   const lastBoxPlants = plants % BOX_SIZE;
 
@@ -249,23 +290,36 @@ export function calculateBoxPlan(row: SowingPlanRow): BoxPlan {
 }
 
 export function calculateAvailability(row: SowingPlanRow): AvailabilityStatus {
-  const availablePlants = getTotalSow(row) + row.correction;
-  const difference = availablePlants - row.requiredPlants;
+  const balance = calculatePlantBalance(row);
 
-  if (difference >= 0) {
+  if (balance.difference >= 0) {
     return {
-      availablePlants,
-      difference,
-      label: `🟢 +${difference} extra`,
+      availablePlants: balance.actualPlants,
+      difference: balance.difference,
+      label: `🟢 +${balance.difference} extra`,
       tone: "ok",
     };
   }
 
   return {
-    availablePlants,
-    difference,
-    label: `🔴 Trūkst ${Math.abs(difference)}`,
+    availablePlants: balance.actualPlants,
+    difference: balance.difference,
+    label: `🔴 Trūkst ${Math.abs(balance.difference)}`,
     tone: "short",
+  };
+}
+
+export function calculateWorkMaterialSummary(row: SowingPlanRow): WorkMaterialSummary {
+  const totalSow = getTotalSow(row);
+  const sowing = calculateSowingPlan(totalSow);
+  const thinning = calculateThinningPlan(totalSow, row.sectorType);
+  const boxPlan = calculateBoxPlan(row);
+
+  return {
+    sowing: `${sowing.label} · ${totalSow.toLocaleString("lv-LV")} vates`,
+    sowingTables: row.sowingTables || "Nav norādīti",
+    thinning: `${thinning.label}`,
+    harvest: `${boxPlan.totalBoxes} kastītes`,
   };
 }
 
@@ -622,8 +676,12 @@ function workItemFromSchedule(scheduled: ScheduledWorkItem, rows: SowingPlanRow[
   let capacityWarning: string | undefined;
 
   if (scheduled.type === "sowing") {
-    const sowing = calculateSowingPlan(totalSow);
-    details.push(sowing.label, `${totalSow.toLocaleString("lv-LV")} stādi kopā sēt`, `Šķirne: ${row.variety}`);
+    const materials = calculateWorkMaterialSummary(row);
+    details.push(
+      materials.sowing,
+      `Šķirne: ${row.variety}`,
+      `Sēšanas galdi: ${materials.sowingTables}`,
+    );
   }
 
   if (scheduled.type === "thinning") {
@@ -654,8 +712,9 @@ function workItemFromSchedule(scheduled: ScheduledWorkItem, rows: SowingPlanRow[
   }
 
   if (scheduled.type === "harvest") {
+    const materials = calculateWorkMaterialSummary(row);
     const boxPlan = calculateBoxPlan(row);
-    details.push(`${boxPlan.totalBoxes} kastītes pa 12 stādiem`, boxPlan.label);
+    details.push(materials.harvest, boxPlan.label);
   }
 
   const warnings = scheduled.warnings ?? [];
@@ -1038,7 +1097,8 @@ export function compactMonthlyPrintRows(workItems: WorkItem[]): MonthlyPrintRow[
       const capacityNotes = sorted
         .map((item) => item.capacityWarning)
         .filter((note): note is string => Boolean(note));
-      const notes = [...minor.map((item) => item.title), ...capacityNotes].join(" · ");
+      const materialNotes = major.flatMap(monthlyMaterialNotes);
+      const notes = [...materialNotes, ...minor.map((item) => item.title), ...capacityNotes].join(" · ");
 
       return {
         date: first.date,
@@ -1055,6 +1115,22 @@ export function compactMonthlyPrintRows(workItems: WorkItem[]): MonthlyPrintRow[
         left.sectorName.localeCompare(right.sectorName, "lv", { numeric: true }) ||
         left.workTitle.localeCompare(right.workTitle, "lv"),
     );
+}
+
+function monthlyMaterialNotes(item: WorkItem): string[] {
+  if (item.type === "sowing") {
+    return item.details.slice(0, 1);
+  }
+
+  if (item.type === "thinning") {
+    return item.details.slice(0, 1);
+  }
+
+  if (item.type === "harvest") {
+    return item.details.slice(0, 1);
+  }
+
+  return [];
 }
 
 export function continuousWorkPlanPrintRows(workItems: WorkItem[], startDate: string): MonthlyPrintRow[] {

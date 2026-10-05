@@ -8,10 +8,12 @@ import {
   buildGreenhouseSnapshot,
   calculateBoxPlan,
   calculateAvailability,
+  calculatePlantBalance,
   continuousWorkPlanPrintRows,
   countMainWork,
   calculateSowingPlan,
   calculateThinningPlan,
+  calculateWorkMaterialSummary,
   createPlacementPlan,
   dateLabel,
   eachDate,
@@ -45,6 +47,8 @@ import type {
   ChangeHistoryEntry,
   ImportFieldKey,
   MainView,
+  PlantCorrectionEntry,
+  PlantCorrectionReason,
   PlanImportCandidate,
   PlanImportResult,
   SectorType,
@@ -749,6 +753,7 @@ export function PlannerApp() {
       {activeView === "worksheet" && selectedRow ? (
         <WorksheetView
           onEdit={() => setActiveView("batch")}
+          onUpdateRow={updatePlanRow}
           row={selectedRow}
           workItems={workItems.filter((item) => item.planRowId === selectedRow.id)}
         />
@@ -1173,19 +1178,36 @@ function CapacityAlerts({ items, onOpen }: { items: WorkItem[]; onOpen: (date: s
 
 function WorksheetView({
   onEdit,
+  onUpdateRow,
   row,
   workItems,
 }: {
   onEdit: () => void;
+  onUpdateRow: (id: string, patch: Partial<SowingPlanRow>) => void;
   row: SowingPlanRow;
   workItems: WorkItem[];
 }) {
   const [activeWorksheetTab, setActiveWorksheetTab] = useState<"works" | "worksheet">("works");
+  const [correctionDialogOpen, setCorrectionDialogOpen] = useState(false);
   const totalSow = getTotalSow(row);
+  const materials = calculateWorkMaterialSummary(row);
+  const balance = calculatePlantBalance(row);
   const worksheetDays = generateWorksheetDaysFromWorkItems(row, workItems);
   const chronologicalWorkItems = [...workItems].sort(
     (left, right) => left.date.localeCompare(right.date) || left.title.localeCompare(right.title, "lv"),
   );
+
+  function addPlantCorrection(entry: Omit<PlantCorrectionEntry, "id">) {
+    onUpdateRow(row.id, {
+      plantCorrections: [
+        ...(row.plantCorrections ?? []),
+        {
+          ...entry,
+          id: crypto.randomUUID(),
+        },
+      ],
+    });
+  }
 
   return (
     <section className="print-host">
@@ -1222,6 +1244,35 @@ function WorksheetView({
 
       {activeWorksheetTab === "works" ? (
         <div className="panel hus-work-panel no-print">
+          <section className="plant-balance-box">
+            <div>
+              <p className="eyebrow">Stādu atlikums</p>
+              <strong className={balance.tone === "short" ? "danger-text" : ""}>{balance.label}</strong>
+            </div>
+            <div className="plant-balance-grid">
+              <span>Nepieciešams: {balance.requiredPlants.toLocaleString("lv-LV")}</span>
+              <span>Iesēts: {balance.initialPlants.toLocaleString("lv-LV")}</span>
+              <span>Zudumi/korekcijas: {signedNumber(balance.correctionTotal)}</span>
+              <span>Faktiski: {balance.actualPlants.toLocaleString("lv-LV")}</span>
+              <span>Starpība: {signedNumber(balance.difference)}</span>
+            </div>
+            <button className="secondary-action" type="button" onClick={() => setCorrectionDialogOpen(true)}>
+              + Reģistrēt izmaiņu
+            </button>
+            {row.plantCorrections && row.plantCorrections.length > 0 ? (
+              <ul className="plant-correction-list">
+                {row.plantCorrections.map((entry) => (
+                  <li key={entry.id}>
+                    <time>{shortDate(entry.date)}</time>
+                    <span>{plantCorrectionReasonLabel(entry.reason)}{entry.note ? ` · ${entry.note}` : ""}</span>
+                    <strong>{signedNumber(entry.amount)}</strong>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="empty-state">Stādu skaita korekcijas vēl nav reģistrētas.</p>
+            )}
+          </section>
           <div className="work-list">
             {chronologicalWorkItems.map((item) => (
               <article className={`hus-work-row work-card--${item.color}`} key={item.id}>
@@ -1231,10 +1282,26 @@ function WorksheetView({
                   <span>
                     {item.cycleDay}. diena · {item.source === "manual" ? "Manuāli" : "Automātiski"}
                   </span>
+                  {item.details.length > 0 ? (
+                    <ul>
+                      {item.details.map((detail) => (
+                        <li key={detail}>{detail}</li>
+                      ))}
+                    </ul>
+                  ) : null}
                 </div>
               </article>
             ))}
           </div>
+          {correctionDialogOpen ? (
+            <PlantCorrectionDialog
+              onCancel={() => setCorrectionDialogOpen(false)}
+              onSave={(entry) => {
+                addPlantCorrection(entry);
+                setCorrectionDialogOpen(false);
+              }}
+            />
+          ) : null}
         </div>
       ) : null}
 
@@ -1247,6 +1314,13 @@ function WorksheetView({
             <span><strong>Šķirne:</strong> {row.variety}</span>
             <span><strong>Izvākšana:</strong> {shortDate(row.harvestDate)}</span>
             <span><strong>Sēšanas galdi:</strong> {row.sowingTables || "Nav norādīti"}</span>
+          </div>
+          <div className="worksheet-needed">
+            <strong>Nepieciešams</strong>
+            <span>Sēšana: {materials.sowing}</span>
+            <span>Sēšanas galdi: {materials.sowingTables}</span>
+            <span>Retināšana: {materials.thinning}</span>
+            <span>Izvākšana: {materials.harvest}</span>
           </div>
         </header>
 
@@ -1429,6 +1503,77 @@ function SowingTablesPicker({
           </section>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function PlantCorrectionDialog({
+  onCancel,
+  onSave,
+}: {
+  onCancel: () => void;
+  onSave: (entry: Omit<PlantCorrectionEntry, "id">) => void;
+}) {
+  const [amount, setAmount] = useState("");
+  const [reason, setReason] = useState<PlantCorrectionReason>("thinning");
+  const [note, setNote] = useState("");
+  const parsedAmount = Number(amount);
+  const canSave = Number.isFinite(parsedAmount) && parsedAmount !== 0 && (reason !== "other" || note.trim().length > 0);
+
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <section aria-modal="true" aria-label="Reģistrēt stādu skaita izmaiņu" className="sowing-tables-dialog" role="dialog">
+        <div>
+          <p className="eyebrow">Stādu korekcija</p>
+          <h3>Reģistrēt izmaiņu</h3>
+        </div>
+        <label>
+          Daudzums
+          <input
+            autoFocus
+            inputMode="numeric"
+            placeholder="-68"
+            type="number"
+            value={amount}
+            onChange={(event) => setAmount(event.target.value)}
+          />
+        </label>
+        <label>
+          Iemesls
+          <select value={reason} onChange={(event) => setReason(event.target.value as PlantCorrectionReason)}>
+            <option value="thinning">Retināšana</option>
+            <option value="brownRoots">Brūnās saknes</option>
+            <option value="damaged">Bojāti</option>
+            <option value="other">Cits</option>
+          </select>
+        </label>
+        {reason === "other" ? (
+          <label>
+            Piezīme
+            <input maxLength={80} value={note} onChange={(event) => setNote(event.target.value)} />
+          </label>
+        ) : null}
+        <div className="button-row">
+          <button className="secondary-action" type="button" onClick={onCancel}>
+            Atcelt
+          </button>
+          <button
+            className="primary-action"
+            disabled={!canSave}
+            type="button"
+            onClick={() =>
+              onSave({
+                amount: parsedAmount,
+                date: new Date().toISOString().slice(0, 10),
+                note: note.trim() || undefined,
+                reason,
+              })
+            }
+          >
+            Saglabāt
+          </button>
+        </div>
+      </section>
     </div>
   );
 }
@@ -2041,14 +2186,6 @@ function BatchEditor({
           <option value={39}>39 galdi</option>
         </select>
       </label>
-      <label>
-        Zudumi / korekcija
-        <input
-          type="number"
-          value={row.correction}
-          onChange={(event) => onUpdateRow(row.id, { correction: Number(event.target.value) })}
-        />
-      </label>
       <div className={`availability availability--${availability.tone}`}>
         <span>Faktiski pieejams: {availability.availablePlants.toLocaleString("lv-LV")}</span>
         <strong>{availability.label}</strong>
@@ -2221,6 +2358,14 @@ function appendChangeHistory(
 
   if (resetSchedule && hasManualWorkMoves(previous)) {
     history.push(historyEntry("Darbu grafiks", "Manuāli pārcelts", "Pārrēķināts", next.sectorName));
+  }
+
+  if ("plantCorrections" in patch) {
+    const previousTotal = (previous.plantCorrections ?? []).reduce((sum, entry) => sum + entry.amount, 0);
+    const nextTotal = (next.plantCorrections ?? []).reduce((sum, entry) => sum + entry.amount, 0);
+    if (previousTotal !== nextTotal || (previous.plantCorrections ?? []).length !== (next.plantCorrections ?? []).length) {
+      history.push(historyEntry("Stādu korekcijas", signedNumber(previousTotal), signedNumber(nextTotal), next.sectorName));
+    }
   }
 
   return history;
@@ -2423,6 +2568,21 @@ function formatDateRange(dates: string[]): string {
   }
 
   return `${shortDate(dates[0])}-${shortDate(dates[dates.length - 1])}`;
+}
+
+function signedNumber(value: number): string {
+  return value > 0 ? `+${value.toLocaleString("lv-LV")}` : value.toLocaleString("lv-LV");
+}
+
+function plantCorrectionReasonLabel(reason: PlantCorrectionReason): string {
+  const labels: Record<PlantCorrectionReason, string> = {
+    brownRoots: "Brūnās saknes",
+    damaged: "Bojāti",
+    other: "Cits",
+    thinning: "Retināšana",
+  };
+
+  return labels[reason];
 }
 
 function historyDateLabel(timestamp: string): string {

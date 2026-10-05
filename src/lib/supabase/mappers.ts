@@ -1,7 +1,8 @@
 import { plannerConfig } from "@/lib/demo-data";
-import type { ChangeHistoryEntry, SowingPlanRow, WorkAdjustments } from "@/lib/types";
+import type { ChangeHistoryEntry, PlantCorrectionEntry, SowingPlanRow, WorkAdjustments } from "@/lib/types";
 import type {
   ChangeHistoryRecord,
+  PlantCorrectionRecord,
   SowingPlanRowRecord,
   SowingPlanRowWithRelations,
   TablePlacementRecord,
@@ -38,6 +39,9 @@ export function recordToSowingPlanRow(record: SowingPlanRowWithRelations): Sowin
         }
       : undefined,
     changeHistory: (record.change_history ?? []).map(recordToChangeHistory),
+    plantCorrections: (record.plant_corrections ?? [])
+      .map(recordToPlantCorrection)
+      .sort((left, right) => left.date.localeCompare(right.date) || left.id.localeCompare(right.id)),
   };
 }
 
@@ -106,6 +110,17 @@ export function rowChangeHistoryToRecords(row: SowingPlanRow): ChangeHistoryReco
   }));
 }
 
+export function rowPlantCorrectionsToRecords(row: SowingPlanRow): PlantCorrectionRecord[] {
+  return (row.plantCorrections ?? []).map((entry) => ({
+    id: entry.id,
+    sowing_plan_row_id: row.id,
+    correction_date: entry.date,
+    amount: entry.amount,
+    reason: entry.reason,
+    note: entry.note ?? null,
+  }));
+}
+
 function recordsToAdjustments(records: WorkAdjustmentRecord[]): WorkAdjustments | undefined {
   const adjustments = Object.fromEntries(
     records.map((record) => [
@@ -125,5 +140,15 @@ function recordToChangeHistory(record: ChangeHistoryRecord): ChangeHistoryEntry 
     from: record.from_value,
     to: record.to_value,
     note: record.note,
+  };
+}
+
+function recordToPlantCorrection(record: PlantCorrectionRecord): PlantCorrectionEntry {
+  return {
+    id: record.id,
+    date: record.correction_date,
+    amount: record.amount,
+    reason: record.reason,
+    note: record.note ?? undefined,
   };
 }

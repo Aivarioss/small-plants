@@ -24,6 +24,8 @@ import {
   formatSowingTableSelection,
   isAllowedMove,
   parseSowingTableSelection,
+  sowingTableIds,
+  toggleSowingTableSelection,
 } from "./planning";
 import { candidateCycleLength, mockPlanImportService } from "./plan-import-service";
 import { deriveCycleLength } from "./hus-templates";
@@ -233,8 +235,22 @@ describe("planning calculations", () => {
   it("formats sowing table selections as compact ranges", () => {
     expect(formatSowingTableSelection(["A3", "A4", "A5", "A6", "A7"])).toBe("A3–A7");
     expect(formatSowingTableSelection(["A1", "A2", "A5"])).toBe("A1–A2, A5");
+    expect(formatSowingTableSelection(["A1"])).toBe("A1");
     expect(parseSowingTableSelection("A3–A7")).toEqual(["A3", "A4", "A5", "A6", "A7"]);
     expect(parseSowingTableSelection("A1-A2, A5")).toEqual(["A1", "A2", "A5"]);
+  });
+
+  it("offers exactly sowing tables A1 through A13", () => {
+    expect(sowingTableIds).toEqual(["A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10", "A11", "A12", "A13"]);
+    expect(new Set(sowingTableIds).size).toBe(13);
+  });
+
+  it("keeps sowing table dialog edits local until saved", () => {
+    const savedValue = "A1";
+    const draft = toggleSowingTableSelection(parseSowingTableSelection(savedValue), "A2");
+
+    expect(formatSowingTableSelection(draft)).toBe("A1–A2");
+    expect(formatSowingTableSelection(parseSowingTableSelection(savedValue))).toBe("A1");
   });
 
   it("prints minor monthly work as notes instead of separate rows", () => {

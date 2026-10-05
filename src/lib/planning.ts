@@ -315,6 +315,18 @@ export function formatSowingTableSelection(tables: string[]): string {
   return ranges.join(", ");
 }
 
+export function toggleSowingTableSelection(tables: string[], table: string): string[] {
+  const selected = new Set(tables);
+
+  if (selected.has(table)) {
+    selected.delete(table);
+  } else if (sowingTableIds.includes(table)) {
+    selected.add(table);
+  }
+
+  return sowingTableIds.filter((candidate) => selected.has(candidate));
+}
+
 export function isAllowedMove(row: SowingPlanRow, type: WorkType, date: string): boolean {
   const cycleDay = getCycleDay(row, date);
   const ringsDate = addDays(row.harvestDate, -1);

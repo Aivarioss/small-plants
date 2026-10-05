@@ -611,13 +611,67 @@ button:focus-visible {
 
 .sowing-tables {
   display: grid;
-  gap: 7px;
+  gap: 6px;
   font-weight: 720;
+}
+
+.sowing-tables--compact {
+  min-width: 0;
+}
+
+.sowing-tables__trigger {
+  min-height: 36px;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--green-dark);
+  font-weight: 800;
+  overflow: hidden;
+  padding: 6px 9px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sowing-tables__trigger:hover,
+.sowing-tables__trigger:focus-visible {
+  border-color: var(--green);
+  outline: none;
+}
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  background: rgb(15 23 42 / 0.42);
+  padding: 16px;
+}
+
+.sowing-tables-dialog {
+  display: grid;
+  width: min(420px, calc(100vw - 24px));
+  max-height: calc(100vh - 32px);
+  gap: 14px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 24px 60px rgb(15 23 42 / 0.28);
+  padding: 18px;
+}
+
+.sowing-tables-dialog h3 {
+  margin: 3px 0 0;
+  color: var(--green-dark);
+  font-size: 1.08rem;
 }
 
 .sowing-table-options {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(44px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -636,25 +690,11 @@ button:focus-visible {
   color: #ffffff;
 }
 
-.sowing-tables__summary {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 6px;
-  align-items: center;
-}
-
-.sowing-tables__summary strong {
-  overflow-wrap: anywhere;
+.sowing-tables__preview {
+  border-radius: 6px;
+  background: var(--green-soft);
   color: var(--muted);
-  font-size: 0.9rem;
-}
-
-.sowing-tables--compact .sowing-table-options {
-  grid-template-columns: repeat(4, minmax(38px, 1fr));
-}
-
-.sowing-tables--compact .sowing-tables__summary {
-  grid-template-columns: 1fr;
+  padding: 8px 10px;
 }
 
 .plan-table {

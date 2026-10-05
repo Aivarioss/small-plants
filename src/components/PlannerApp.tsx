@@ -24,6 +24,7 @@ import {
   isAllowedMove,
   parseSowingTableSelection,
   sowingTableIds,
+  toggleSowingTableSelection,
   toIsoDate,
 } from "@/lib/planning";
 import {
@@ -1353,35 +1354,71 @@ function SowingTablesPicker({
   value: string;
 }) {
   const [selected, setSelected] = useState<string[]>(() => parseSowingTableSelection(value));
-  const formatted = formatSowingTableSelection(selected);
+  const [open, setOpen] = useState(false);
+  const savedLabel = formatSowingTableSelection(parseSowingTableSelection(value));
+  const draftLabel = formatSowingTableSelection(selected);
 
   function toggle(table: string) {
-    setSelected((current) =>
-      current.includes(table) ? current.filter((item) => item !== table) : sowingTableIds.filter((item) => item === table || current.includes(item)),
-    );
+    setSelected((current) => toggleSowingTableSelection(current, table));
+  }
+
+  function openDialog() {
+    setSelected(parseSowingTableSelection(value));
+    setOpen(true);
+  }
+
+  function cancelDialog() {
+    setSelected(parseSowingTableSelection(value));
+    setOpen(false);
+  }
+
+  function saveDialog() {
+    onSave(draftLabel);
+    setOpen(false);
   }
 
   return (
     <div className={compact ? "sowing-tables sowing-tables--compact" : "sowing-tables"}>
       <span>Sēšanas galdi</span>
-      <div className="sowing-table-options" aria-label="Sēšanas galdi A1 līdz A13">
-        {sowingTableIds.map((table) => (
-          <button
-            className={selected.includes(table) ? "is-active" : ""}
-            key={table}
-            onClick={() => toggle(table)}
-            type="button"
+      <button className="sowing-tables__trigger" type="button" onClick={openDialog}>
+        {savedLabel || "Norādīt"}
+      </button>
+      {open ? (
+        <div className="dialog-backdrop" role="presentation">
+          <section
+            aria-modal="true"
+            aria-label="Izvēlēties sēšanas galdus"
+            className="sowing-tables-dialog"
+            role="dialog"
           >
-            {table}
-          </button>
-        ))}
-      </div>
-      <div className="sowing-tables__summary">
-        <strong>{formatted || "Nav norādīti"}</strong>
-        <button className="secondary-action" type="button" onClick={() => onSave(formatted)}>
-          Saglabāt
-        </button>
-      </div>
+            <div>
+              <p className="eyebrow">Sēšanas galdi</p>
+              <h3>Izvēlies A1-A13</h3>
+            </div>
+            <div className="sowing-table-options" aria-label="Sēšanas galdi A1 līdz A13">
+              {sowingTableIds.map((table) => (
+                <button
+                  className={selected.includes(table) ? "is-active" : ""}
+                  key={table}
+                  onClick={() => toggle(table)}
+                  type="button"
+                >
+                  {table}
+                </button>
+              ))}
+            </div>
+            <strong className="sowing-tables__preview">{draftLabel || "Nav norādīti"}</strong>
+            <div className="button-row">
+              <button className="secondary-action" type="button" onClick={cancelDialog}>
+                Atcelt
+              </button>
+              <button className="primary-action" type="button" onClick={saveDialog}>
+                Saglabāt
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }

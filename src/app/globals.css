@@ -1269,6 +1269,24 @@ textarea {
   font-size: 0.9rem;
 }
 
+.plant-change-field {
+  display: grid;
+  gap: 7px;
+  color: var(--text);
+  font-weight: 720;
+}
+
+.plant-change-mode {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+}
+
+.plant-change-mode button {
+  min-height: 44px;
+  padding: 6px;
+  white-space: normal;
+}
+
 .danger-text {
   color: #9f1d1d;
 }
@@ -1572,6 +1590,16 @@ textarea {
   .plant-correction-list .secondary-action--small,
   .plant-correction-list .danger-action--small {
     min-height: 36px;
+  }
+
+  .plant-change-mode {
+    gap: 5px;
+    padding: 5px;
+  }
+
+  .plant-change-mode button {
+    font-size: 0.84rem;
+    line-height: 1.1;
   }
 
   .hus-journal-list li {

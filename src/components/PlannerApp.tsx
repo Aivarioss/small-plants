@@ -1950,17 +1950,32 @@ function HusEventDialog({
   onSave: (entry: HusEventEntry) => void;
   row: SowingPlanRow;
 }) {
+  type PlantChangeMode = "none" | "loss" | "addition";
+  const initialPlantChangeMode: PlantChangeMode =
+    typeof entry?.plantChange !== "number" || entry.plantChange === 0
+      ? "none"
+      : entry.plantChange < 0
+        ? "loss"
+        : "addition";
   const [eventDate, setEventDate] = useState(() => entry?.eventDate ?? row.sowingDate);
   const [eventType, setEventType] = useState<HusEventType>(entry?.eventType ?? "observation");
   const [location, setLocation] = useState(entry?.location ?? "");
   const [destinationLocation, setDestinationLocation] = useState(entry?.destinationLocation ?? "");
-  const [plantChange, setPlantChange] = useState(() => (typeof entry?.plantChange === "number" ? String(entry.plantChange) : ""));
+  const [plantChangeMode, setPlantChangeMode] = useState<PlantChangeMode>(initialPlantChangeMode);
+  const [plantChangeAmount, setPlantChangeAmount] = useState(() =>
+    typeof entry?.plantChange === "number" && entry.plantChange !== 0 ? String(Math.abs(entry.plantChange)) : "",
+  );
   const [note, setNote] = useState(entry?.note ?? "");
-  const parsedPlantChange = plantChange.trim() === "" ? undefined : Number(plantChange);
+  const parsedPlantChangeAmount = plantChangeAmount.trim() === "" ? undefined : Number(plantChangeAmount);
+  const plantChange =
+    plantChangeMode === "none" || parsedPlantChangeAmount === undefined
+      ? undefined
+      : signedPlantCorrectionAmount(plantChangeMode === "loss" ? "loss" : "addition", parsedPlantChangeAmount);
   const canSave =
     Boolean(eventDate) &&
     Boolean(eventType) &&
-    (parsedPlantChange === undefined || (Number.isFinite(parsedPlantChange) && parsedPlantChange !== 0));
+    (plantChangeMode === "none" ||
+      (Number.isFinite(parsedPlantChangeAmount) && parsedPlantChangeAmount !== undefined && parsedPlantChangeAmount > 0));
 
   return (
     <div className="dialog-backdrop" role="presentation">
@@ -1999,16 +2014,45 @@ function HusEventDialog({
             onChange={(event) => setDestinationLocation(event.target.value)}
           />
         </label>
-        <label>
+        <div className="plant-change-field">
           Stādu izmaiņa
-          <input
-            inputMode="numeric"
-            placeholder="-32"
-            type="number"
-            value={plantChange}
-            onChange={(event) => setPlantChange(event.target.value)}
-          />
-        </label>
+          <div className="segmented segmented--compact plant-change-mode" aria-label="Stādu izmaiņas veids">
+            <button
+              className={plantChangeMode === "none" ? "is-active" : ""}
+              onClick={() => setPlantChangeMode("none")}
+              type="button"
+            >
+              Nav
+            </button>
+            <button
+              className={plantChangeMode === "loss" ? "is-active" : ""}
+              onClick={() => setPlantChangeMode("loss")}
+              type="button"
+            >
+              − Zudums
+            </button>
+            <button
+              className={plantChangeMode === "addition" ? "is-active" : ""}
+              onClick={() => setPlantChangeMode("addition")}
+              type="button"
+            >
+              + Papildinājums
+            </button>
+          </div>
+        </div>
+        {plantChangeMode !== "none" ? (
+          <label>
+            Daudzums
+            <input
+              inputMode="numeric"
+              min="1"
+              placeholder="32"
+              type="number"
+              value={plantChangeAmount}
+              onChange={(event) => setPlantChangeAmount(event.target.value)}
+            />
+          </label>
+        ) : null}
         <label>
           Piezīme
           <textarea maxLength={240} rows={3} value={note} onChange={(event) => setNote(event.target.value)} />
@@ -2028,7 +2072,7 @@ function HusEventDialog({
                 eventType,
                 location: location.trim() || undefined,
                 destinationLocation: destinationLocation.trim() || undefined,
-                plantChange: parsedPlantChange,
+                plantChange,
                 plantCorrectionId: entry?.plantCorrectionId,
                 note: note.trim() || undefined,
                 createdAt: entry?.createdAt,

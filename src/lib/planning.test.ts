@@ -353,6 +353,75 @@ describe("planning calculations", () => {
     expect(deleted.plantCorrections).toEqual([]);
   });
 
+  it("updates linked corrections across Hus journal plant-change mode transitions", () => {
+    const createId = (() => {
+      let index = 0;
+      return () => `correction-${++index}`;
+    })();
+    const now = () => "2026-10-11T08:00:00.000Z";
+    const empty = applyHusEventSave(row, {
+      id: "event-change",
+      eventDate: "2026-10-11",
+      eventType: "observation",
+    }, createId, now);
+
+    expect(empty.husEvents?.[0].plantCorrectionId).toBeUndefined();
+    expect(empty.plantCorrections).toEqual([]);
+
+    const loss32 = applyHusEventSave(empty, {
+      ...empty.husEvents![0],
+      plantChange: -32,
+    }, createId, now);
+
+    expect(loss32.husEvents?.[0].plantCorrectionId).toBe("correction-1");
+    expect(loss32.plantCorrections).toEqual([
+      expect.objectContaining({ id: "correction-1", amount: -32 }),
+    ]);
+
+    const loss20 = applyHusEventSave(loss32, {
+      ...loss32.husEvents![0],
+      plantChange: -20,
+    }, createId, now);
+
+    expect(loss20.husEvents?.[0].plantCorrectionId).toBe("correction-1");
+    expect(loss20.plantCorrections).toEqual([
+      expect.objectContaining({ id: "correction-1", amount: -20 }),
+    ]);
+
+    const addition20 = applyHusEventSave(loss20, {
+      ...loss20.husEvents![0],
+      plantChange: 20,
+    }, createId, now);
+
+    expect(addition20.husEvents?.[0].plantCorrectionId).toBe("correction-1");
+    expect(addition20.plantCorrections).toEqual([
+      expect.objectContaining({ id: "correction-1", amount: 20 }),
+    ]);
+
+    const backToNone = applyHusEventSave(addition20, {
+      ...addition20.husEvents![0],
+      plantChange: undefined,
+    }, createId, now);
+
+    expect(backToNone.husEvents?.[0].plantCorrectionId).toBeUndefined();
+    expect(backToNone.plantCorrections).toEqual([]);
+
+    const additionAgain = applyHusEventSave(backToNone, {
+      ...backToNone.husEvents![0],
+      plantChange: 20,
+    }, createId, now);
+    const noneAgain = applyHusEventSave(additionAgain, {
+      ...additionAgain.husEvents![0],
+      plantChange: undefined,
+    }, createId, now);
+
+    expect(additionAgain.plantCorrections).toEqual([
+      expect.objectContaining({ id: "correction-2", amount: 20 }),
+    ]);
+    expect(noneAgain.husEvents?.[0].plantCorrectionId).toBeUndefined();
+    expect(noneAgain.plantCorrections).toEqual([]);
+  });
+
   it("calculates Hus journal biological day from the cycle sowing date", () => {
     expect(getCycleDay({ sowingDate: "2026-10-01" }, "2026-10-17")).toBe(17);
   });

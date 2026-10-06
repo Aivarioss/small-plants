@@ -117,12 +117,12 @@ async function updateRowInSupabase(row: SowingPlanRow, expectedUpdatedAt?: strin
     throw new Error("Demo rows cannot be saved to Supabase.");
   }
 
-  await assertCurrentVersion(row.id, expectedUpdatedAt);
+  const currentUpdatedAt = await assertCurrentVersion(row.id, expectedUpdatedAt);
 
   const patch = rowRecordUpdatePatch(record);
   let query = client.from("sowing_plan_rows").update(patch).eq("id", row.id);
-  if (expectedUpdatedAt) {
-    query = query.eq("updated_at", expectedUpdatedAt);
+  if (currentUpdatedAt) {
+    query = query.eq("updated_at", currentUpdatedAt);
   }
 
   const { data, error } = await query.select("id").maybeSingle();
@@ -145,11 +145,11 @@ async function updateRowInSupabase(row: SowingPlanRow, expectedUpdatedAt?: strin
 async function deleteRowFromSupabase(id: string, expectedUpdatedAt?: string): Promise<void> {
   const client = createSupabaseServerClient();
 
-  await assertCurrentVersion(id, expectedUpdatedAt);
+  const currentUpdatedAt = await assertCurrentVersion(id, expectedUpdatedAt);
 
   let query = client.from("sowing_plan_rows").delete().eq("id", id);
-  if (expectedUpdatedAt) {
-    query = query.eq("updated_at", expectedUpdatedAt);
+  if (currentUpdatedAt) {
+    query = query.eq("updated_at", currentUpdatedAt);
   }
 
   const { data, error } = await query.select("id").maybeSingle();
@@ -191,9 +191,9 @@ async function loadRowById(id: string): Promise<SowingPlanRow> {
   return recordToSowingPlanRow(data as SowingPlanRowWithRelations);
 }
 
-async function assertCurrentVersion(id: string, expectedUpdatedAt?: string): Promise<void> {
+async function assertCurrentVersion(id: string, expectedUpdatedAt?: string): Promise<string | undefined> {
   if (!expectedUpdatedAt) {
-    return;
+    return undefined;
   }
 
   const client = createSupabaseServerClient();
@@ -207,9 +207,22 @@ async function assertCurrentVersion(id: string, expectedUpdatedAt?: string): Pro
     throw new SowingPlanNotFoundError();
   }
 
-  if (data.updated_at !== expectedUpdatedAt) {
+  if (!isSameTimestamp(data.updated_at, expectedUpdatedAt)) {
     throw new SowingPlanConflictError();
   }
+
+  return data.updated_at;
+}
+
+function isSameTimestamp(left: string, right: string): boolean {
+  const leftTime = Date.parse(left);
+  const rightTime = Date.parse(right);
+
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime)) {
+    return leftTime === rightTime;
+  }
+
+  return left === right;
 }
 
 async function replaceWorkAdjustments(row: SowingPlanRow): Promise<void> {

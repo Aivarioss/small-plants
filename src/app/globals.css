@@ -1190,6 +1190,20 @@ button:focus-visible {
   font-weight: 800;
 }
 
+.plant-correction-list li > span:not(.button-row) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.plant-correction-list strong {
+  justify-self: end;
+  white-space: nowrap;
+}
+
+.plant-correction-list .button-row {
+  justify-content: flex-end;
+}
+
 .danger-text {
   color: #9f1d1d;
 }
@@ -1477,6 +1491,22 @@ button:focus-visible {
 
   .agenda-work {
     padding: 7px 8px;
+  }
+
+  .plant-correction-list li {
+    grid-template-columns: 58px minmax(0, 1fr) auto;
+    gap: 6px 8px;
+    align-items: start;
+  }
+
+  .plant-correction-list .button-row {
+    grid-column: 2 / -1;
+    justify-content: flex-start;
+  }
+
+  .plant-correction-list .secondary-action--small,
+  .plant-correction-list .danger-action--small {
+    min-height: 36px;
   }
 }
 

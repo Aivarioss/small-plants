@@ -26,9 +26,12 @@ import {
   hasManualWorkMoves,
   isAllowedMove,
   parseSowingTableSelection,
+  removePlantCorrection,
   sowingTableIds,
+  signedPlantCorrectionAmount,
   toggleSowingTableSelection,
   toIsoDate,
+  upsertPlantCorrection,
 } from "@/lib/planning";
 import {
   applyHusTemplateToDraft,
@@ -1344,6 +1347,7 @@ function WorksheetView({
 }) {
   const [activeWorksheetTab, setActiveWorksheetTab] = useState<"works" | "worksheet">("works");
   const [correctionDialogOpen, setCorrectionDialogOpen] = useState(false);
+  const [editingCorrection, setEditingCorrection] = useState<PlantCorrectionEntry | null>(null);
   const totalSow = getTotalSow(row);
   const materials = calculateWorkMaterialSummary(row);
   const balance = calculatePlantBalance(row);
@@ -1352,16 +1356,25 @@ function WorksheetView({
     (left, right) => left.date.localeCompare(right.date) || left.title.localeCompare(right.title, "lv"),
   );
 
-  function addPlantCorrection(entry: Omit<PlantCorrectionEntry, "id">) {
+  function savePlantCorrection(entry: PlantCorrectionEntry) {
     onUpdateRow(row.id, {
-      plantCorrections: [
-        ...(row.plantCorrections ?? []),
-        {
-          ...entry,
-          id: crypto.randomUUID(),
-        },
-      ],
+      plantCorrections: upsertPlantCorrection(row.plantCorrections, entry),
     });
+  }
+
+  function deletePlantCorrection(entry: PlantCorrectionEntry) {
+    if (!window.confirm(`Dzēst korekciju ${signedNumber(entry.amount)} (${plantCorrectionReasonLabel(entry.reason)})?`)) {
+      return;
+    }
+
+    onUpdateRow(row.id, {
+      plantCorrections: removePlantCorrection(row.plantCorrections, entry.id),
+    });
+  }
+
+  function closeCorrectionDialog() {
+    setCorrectionDialogOpen(false);
+    setEditingCorrection(null);
   }
 
   return (
@@ -1386,7 +1399,7 @@ function WorksheetView({
           onClick={() => setActiveWorksheetTab("works")}
           type="button"
         >
-          Darbi
+          HUS info
         </button>
         <button
           className={activeWorksheetTab === "worksheet" ? "is-active" : ""}
@@ -1400,20 +1413,34 @@ function WorksheetView({
       {activeWorksheetTab === "works" ? (
         <div className="panel hus-work-panel no-print">
           <section className="plant-balance-box">
-            <div>
-              <p className="eyebrow">Stādu atlikums</p>
+            <div className="hus-info-heading">
+              <div>
+                <p className="eyebrow">HUS info</p>
+                <h3>{row.sectorName}</h3>
+                <span>{row.variety}</span>
+              </div>
               <strong className={balance.tone === "short" ? "danger-text" : ""}>{balance.label}</strong>
             </div>
             <div className="plant-balance-grid">
               <span>
-                Nepieciešams: {balance.requiredPlants === null ? "Nav norādīts" : balance.requiredPlants.toLocaleString("lv-LV")}
+                Siltumnīcai nepieciešams:{" "}
+                {balance.requiredPlants === null ? "Nav norādīts" : balance.requiredPlants.toLocaleString("lv-LV")}
               </span>
-              <span>Iesēts: {balance.initialPlants.toLocaleString("lv-LV")}</span>
+              <span>Agronoma sējamais: {row.requiredPlants.toLocaleString("lv-LV")}</span>
+              <span>Extra: {signedNumber(row.extraPlants)}</span>
+              <span>Sākotnēji iesēts: {balance.initialPlants.toLocaleString("lv-LV")}</span>
               <span>Zudumi/korekcijas: {signedNumber(balance.correctionTotal)}</span>
-              <span>Faktiski: {balance.actualPlants.toLocaleString("lv-LV")}</span>
-              <span>Starpība: {balance.difference === null ? "Nav aprēķināma" : signedNumber(balance.difference)}</span>
+              <span>Faktiski šobrīd: {balance.actualPlants.toLocaleString("lv-LV")}</span>
+              <span>{balance.difference === null ? "Rezerve/trūkums: Nav aprēķināms" : balance.difference >= 0 ? `Rezerve: ${signedNumber(balance.difference)}` : `Trūkst: ${Math.abs(balance.difference)}`}</span>
             </div>
-            <button className="secondary-action" type="button" onClick={() => setCorrectionDialogOpen(true)}>
+            <button
+              className="secondary-action"
+              type="button"
+              onClick={() => {
+                setEditingCorrection(null);
+                setCorrectionDialogOpen(true);
+              }}
+            >
               + Reģistrēt izmaiņu
             </button>
             {row.plantCorrections && row.plantCorrections.length > 0 ? (
@@ -1423,6 +1450,21 @@ function WorksheetView({
                     <time>{shortDate(entry.date)}</time>
                     <span>{plantCorrectionReasonLabel(entry.reason)}{entry.note ? ` · ${entry.note}` : ""}</span>
                     <strong>{signedNumber(entry.amount)}</strong>
+                    <span className="button-row">
+                      <button
+                        className="secondary-action secondary-action--small"
+                        type="button"
+                        onClick={() => {
+                          setEditingCorrection(entry);
+                          setCorrectionDialogOpen(true);
+                        }}
+                      >
+                        Rediģēt
+                      </button>
+                      <button className="danger-action danger-action--small" type="button" onClick={() => deletePlantCorrection(entry)}>
+                        Dzēst
+                      </button>
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -1452,10 +1494,11 @@ function WorksheetView({
           </div>
           {correctionDialogOpen ? (
             <PlantCorrectionDialog
-              onCancel={() => setCorrectionDialogOpen(false)}
+              entry={editingCorrection}
+              onCancel={closeCorrectionDialog}
               onSave={(entry) => {
-                addPlantCorrection(entry);
-                setCorrectionDialogOpen(false);
+                savePlantCorrection(entry);
+                closeCorrectionDialog();
               }}
             />
           ) : null}
@@ -1665,35 +1708,60 @@ function SowingTablesPicker({
 }
 
 function PlantCorrectionDialog({
+  entry,
   onCancel,
   onSave,
 }: {
+  entry: PlantCorrectionEntry | null;
   onCancel: () => void;
-  onSave: (entry: Omit<PlantCorrectionEntry, "id">) => void;
+  onSave: (entry: PlantCorrectionEntry) => void;
 }) {
-  const [amount, setAmount] = useState("");
-  const [reason, setReason] = useState<PlantCorrectionReason>("thinning");
-  const [note, setNote] = useState("");
+  const [direction, setDirection] = useState<"loss" | "addition">(() => (entry && entry.amount > 0 ? "addition" : "loss"));
+  const [amount, setAmount] = useState(() => (entry ? String(Math.abs(entry.amount)) : ""));
+  const [date, setDate] = useState(() => entry?.date ?? new Date().toISOString().slice(0, 10));
+  const [reason, setReason] = useState<PlantCorrectionReason>(entry?.reason ?? "thinning");
+  const [note, setNote] = useState(entry?.note ?? "");
   const parsedAmount = Number(amount);
-  const canSave = Number.isFinite(parsedAmount) && parsedAmount !== 0 && (reason !== "other" || note.trim().length > 0);
+  const canSave = Number.isFinite(parsedAmount) && parsedAmount > 0 && Boolean(date) && (reason !== "other" || note.trim().length > 0);
 
   return (
     <div className="dialog-backdrop" role="presentation">
       <section aria-modal="true" aria-label="Reģistrēt stādu skaita izmaiņu" className="sowing-tables-dialog" role="dialog">
         <div>
           <p className="eyebrow">Stādu korekcija</p>
-          <h3>Reģistrēt izmaiņu</h3>
+          <h3>{entry ? "Rediģēt izmaiņu" : "Reģistrēt izmaiņu"}</h3>
+        </div>
+        <div className="segmented segmented--compact" aria-label="Korekcijas veids">
+          <button
+            className={direction === "loss" ? "is-active" : ""}
+            onClick={() => setDirection("loss")}
+            type="button"
+          >
+            − Zudums
+          </button>
+          <button
+            className={direction === "addition" ? "is-active" : ""}
+            onClick={() => setDirection("addition")}
+            type="button"
+          >
+            + Papildinājums
+          </button>
         </div>
         <label>
           Daudzums
           <input
             autoFocus
             inputMode="numeric"
-            placeholder="-68"
+            min="1"
+            placeholder="100"
             type="number"
             value={amount}
             onChange={(event) => setAmount(event.target.value)}
           />
+        </label>
+        <label>
+          Datums
+          <input type="date" value={date} onChange={(event) => setDate(event.target.value)} />
         </label>
         <label>
           Iemesls
@@ -1720,8 +1788,9 @@ function PlantCorrectionDialog({
             type="button"
             onClick={() =>
               onSave({
-                amount: parsedAmount,
-                date: new Date().toISOString().slice(0, 10),
+                id: entry?.id ?? crypto.randomUUID(),
+                amount: signedPlantCorrectionAmount(direction, parsedAmount),
+                date,
                 note: note.trim() || undefined,
                 reason,
               })

@@ -1151,6 +1151,18 @@ button:focus-visible {
   padding: 12px;
 }
 
+.hus-info-heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: start;
+  justify-content: space-between;
+}
+
+.hus-info-heading h3 {
+  margin: 0;
+}
+
 .plant-balance-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -1168,7 +1180,7 @@ button:focus-visible {
 
 .plant-correction-list li {
   display: grid;
-  grid-template-columns: 70px minmax(0, 1fr) auto;
+  grid-template-columns: 70px minmax(0, 1fr) auto auto;
   gap: 8px;
   align-items: center;
 }
@@ -1180,6 +1192,13 @@ button:focus-visible {
 
 .danger-text {
   color: #9f1d1d;
+}
+
+.secondary-action--small,
+.danger-action--small {
+  min-height: 32px;
+  padding: 6px 9px;
+  font-size: 0.82rem;
 }
 
 .hus-work-row {

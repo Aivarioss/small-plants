@@ -31,8 +31,11 @@ import {
   formatSowingTableSelection,
   isAllowedMove,
   parseSowingTableSelection,
+  removePlantCorrection,
+  signedPlantCorrectionAmount,
   sowingTableIds,
   toggleSowingTableSelection,
+  upsertPlantCorrection,
 } from "./planning";
 import { candidateCycleLength, mockPlanImportService } from "./plan-import-service";
 import { deriveCycleLength } from "./hus-templates";
@@ -178,6 +181,69 @@ describe("planning calculations", () => {
       label: "Trūkst 30 stādi",
       tone: "short",
     });
+  });
+
+  it("calculates the live Hus balance after multiple losses", () => {
+    const baseBalanceRow: SowingPlanRow = {
+      ...row,
+      greenhouseRequiredPlants: 3600,
+      requiredPlants: 3744,
+      extraPlants: 100,
+    };
+
+    expect(calculatePlantBalance(baseBalanceRow)).toMatchObject({
+      actualPlants: 3844,
+      difference: 244,
+      label: "Rezerve 244 stādi",
+    });
+    expect(calculatePlantBalance({
+      ...baseBalanceRow,
+      plantCorrections: [{ id: "loss-1", amount: -100, date: "2026-10-08", reason: "thinning" }],
+    })).toMatchObject({
+      actualPlants: 3744,
+      difference: 144,
+      label: "Rezerve 144 stādi",
+    });
+    expect(calculatePlantBalance({
+      ...baseBalanceRow,
+      plantCorrections: [
+        { id: "loss-1", amount: -100, date: "2026-10-08", reason: "thinning" },
+        { id: "loss-2", amount: -68, date: "2026-10-12", reason: "brownRoots" },
+      ],
+    })).toMatchObject({
+      actualPlants: 3676,
+      difference: 76,
+      label: "Rezerve 76 stādi",
+    });
+  });
+
+  it("stores plant correction direction as signed amounts", () => {
+    expect(signedPlantCorrectionAmount("loss", 100)).toBe(-100);
+    expect(signedPlantCorrectionAmount("loss", -100)).toBe(-100);
+    expect(signedPlantCorrectionAmount("addition", 100)).toBe(100);
+    expect(signedPlantCorrectionAmount("addition", -100)).toBe(100);
+  });
+
+  it("edits and deletes plant correction events by id", () => {
+    const entries = [
+      { id: "loss-1", amount: -100, date: "2026-10-08", reason: "thinning" as const },
+      { id: "loss-2", amount: -68, date: "2026-10-12", reason: "brownRoots" as const },
+    ];
+
+    const edited = upsertPlantCorrection(entries, {
+      id: "loss-2",
+      amount: -70,
+      date: "2026-10-13",
+      reason: "brownRoots",
+    });
+
+    expect(edited).toEqual([
+      entries[0],
+      { id: "loss-2", amount: -70, date: "2026-10-13", reason: "brownRoots" },
+    ]);
+    expect(removePlantCorrection(edited, "loss-1")).toEqual([
+      { id: "loss-2", amount: -70, date: "2026-10-13", reason: "brownRoots" },
+    ]);
   });
 
   it("does not infer greenhouse required plants from old rows", () => {

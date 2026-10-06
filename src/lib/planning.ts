@@ -6,6 +6,7 @@ import type {
   GreenhouseRowId,
   GreenhouseSnapshot,
   PlannerConfig,
+  PlantCorrectionEntry,
   PlacementPlan,
   SectorType,
   SowingPlan,
@@ -173,6 +174,29 @@ export function getPlantCorrectionTotal(row: Pick<SowingPlanRow, "correction" | 
 
 export function getActualPlantCount(row: Pick<SowingPlanRow, "requiredPlants" | "extraPlants" | "correction" | "plantCorrections">): number {
   return Math.max(0, getTotalSow(row) + getPlantCorrectionTotal(row));
+}
+
+export function signedPlantCorrectionAmount(direction: "loss" | "addition", amount: number): number {
+  const absoluteAmount = Math.abs(Math.trunc(amount));
+  return direction === "loss" ? -absoluteAmount : absoluteAmount;
+}
+
+export function upsertPlantCorrection(
+  entries: PlantCorrectionEntry[] | undefined,
+  entry: PlantCorrectionEntry,
+): PlantCorrectionEntry[] {
+  const current = entries ?? [];
+  const index = current.findIndex((candidate) => candidate.id === entry.id);
+
+  if (index === -1) {
+    return [...current, entry];
+  }
+
+  return current.map((candidate) => (candidate.id === entry.id ? entry : candidate));
+}
+
+export function removePlantCorrection(entries: PlantCorrectionEntry[] | undefined, id: string): PlantCorrectionEntry[] {
+  return (entries ?? []).filter((entry) => entry.id !== id);
 }
 
 export function calculatePlantBalance(

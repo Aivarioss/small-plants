@@ -276,14 +276,18 @@ export function PlannerApp() {
       })
       .catch(async (error) => {
         rowSaveChainsRef.current.delete(previous.id);
+        const message = error instanceof Error ? error.message : "Neizdevās saglabāt Hus Supabase";
         if (error instanceof SowingPlanApiConflictError) {
           setRepositoryMessage("Šis Hus ir mainīts citur. Dati pārlādēti; pārbaudi jaunāko versiju pirms atkārtotas izmaiņas.");
           await reloadRows("Šis Hus ir mainīts citur. Pārbaudi jaunāko versiju.");
-          return next;
+          return previous;
         }
 
-        setRepositoryMessage(error instanceof Error ? error.message : "Neizdevās saglabāt Hus Supabase");
-        return next;
+        setRepositoryMessage(message);
+        await reloadRows(message).catch(() => {
+          setPlanRows((current) => current.map((row) => (row.id === previous.id ? previous : row)));
+        });
+        return previous;
       });
 
     rowSaveChainsRef.current.set(previous.id, operation);

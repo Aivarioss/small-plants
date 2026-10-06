@@ -153,6 +153,8 @@ function validateRow(row: unknown): string | null {
 }
 
 function errorResponse(error: unknown): NextResponse {
+  logServerError(error);
+
   if (error instanceof SowingPlanConflictError) {
     return NextResponse.json({ error: error.message }, { status: 409 });
   }
@@ -161,9 +163,37 @@ function errorResponse(error: unknown): NextResponse {
     return NextResponse.json({ error: error.message }, { status: 404 });
   }
 
-  return NextResponse.json({ error: error instanceof Error ? error.message : "Supabase operation failed." }, { status: 500 });
+  return NextResponse.json({ error: safeErrorMessage(error) }, { status: 500 });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function safeErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (isRecord(error)) {
+    const message = typeof error.message === "string" ? error.message : "Supabase operation failed.";
+    const code = typeof error.code === "string" ? error.code : "";
+    return code ? `Supabase ${code}: ${message}` : message;
+  }
+
+  return "Supabase operation failed.";
+}
+
+function logServerError(error: unknown) {
+  if (isRecord(error)) {
+    console.error("Supabase sowing-plan API error", {
+      code: typeof error.code === "string" ? error.code : undefined,
+      details: typeof error.details === "string" ? error.details : undefined,
+      hint: typeof error.hint === "string" ? error.hint : undefined,
+      message: typeof error.message === "string" ? error.message : undefined,
+    });
+    return;
+  }
+
+  console.error("Sowing-plan API error", error);
 }

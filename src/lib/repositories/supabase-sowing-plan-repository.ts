@@ -244,8 +244,11 @@ async function replacePlantCorrections(row: SowingPlanRow): Promise<void> {
   if (deleteError && isPlantCorrectionsRelationError(deleteError) && (row.plantCorrections ?? []).length === 0) {
     return;
   }
+  if (deleteError && isPlantCorrectionsRelationError(deleteError)) {
+    throw new Error("plant_corrections tabula vai relācija nav pieejama. Pārbaudi, vai Supabase plant_corrections migrācija ir palaista un schema cache ir atjaunots.");
+  }
   if (deleteError) {
-    throw deleteError;
+    throw new Error(`Neizdevās dzēst iepriekšējās stādu korekcijas: ${supabaseErrorSummary(deleteError)}`);
   }
 
   const records = rowPlantCorrectionsToRecords(row);
@@ -256,7 +259,7 @@ async function replacePlantCorrections(row: SowingPlanRow): Promise<void> {
   const { error } = await client.from("plant_corrections").upsert(records as PlantCorrectionRecord[], { onConflict: "id" });
 
   if (error) {
-    throw error;
+    throw new Error(`Neizdevās saglabāt stādu korekcijas: ${supabaseErrorSummary(error)}`);
   }
 }
 
@@ -310,4 +313,16 @@ function isPlantCorrectionsRelationError(error: unknown): boolean {
       haystack.includes("schema cache") ||
       haystack.includes("does not exist"))
   );
+}
+
+function supabaseErrorSummary(error: unknown): string {
+  const candidate = error as { code?: unknown; details?: unknown; hint?: unknown; message?: unknown };
+  const parts = [
+    typeof candidate.code === "string" ? candidate.code : "",
+    typeof candidate.message === "string" ? candidate.message : "",
+    typeof candidate.details === "string" ? candidate.details : "",
+    typeof candidate.hint === "string" ? candidate.hint : "",
+  ].filter(Boolean);
+
+  return parts.length > 0 ? parts.join(" · ") : "Supabase operation failed.";
 }

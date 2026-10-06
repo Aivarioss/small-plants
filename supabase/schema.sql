@@ -75,6 +75,20 @@ create table plant_corrections (
   updated_at timestamptz not null default now()
 );
 
+create table hus_events (
+  id uuid primary key default gen_random_uuid(),
+  sowing_plan_row_id uuid not null references sowing_plan_rows (id) on delete cascade,
+  event_date date not null,
+  event_type text not null,
+  location text,
+  destination_location text,
+  plant_change integer check (plant_change is null or plant_change <> 0),
+  plant_correction_id uuid references plant_corrections (id) on delete set null,
+  note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create index sowing_plan_rows_sowing_date_idx on sowing_plan_rows (sowing_date);
 create index sowing_plan_rows_move_out_date_idx on sowing_plan_rows (move_out_date);
 create index sowing_plan_rows_hus_idx on sowing_plan_rows (hus);
@@ -82,6 +96,8 @@ create index work_adjustments_plan_row_idx on work_adjustments (sowing_plan_row_
 create index table_placements_plan_row_idx on table_placements (sowing_plan_row_id);
 create index change_history_plan_row_created_idx on change_history (sowing_plan_row_id, created_at desc);
 create index plant_corrections_plan_row_date_idx on plant_corrections (sowing_plan_row_id, correction_date);
+create index hus_events_plan_row_date_idx on hus_events (sowing_plan_row_id, event_date);
+create index hus_events_plant_correction_idx on hus_events (plant_correction_id);
 
 create or replace function set_updated_at()
 returns trigger
@@ -109,11 +125,16 @@ create trigger plant_corrections_set_updated_at
 before update on plant_corrections
 for each row execute function set_updated_at();
 
+create trigger hus_events_set_updated_at
+before update on hus_events
+for each row execute function set_updated_at();
+
 alter table sowing_plan_rows enable row level security;
 alter table work_adjustments enable row level security;
 alter table table_placements enable row level security;
 alter table change_history enable row level security;
 alter table plant_corrections enable row level security;
+alter table hus_events enable row level security;
 
 -- Shared-password app model:
 -- The browser must not receive Supabase credentials and should have no direct table access.

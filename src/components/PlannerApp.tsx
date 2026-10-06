@@ -4,6 +4,8 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { plannerConfig } from "@/lib/demo-data";
 import {
   addDays,
+  applyHusEventDelete,
+  applyHusEventSave,
   balanceWorkload,
   buildGreenhouseSnapshot,
   calculateBoxPlan,
@@ -21,9 +23,12 @@ import {
   generateWorksheetDaysFromWorkItems,
   generateWorkItemsForRows,
   getTotalSow,
+  getCycleDay,
   groupMonthlyPrintRowsIntoDateGroups,
   greenhouseRows,
   hasManualWorkMoves,
+  husEventTypeLabel,
+  husEventTypes,
   isAllowedMove,
   parseSowingTableSelection,
   removePlantCorrection,
@@ -52,6 +57,8 @@ import { SowingPlanApiConflictError } from "@/lib/repositories/api-sowing-plan-r
 import { sowingPlanRepository } from "@/lib/repositories/sowing-plan-repository";
 import type {
   ChangeHistoryEntry,
+  HusEventEntry,
+  HusEventType,
   ImportFieldKey,
   MainView,
   PlantCorrectionEntry,
@@ -1385,6 +1392,8 @@ function WorksheetView({
   const [activeWorksheetTab, setActiveWorksheetTab] = useState<"works" | "worksheet">("works");
   const [correctionDialogOpen, setCorrectionDialogOpen] = useState(false);
   const [editingCorrection, setEditingCorrection] = useState<PlantCorrectionEntry | null>(null);
+  const [eventDialogOpen, setEventDialogOpen] = useState(false);
+  const [editingEvent, setEditingEvent] = useState<HusEventEntry | null>(null);
   const totalSow = getTotalSow(row);
   const materials = calculateWorkMaterialSummary(row);
   const balance = calculatePlantBalance(row);
@@ -1409,9 +1418,27 @@ function WorksheetView({
     });
   }
 
+  function saveHusEvent(entry: HusEventEntry) {
+    onUpdateRow(row.id, applyHusEventSave(row, entry));
+  }
+
+  function deleteHusEvent(entry: HusEventEntry) {
+    const linkedMessage = entry.plantCorrectionId ? " Saistītā stādu korekcija arī tiks dzēsta." : "";
+    if (!window.confirm(`Dzēst HUS žurnāla ierakstu?${linkedMessage}`)) {
+      return;
+    }
+
+    onUpdateRow(row.id, applyHusEventDelete(row, entry.id));
+  }
+
   function closeCorrectionDialog() {
     setCorrectionDialogOpen(false);
     setEditingCorrection(null);
+  }
+
+  function closeEventDialog() {
+    setEventDialogOpen(false);
+    setEditingEvent(null);
   }
 
   return (
@@ -1509,6 +1536,66 @@ function WorksheetView({
               <p className="empty-state">Stādu skaita korekcijas vēl nav reģistrētas.</p>
             )}
           </section>
+          <section className="hus-journal-box">
+            <div className="hus-info-heading">
+              <div>
+                <p className="eyebrow">HUS žurnāls</p>
+                <h3>Notikumi</h3>
+              </div>
+              <button
+                className="secondary-action"
+                type="button"
+                onClick={() => {
+                  setEditingEvent(null);
+                  setEventDialogOpen(true);
+                }}
+              >
+                + Pievienot ierakstu
+              </button>
+            </div>
+            {row.husEvents && row.husEvents.length > 0 ? (
+              <ul className="hus-journal-list">
+                {row.husEvents.map((entry) => (
+                  <li key={entry.id}>
+                    <div className="hus-journal-list__date">
+                      <time>{shortDate(entry.eventDate)}</time>
+                      <span>{getCycleDay(row, entry.eventDate)}. diena</span>
+                    </div>
+                    <div className="hus-journal-list__body">
+                      <strong>{husEventTypeLabel(entry.eventType)}</strong>
+                      {entry.location || entry.destinationLocation ? (
+                        <span>
+                          {entry.location || "—"}
+                          {entry.destinationLocation ? ` → ${entry.destinationLocation}` : ""}
+                        </span>
+                      ) : null}
+                      {typeof entry.plantChange === "number" && entry.plantChange !== 0 ? (
+                        <em>{signedNumber(entry.plantChange)} stādi</em>
+                      ) : null}
+                      {entry.note ? <p>{entry.note}</p> : null}
+                    </div>
+                    <span className="button-row">
+                      <button
+                        className="secondary-action secondary-action--small"
+                        type="button"
+                        onClick={() => {
+                          setEditingEvent(entry);
+                          setEventDialogOpen(true);
+                        }}
+                      >
+                        Rediģēt
+                      </button>
+                      <button className="danger-action danger-action--small" type="button" onClick={() => deleteHusEvent(entry)}>
+                        Dzēst
+                      </button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="empty-state">Šim Hus vēl nav žurnāla ierakstu.</p>
+            )}
+          </section>
           <div className="work-list">
             {chronologicalWorkItems.map((item) => (
               <article className={`hus-work-row work-card--${item.color}`} key={item.id}>
@@ -1537,6 +1624,17 @@ function WorksheetView({
                 savePlantCorrection(entry);
                 closeCorrectionDialog();
               }}
+            />
+          ) : null}
+          {eventDialogOpen ? (
+            <HusEventDialog
+              entry={editingEvent}
+              onCancel={closeEventDialog}
+              onSave={(entry) => {
+                saveHusEvent(entry);
+                closeEventDialog();
+              }}
+              row={row}
             />
           ) : null}
         </div>
@@ -1830,6 +1928,111 @@ function PlantCorrectionDialog({
                 date,
                 note: note.trim() || undefined,
                 reason,
+              })
+            }
+          >
+            Saglabāt
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function HusEventDialog({
+  entry,
+  onCancel,
+  onSave,
+  row,
+}: {
+  entry: HusEventEntry | null;
+  onCancel: () => void;
+  onSave: (entry: HusEventEntry) => void;
+  row: SowingPlanRow;
+}) {
+  const [eventDate, setEventDate] = useState(() => entry?.eventDate ?? row.sowingDate);
+  const [eventType, setEventType] = useState<HusEventType>(entry?.eventType ?? "observation");
+  const [location, setLocation] = useState(entry?.location ?? "");
+  const [destinationLocation, setDestinationLocation] = useState(entry?.destinationLocation ?? "");
+  const [plantChange, setPlantChange] = useState(() => (typeof entry?.plantChange === "number" ? String(entry.plantChange) : ""));
+  const [note, setNote] = useState(entry?.note ?? "");
+  const parsedPlantChange = plantChange.trim() === "" ? undefined : Number(plantChange);
+  const canSave =
+    Boolean(eventDate) &&
+    Boolean(eventType) &&
+    (parsedPlantChange === undefined || (Number.isFinite(parsedPlantChange) && parsedPlantChange !== 0));
+
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <section aria-modal="true" aria-label="HUS žurnāla ieraksts" className="sowing-tables-dialog" role="dialog">
+        <div>
+          <p className="eyebrow">HUS žurnāls</p>
+          <h3>{entry ? "Rediģēt ierakstu" : "Pievienot ierakstu"}</h3>
+          <span className="dialog-hint">
+            {eventDate ? `${shortDate(eventDate)} · ${getCycleDay(row, eventDate)}. diena` : "Izvēlies datumu"}
+          </span>
+        </div>
+        <label>
+          Datums
+          <input autoFocus type="date" value={eventDate} onChange={(event) => setEventDate(event.target.value)} />
+        </label>
+        <label>
+          Notikums
+          <select value={eventType} onChange={(event) => setEventType(event.target.value as HusEventType)}>
+            {husEventTypes.map((type) => (
+              <option key={type.value} value={type.value}>
+                {type.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Vieta / No
+          <input maxLength={80} placeholder="A7, C5, C1-C10" value={location} onChange={(event) => setLocation(event.target.value)} />
+        </label>
+        <label>
+          Uz
+          <input
+            maxLength={80}
+            placeholder="C1-C10"
+            value={destinationLocation}
+            onChange={(event) => setDestinationLocation(event.target.value)}
+          />
+        </label>
+        <label>
+          Stādu izmaiņa
+          <input
+            inputMode="numeric"
+            placeholder="-32"
+            type="number"
+            value={plantChange}
+            onChange={(event) => setPlantChange(event.target.value)}
+          />
+        </label>
+        <label>
+          Piezīme
+          <textarea maxLength={240} rows={3} value={note} onChange={(event) => setNote(event.target.value)} />
+        </label>
+        <div className="button-row">
+          <button className="secondary-action" type="button" onClick={onCancel}>
+            Atcelt
+          </button>
+          <button
+            className="primary-action"
+            disabled={!canSave}
+            type="button"
+            onClick={() =>
+              onSave({
+                id: entry?.id ?? crypto.randomUUID(),
+                eventDate,
+                eventType,
+                location: location.trim() || undefined,
+                destinationLocation: destinationLocation.trim() || undefined,
+                plantChange: parsedPlantChange,
+                plantCorrectionId: entry?.plantCorrectionId,
+                note: note.trim() || undefined,
+                createdAt: entry?.createdAt,
+                updatedAt: entry?.updatedAt,
               })
             }
           >
@@ -2643,6 +2846,17 @@ function appendChangeHistory(
     if (previousTotal !== nextTotal || (previous.plantCorrections ?? []).length !== (next.plantCorrections ?? []).length) {
       history.push(historyEntry("Stādu korekcijas", signedNumber(previousTotal), signedNumber(nextTotal), next.sectorName));
     }
+  }
+
+  if ("husEvents" in patch && (previous.husEvents ?? []).length !== (next.husEvents ?? []).length) {
+    history.push(
+      historyEntry(
+        "HUS žurnāls",
+        String((previous.husEvents ?? []).length),
+        String((next.husEvents ?? []).length),
+        next.sectorName,
+      ),
+    );
   }
 
   return history;

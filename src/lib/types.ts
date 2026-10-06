@@ -50,6 +50,29 @@ export type PlantCorrectionEntry = {
   note?: string;
 };
 
+export type HusEventType =
+  | "thinning"
+  | "move"
+  | "brownRoots"
+  | "watering"
+  | "extraWatering"
+  | "treatment"
+  | "observation"
+  | "other";
+
+export type HusEventEntry = {
+  id: string;
+  eventDate: string;
+  eventType: HusEventType;
+  location?: string;
+  destinationLocation?: string;
+  plantChange?: number;
+  plantCorrectionId?: string;
+  note?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 export type SowingPlanRow = {
   id: string;
   updatedAt?: string;
@@ -70,6 +93,7 @@ export type SowingPlanRow = {
   status?: "planned" | "imported" | "active" | "done";
   changeHistory?: ChangeHistoryEntry[];
   plantCorrections?: PlantCorrectionEntry[];
+  husEvents?: HusEventEntry[];
   placement?: TablePlacement;
   adjustments?: WorkAdjustments;
   source?: "demo" | "user" | "import";

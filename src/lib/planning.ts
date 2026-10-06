@@ -9,6 +9,8 @@ import type {
   PlantCorrectionEntry,
   PlacementPlan,
   SectorType,
+  HusEventEntry,
+  HusEventType,
   SowingPlan,
   SowingPlanRow,
   ThinningPlan,
@@ -197,6 +199,127 @@ export function upsertPlantCorrection(
 
 export function removePlantCorrection(entries: PlantCorrectionEntry[] | undefined, id: string): PlantCorrectionEntry[] {
   return (entries ?? []).filter((entry) => entry.id !== id);
+}
+
+export const husEventTypes: Array<{ value: HusEventType; label: string }> = [
+  { value: "thinning", label: "Retināšana" },
+  { value: "move", label: "Pārvietošana" },
+  { value: "brownRoots", label: "Brūnās saknes" },
+  { value: "watering", label: "Laistīšana" },
+  { value: "extraWatering", label: "Extra laistīšana" },
+  { value: "treatment", label: "Apstrāde" },
+  { value: "observation", label: "Novērojums" },
+  { value: "other", label: "Cits" },
+];
+
+export function husEventTypeLabel(type: HusEventType): string {
+  return husEventTypes.find((item) => item.value === type)?.label ?? type;
+}
+
+export function upsertHusEventEntry(
+  entries: HusEventEntry[] | undefined,
+  entry: HusEventEntry,
+): HusEventEntry[] {
+  const current = entries ?? [];
+  const index = current.findIndex((candidate) => candidate.id === entry.id);
+
+  if (index === -1) {
+    return [...current, entry].sort(compareHusEvents);
+  }
+
+  return current.map((candidate) => (candidate.id === entry.id ? entry : candidate)).sort(compareHusEvents);
+}
+
+export function removeHusEventEntry(entries: HusEventEntry[] | undefined, id: string): HusEventEntry[] {
+  return (entries ?? []).filter((entry) => entry.id !== id);
+}
+
+export function applyHusEventSave(
+  row: Pick<SowingPlanRow, "husEvents" | "plantCorrections">,
+  entry: HusEventEntry,
+  createId: () => string = () => crypto.randomUUID(),
+  now: () => string = () => new Date().toISOString(),
+): Pick<SowingPlanRow, "husEvents" | "plantCorrections"> {
+  const existingEvent = (row.husEvents ?? []).find((candidate) => candidate.id === entry.id);
+  const timestamp = now();
+  let nextPlantCorrections = row.plantCorrections ?? [];
+  let nextEvent: HusEventEntry = {
+    ...entry,
+    createdAt: existingEvent?.createdAt ?? entry.createdAt ?? timestamp,
+    updatedAt: timestamp,
+  };
+
+  if (existingEvent?.plantCorrectionId && !hasPlantChange(nextEvent)) {
+    nextPlantCorrections = removePlantCorrection(nextPlantCorrections, existingEvent.plantCorrectionId);
+    nextEvent = { ...nextEvent, plantCorrectionId: undefined };
+  }
+
+  if (hasPlantChange(nextEvent)) {
+    const correctionId = existingEvent?.plantCorrectionId ?? nextEvent.plantCorrectionId ?? createId();
+    const plantChange = nextEvent.plantChange;
+    nextEvent = { ...nextEvent, plantCorrectionId: correctionId };
+    nextPlantCorrections = upsertPlantCorrection(nextPlantCorrections, {
+      id: correctionId,
+      amount: plantChange,
+      date: nextEvent.eventDate,
+      reason: plantCorrectionReasonForHusEvent(nextEvent.eventType),
+      note: plantCorrectionNoteForHusEvent(nextEvent),
+    });
+  }
+
+  return {
+    husEvents: upsertHusEventEntry(row.husEvents, nextEvent),
+    plantCorrections: nextPlantCorrections,
+  };
+}
+
+export function applyHusEventDelete(
+  row: Pick<SowingPlanRow, "husEvents" | "plantCorrections">,
+  eventId: string,
+): Pick<SowingPlanRow, "husEvents" | "plantCorrections"> {
+  const event = (row.husEvents ?? []).find((candidate) => candidate.id === eventId);
+
+  return {
+    husEvents: removeHusEventEntry(row.husEvents, eventId),
+    plantCorrections: event?.plantCorrectionId
+      ? removePlantCorrection(row.plantCorrections, event.plantCorrectionId)
+      : row.plantCorrections ?? [],
+  };
+}
+
+function hasPlantChange(entry: HusEventEntry): entry is HusEventEntry & { plantChange: number } {
+  return typeof entry.plantChange === "number" && entry.plantChange !== 0;
+}
+
+function plantCorrectionReasonForHusEvent(type: HusEventType): PlantCorrectionEntry["reason"] {
+  if (type === "thinning") {
+    return "thinning";
+  }
+
+  if (type === "brownRoots") {
+    return "brownRoots";
+  }
+
+  return "other";
+}
+
+function plantCorrectionNoteForHusEvent(entry: HusEventEntry): string | undefined {
+  const parts = [
+    husEventTypeLabel(entry.eventType),
+    entry.location,
+    entry.destinationLocation ? `→ ${entry.destinationLocation}` : "",
+    entry.note,
+  ].filter(Boolean);
+
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
+function compareHusEvents(left: HusEventEntry, right: HusEventEntry): number {
+  return (
+    left.eventDate.localeCompare(right.eventDate) ||
+    (left.createdAt ?? "").localeCompare(right.createdAt ?? "") ||
+    left.id.localeCompare(right.id)
+  );
 }
 
 export function calculatePlantBalance(

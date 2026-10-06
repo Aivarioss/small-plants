@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   addDays,
+  applyHusEventDelete,
+  applyHusEventSave,
   calculateAvailability,
   calculateBoxPlan,
   calculateBoxesNeeded,
@@ -24,6 +26,7 @@ import {
   generateWorkItems,
   generateWorkItemsForRows,
   getActualPlantCount,
+  getCycleDay,
   getPlantCorrectionTotal,
   getTotalSow,
   groupMonthlyPrintRowsByDate,
@@ -32,14 +35,16 @@ import {
   isAllowedMove,
   parseSowingTableSelection,
   removePlantCorrection,
+  removeHusEventEntry,
   signedPlantCorrectionAmount,
   sowingTableIds,
   toggleSowingTableSelection,
+  upsertHusEventEntry,
   upsertPlantCorrection,
 } from "./planning";
 import { candidateCycleLength, mockPlanImportService } from "./plan-import-service";
 import { deriveCycleLength } from "./hus-templates";
-import { recordToSowingPlanRow, rowPlantCorrectionsToRecords, sowingPlanRowToRecord } from "./supabase/mappers";
+import { recordToSowingPlanRow, rowHusEventsToRecords, rowPlantCorrectionsToRecords, sowingPlanRowToRecord } from "./supabase/mappers";
 import type { SowingPlanRow, WorkItem, WorkType } from "./types";
 
 const row: SowingPlanRow = {
@@ -246,6 +251,112 @@ describe("planning calculations", () => {
     ]);
   });
 
+  it("stores ordinary Hus journal entries without plant changes", () => {
+    const saved = applyHusEventSave(row, {
+      id: "event-1",
+      eventDate: "2026-10-11",
+      eventType: "extraWatering",
+      location: "C1-C10",
+    }, () => "unused-correction", () => "2026-10-11T08:00:00.000Z");
+
+    expect(saved.husEvents).toEqual([
+      {
+        id: "event-1",
+        eventDate: "2026-10-11",
+        eventType: "extraWatering",
+        location: "C1-C10",
+        createdAt: "2026-10-11T08:00:00.000Z",
+        updatedAt: "2026-10-11T08:00:00.000Z",
+      },
+    ]);
+    expect(saved.plantCorrections).toEqual([]);
+  });
+
+  it("stores Hus movement events with source and destination locations", () => {
+    const entries = upsertHusEventEntry(undefined, {
+      id: "move-1",
+      eventDate: "2026-10-12",
+      eventType: "move",
+      location: "A7",
+      destinationLocation: "C1-C10",
+    });
+
+    expect(entries[0]).toMatchObject({
+      eventType: "move",
+      location: "A7",
+      destinationLocation: "C1-C10",
+    });
+    expect(removeHusEventEntry(entries, "move-1")).toEqual([]);
+  });
+
+  it("links brown-roots Hus journal plant changes to exactly one plant correction", () => {
+    const saved = applyHusEventSave(row, {
+      id: "event-roots",
+      eventDate: "2026-10-11",
+      eventType: "brownRoots",
+      location: "C5",
+      plantChange: -32,
+    }, () => "correction-roots", () => "2026-10-11T08:00:00.000Z");
+
+    expect(saved.husEvents?.[0]).toMatchObject({
+      id: "event-roots",
+      plantCorrectionId: "correction-roots",
+      plantChange: -32,
+    });
+    expect(saved.plantCorrections).toEqual([
+      {
+        id: "correction-roots",
+        amount: -32,
+        date: "2026-10-11",
+        reason: "brownRoots",
+        note: "Brūnās saknes · C5",
+      },
+    ]);
+    expect(getPlantCorrectionTotal({ correction: 0, plantCorrections: saved.plantCorrections })).toBe(-32);
+  });
+
+  it("edits a linked Hus journal plant change by updating the same correction", () => {
+    const first = applyHusEventSave(row, {
+      id: "event-roots",
+      eventDate: "2026-10-11",
+      eventType: "brownRoots",
+      location: "C5",
+      plantChange: -32,
+    }, () => "correction-roots", () => "2026-10-11T08:00:00.000Z");
+    const edited = applyHusEventSave({
+      husEvents: first.husEvents,
+      plantCorrections: first.plantCorrections,
+    }, {
+      ...first.husEvents![0],
+      plantChange: -20,
+    }, () => "new-correction-should-not-be-used", () => "2026-10-11T09:00:00.000Z");
+
+    expect(edited.husEvents?.[0].plantCorrectionId).toBe("correction-roots");
+    expect(edited.plantCorrections).toHaveLength(1);
+    expect(edited.plantCorrections?.[0]).toMatchObject({
+      id: "correction-roots",
+      amount: -20,
+    });
+  });
+
+  it("deletes a Hus journal event together with its linked correction", () => {
+    const saved = applyHusEventSave(row, {
+      id: "event-roots",
+      eventDate: "2026-10-11",
+      eventType: "brownRoots",
+      location: "C5",
+      plantChange: -32,
+    }, () => "correction-roots", () => "2026-10-11T08:00:00.000Z");
+    const deleted = applyHusEventDelete(saved, "event-roots");
+
+    expect(deleted.husEvents).toEqual([]);
+    expect(deleted.plantCorrections).toEqual([]);
+  });
+
+  it("calculates Hus journal biological day from the cycle sowing date", () => {
+    expect(getCycleDay({ sowingDate: "2026-10-01" }, "2026-10-17")).toBe(17);
+  });
+
   it("does not infer greenhouse required plants from old rows", () => {
     const corrected: SowingPlanRow = {
       ...row,
@@ -294,6 +405,65 @@ describe("planning calculations", () => {
     expect(records).toHaveLength(2);
     expect(mapped.plantCorrections).toEqual(corrected.plantCorrections);
     expect(mapped.greenhouseRequiredPlants).toBe(3300);
+  });
+
+  it("round-trips Hus journal events through Supabase mappers", () => {
+    const eventRow: SowingPlanRow = {
+      ...row,
+      plantCorrections: [{ id: "correction-roots", amount: -32, date: "2026-10-11", reason: "brownRoots" }],
+      husEvents: [
+        {
+          id: "event-roots",
+          eventDate: "2026-10-11",
+          eventType: "brownRoots",
+          location: "C5",
+          plantChange: -32,
+          plantCorrectionId: "correction-roots",
+          note: "Atrasts uz C5",
+          createdAt: "2026-10-11T08:00:00.000Z",
+          updatedAt: "2026-10-11T09:00:00.000Z",
+        },
+      ],
+    };
+    const records = rowHusEventsToRecords(eventRow);
+    const mapped = recordToSowingPlanRow({
+      id: row.id,
+      hus: row.sectorName,
+      greenhouse_required_plants: 3300,
+      required_plants: row.requiredPlants,
+      extra_plants: row.extraPlants,
+      variety: row.variety,
+      week_number: null,
+      sowing_tables: null,
+      sowing_date: row.sowingDate,
+      move_out_date: row.harvestDate,
+      previcure_date: null,
+      cycle_length: row.cycleLength,
+      sector_type: row.sectorType,
+      correction: row.correction,
+      status: "planned",
+      source: "user",
+      plant_corrections: rowPlantCorrectionsToRecords(eventRow),
+      hus_events: records,
+    });
+
+    expect(records).toEqual([
+      {
+        id: "event-roots",
+        sowing_plan_row_id: row.id,
+        event_date: "2026-10-11",
+        event_type: "brownRoots",
+        location: "C5",
+        destination_location: null,
+        plant_change: -32,
+        plant_correction_id: "correction-roots",
+        note: "Atrasts uz C5",
+        created_at: "2026-10-11T08:00:00.000Z",
+        updated_at: "2026-10-11T09:00:00.000Z",
+      },
+    ]);
+    expect(mapped.husEvents).toEqual(eventRow.husEvents);
+    expect(mapped.plantCorrections).toEqual(eventRow.plantCorrections);
   });
 
   it("round-trips greenhouse required plants through Supabase mappers", () => {

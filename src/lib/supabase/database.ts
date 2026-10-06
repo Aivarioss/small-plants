@@ -61,9 +61,24 @@ export type PlantCorrectionRecord = {
   updated_at?: string;
 };
 
+export type HusEventRecord = {
+  id: string;
+  sowing_plan_row_id: string;
+  event_date: string;
+  event_type: string;
+  location: string | null;
+  destination_location: string | null;
+  plant_change: number | null;
+  plant_correction_id: string | null;
+  note: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
 export type SowingPlanRowWithRelations = SowingPlanRowRecord & {
   work_adjustments?: WorkAdjustmentRecord[];
   table_placements?: TablePlacementRecord[] | TablePlacementRecord;
   change_history?: ChangeHistoryRecord[];
   plant_corrections?: PlantCorrectionRecord[];
+  hus_events?: HusEventRecord[];
 };

@@ -38,7 +38,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -470,7 +471,8 @@ label {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   min-height: 44px;
   border: 1px solid var(--border);
@@ -482,9 +484,14 @@ select {
 
 input:focus,
 select:focus,
+textarea:focus,
 button:focus-visible {
   outline: 3px solid rgba(40, 124, 67, 0.2);
   outline-offset: 2px;
+}
+
+textarea {
+  resize: vertical;
 }
 
 .primary-action {
@@ -1204,6 +1211,64 @@ button:focus-visible {
   justify-content: flex-end;
 }
 
+.hus-journal-box {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.hus-journal-list {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.hus-journal-list li {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 10px;
+}
+
+.hus-journal-list__date,
+.hus-journal-list__body {
+  display: grid;
+  gap: 4px;
+}
+
+.hus-journal-list__date time {
+  color: var(--green-dark);
+  font-weight: 800;
+}
+
+.hus-journal-list__date span,
+.hus-journal-list__body span,
+.hus-journal-list__body p {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.hus-journal-list__body em {
+  color: var(--red);
+  font-style: normal;
+  font-weight: 800;
+}
+
+.dialog-hint {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .danger-text {
   color: #9f1d1d;
 }
@@ -1506,6 +1571,20 @@ button:focus-visible {
 
   .plant-correction-list .secondary-action--small,
   .plant-correction-list .danger-action--small {
+    min-height: 36px;
+  }
+
+  .hus-journal-list li {
+    grid-template-columns: 72px minmax(0, 1fr);
+  }
+
+  .hus-journal-list .button-row {
+    grid-column: 2 / -1;
+    justify-content: flex-start;
+  }
+
+  .hus-journal-list .secondary-action--small,
+  .hus-journal-list .danger-action--small {
     min-height: 36px;
   }
 }

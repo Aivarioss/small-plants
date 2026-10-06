@@ -1,7 +1,8 @@
 import { plannerConfig } from "@/lib/demo-data";
-import type { ChangeHistoryEntry, PlantCorrectionEntry, SowingPlanRow, WorkAdjustments } from "@/lib/types";
+import type { ChangeHistoryEntry, HusEventEntry, HusEventType, PlantCorrectionEntry, SowingPlanRow, WorkAdjustments } from "@/lib/types";
 import type {
   ChangeHistoryRecord,
+  HusEventRecord,
   PlantCorrectionRecord,
   SowingPlanRowRecord,
   SowingPlanRowWithRelations,
@@ -43,6 +44,14 @@ export function recordToSowingPlanRow(record: SowingPlanRowWithRelations): Sowin
     plantCorrections: (record.plant_corrections ?? [])
       .map(recordToPlantCorrection)
       .sort((left, right) => left.date.localeCompare(right.date) || left.id.localeCompare(right.id)),
+    husEvents: (record.hus_events ?? [])
+      .map(recordToHusEvent)
+      .sort(
+        (left, right) =>
+          left.eventDate.localeCompare(right.eventDate) ||
+          (left.createdAt ?? "").localeCompare(right.createdAt ?? "") ||
+          left.id.localeCompare(right.id),
+      ),
   };
 }
 
@@ -123,6 +132,22 @@ export function rowPlantCorrectionsToRecords(row: SowingPlanRow): PlantCorrectio
   }));
 }
 
+export function rowHusEventsToRecords(row: SowingPlanRow): HusEventRecord[] {
+  return (row.husEvents ?? []).map((entry) => ({
+    id: entry.id,
+    sowing_plan_row_id: row.id,
+    event_date: entry.eventDate,
+    event_type: entry.eventType,
+    location: entry.location?.trim() || null,
+    destination_location: entry.destinationLocation?.trim() || null,
+    plant_change: typeof entry.plantChange === "number" && entry.plantChange !== 0 ? entry.plantChange : null,
+    plant_correction_id: entry.plantCorrectionId ?? null,
+    note: entry.note?.trim() || null,
+    created_at: entry.createdAt,
+    updated_at: entry.updatedAt,
+  }));
+}
+
 function recordsToAdjustments(records: WorkAdjustmentRecord[]): WorkAdjustments | undefined {
   const adjustments = Object.fromEntries(
     records.map((record) => [
@@ -152,5 +177,20 @@ function recordToPlantCorrection(record: PlantCorrectionRecord): PlantCorrection
     amount: record.amount,
     reason: record.reason,
     note: record.note ?? undefined,
+  };
+}
+
+function recordToHusEvent(record: HusEventRecord): HusEventEntry {
+  return {
+    id: record.id,
+    eventDate: record.event_date,
+    eventType: record.event_type as HusEventType,
+    location: record.location ?? undefined,
+    destinationLocation: record.destination_location ?? undefined,
+    plantChange: record.plant_change ?? undefined,
+    plantCorrectionId: record.plant_correction_id ?? undefined,
+    note: record.note ?? undefined,
+    createdAt: record.created_at,
+    updatedAt: record.updated_at,
   };
 }

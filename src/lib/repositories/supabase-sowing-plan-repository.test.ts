@@ -89,11 +89,13 @@ describe("supabase sowing plan repository", () => {
         .mockReturnValueOnce(deleteResult())
         .mockReturnValueOnce(deleteResult())
         .mockReturnValueOnce(plantCorrectionsUpsert)
+        .mockReturnValueOnce(deleteResult())
         .mockReturnValueOnce(selectSingleByIdResult({
           ...baseRecord,
           work_adjustments: [],
           table_placements: [],
           change_history: [],
+          hus_events: [],
           plant_corrections: [
             {
               id: "22222222-2222-4222-8222-222222222222",
@@ -166,12 +168,14 @@ describe("supabase sowing plan repository", () => {
         .mockReturnValueOnce(deleteResult())
         .mockReturnValueOnce(deleteResult())
         .mockReturnValueOnce(upsertResult())
+        .mockReturnValueOnce(deleteResult())
         .mockReturnValueOnce(selectSingleByIdResult({
           ...baseRecord,
           updated_at: "2026-10-01T00:00:01.000Z",
           work_adjustments: [],
           table_placements: [],
           change_history: [],
+          hus_events: [],
           plant_corrections: [
             {
               id: "22222222-2222-4222-8222-222222222222",
@@ -223,6 +227,7 @@ describe("supabase sowing plan repository", () => {
       work_adjustments: [],
       table_placements: [],
       change_history: [],
+      hus_events: [],
       plant_corrections: [
         {
           id: "22222222-2222-4222-8222-222222222222",
@@ -257,6 +262,7 @@ describe("supabase sowing plan repository", () => {
         .mockReturnValueOnce(deleteResult())
         .mockReturnValueOnce(deleteResult())
         .mockReturnValueOnce(upsertResult())
+        .mockReturnValueOnce(deleteResult())
         .mockReturnValueOnce(selectSingleByIdResult(firstSavedRecord))
         .mockReturnValueOnce(versionCheckResult(firstSavedRecord.updated_at))
         .mockReturnValueOnce(secondUpdate)
@@ -264,6 +270,7 @@ describe("supabase sowing plan repository", () => {
         .mockReturnValueOnce(deleteResult())
         .mockReturnValueOnce(deleteResult())
         .mockReturnValueOnce(upsertResult())
+        .mockReturnValueOnce(deleteResult())
         .mockReturnValueOnce(selectSingleByIdResult(secondSavedRecord)),
     };
     vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
@@ -334,6 +341,116 @@ describe("supabase sowing plan repository", () => {
     expect(client.from).toHaveBeenCalledTimes(1);
   });
 
+  it("round-trips Hus journal events linked to plant corrections when updating a row", async () => {
+    const husEventsUpsert = upsertResult();
+    const client = {
+      from: vi
+        .fn()
+        .mockReturnValueOnce(versionCheckResult(baseRecord.updated_at))
+        .mockReturnValueOnce(updateResult({ id: baseRecord.id }))
+        .mockReturnValueOnce(deleteResult())
+        .mockReturnValueOnce(deleteResult())
+        .mockReturnValueOnce(deleteResult())
+        .mockReturnValueOnce(upsertResult())
+        .mockReturnValueOnce(deleteResult())
+        .mockReturnValueOnce(husEventsUpsert)
+        .mockReturnValueOnce(selectSingleByIdResult({
+          ...baseRecord,
+          work_adjustments: [],
+          table_placements: [],
+          change_history: [],
+          plant_corrections: [
+            {
+              id: "22222222-2222-4222-8222-222222222222",
+              sowing_plan_row_id: baseRecord.id,
+              correction_date: "2026-10-17",
+              amount: -32,
+              reason: "brownRoots",
+              note: "Brūnās saknes · C5",
+            },
+          ],
+          hus_events: [
+            {
+              id: "33333333-3333-4333-8333-333333333333",
+              sowing_plan_row_id: baseRecord.id,
+              event_date: "2026-10-17",
+              event_type: "brownRoots",
+              location: "C5",
+              destination_location: null,
+              plant_change: -32,
+              plant_correction_id: "22222222-2222-4222-8222-222222222222",
+              note: null,
+            },
+          ],
+        })),
+    };
+    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
+
+    const row = await createSupabaseSowingPlanRepository().update({
+      id: baseRecord.id,
+      updatedAt: baseRecord.updated_at,
+      sectorName: baseRecord.hus,
+      requiredPlants: baseRecord.required_plants,
+      extraPlants: baseRecord.extra_plants,
+      variety: baseRecord.variety,
+      sowingDate: baseRecord.sowing_date,
+      harvestDate: baseRecord.move_out_date,
+      cycleLength: baseRecord.cycle_length,
+      sectorType: 26,
+      plantsPerBox: 12,
+      correction: 0,
+      plantCorrections: [
+        {
+          id: "22222222-2222-4222-8222-222222222222",
+          amount: -32,
+          date: "2026-10-17",
+          reason: "brownRoots",
+          note: "Brūnās saknes · C5",
+        },
+      ],
+      husEvents: [
+        {
+          id: "33333333-3333-4333-8333-333333333333",
+          eventDate: "2026-10-17",
+          eventType: "brownRoots",
+          location: "C5",
+          plantChange: -32,
+          plantCorrectionId: "22222222-2222-4222-8222-222222222222",
+        },
+      ],
+    }, baseRecord.updated_at);
+
+    expect(husEventsUpsert.upsert).toHaveBeenCalledWith(
+      [
+        {
+          id: "33333333-3333-4333-8333-333333333333",
+          sowing_plan_row_id: baseRecord.id,
+          event_date: "2026-10-17",
+          event_type: "brownRoots",
+          location: "C5",
+          destination_location: null,
+          plant_change: -32,
+          plant_correction_id: "22222222-2222-4222-8222-222222222222",
+          note: null,
+          created_at: undefined,
+          updated_at: undefined,
+        },
+      ],
+      { onConflict: "id" },
+    );
+    expect(row.husEvents).toEqual([
+      {
+        id: "33333333-3333-4333-8333-333333333333",
+        eventDate: "2026-10-17",
+        eventType: "brownRoots",
+        location: "C5",
+        plantChange: -32,
+        plantCorrectionId: "22222222-2222-4222-8222-222222222222",
+      },
+    ]);
+    expect(row.plantCorrections?.[0]?.amount).toBe(-32);
+  });
+
   it("persists plant correction deletion by clearing child rows without inserting replacements", async () => {
     const plantCorrectionsDelete = deleteResult();
     const client = {
@@ -344,11 +461,13 @@ describe("supabase sowing plan repository", () => {
         .mockReturnValueOnce(deleteResult())
         .mockReturnValueOnce(deleteResult())
         .mockReturnValueOnce(plantCorrectionsDelete)
+        .mockReturnValueOnce(deleteResult())
         .mockReturnValueOnce(selectSingleByIdResult({
           ...baseRecord,
           work_adjustments: [],
           table_placements: [],
           change_history: [],
+          hus_events: [],
           plant_corrections: [],
         })),
     };

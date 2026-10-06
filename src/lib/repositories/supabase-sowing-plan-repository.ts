@@ -2,6 +2,7 @@ import "server-only";
 import type { SowingPlanRow } from "@/lib/types";
 import type {
   ChangeHistoryRecord,
+  HusEventRecord,
   PlantCorrectionRecord,
   SowingPlanRowWithRelations,
   TablePlacementRecord,
@@ -11,6 +12,7 @@ import {
   recordToSowingPlanRow,
   rowAdjustmentsToRecords,
   rowChangeHistoryToRecords,
+  rowHusEventsToRecords,
   rowPlantCorrectionsToRecords,
   rowPlacementToRecord,
   sowingPlanRowToRecord,
@@ -65,20 +67,20 @@ async function loadRowsFromSupabase(): Promise<SowingPlanRow[]> {
 
   const { data, error } = await client
     .from("sowing_plan_rows")
-    .select("*, work_adjustments(*), table_placements(*), change_history(*), plant_corrections(*)")
+    .select("*, work_adjustments(*), table_placements(*), change_history(*), plant_corrections(*), hus_events(*)")
     .order("sowing_date", { ascending: true });
 
-  if (error && isPlantCorrectionsRelationError(error)) {
-    const fallback = await client
-      .from("sowing_plan_rows")
-      .select("*, work_adjustments(*), table_placements(*), change_history(*)")
-      .order("sowing_date", { ascending: true });
+  if (error && isOptionalRelationError(error)) {
+    const fallbackSelect = isHusEventsRelationError(error)
+      ? "*, work_adjustments(*), table_placements(*), change_history(*), plant_corrections(*)"
+      : "*, work_adjustments(*), table_placements(*), change_history(*)";
+    const fallback = await client.from("sowing_plan_rows").select(fallbackSelect).order("sowing_date", { ascending: true });
 
     if (fallback.error) {
       throw fallback.error;
     }
 
-    return ((fallback.data ?? []) as SowingPlanRowWithRelations[]).map(recordToSowingPlanRow);
+    return ((fallback.data ?? []) as unknown as SowingPlanRowWithRelations[]).map(recordToSowingPlanRow);
   }
 
   if (error) {
@@ -104,6 +106,7 @@ async function createRowInSupabase(row: SowingPlanRow): Promise<SowingPlanRow> {
   await replaceWorkAdjustments(row);
   await replaceTablePlacement(row);
   await replacePlantCorrections(row);
+  await replaceHusEvents(row);
   await upsertChangeHistory(row);
 
   return loadRowById(row.id);
@@ -137,6 +140,7 @@ async function updateRowInSupabase(row: SowingPlanRow, expectedUpdatedAt?: strin
   await replaceWorkAdjustments(row);
   await replaceTablePlacement(row);
   await replacePlantCorrections(row);
+  await replaceHusEvents(row);
   await upsertChangeHistory(row);
 
   return loadRowById(row.id);
@@ -166,22 +170,21 @@ async function loadRowById(id: string): Promise<SowingPlanRow> {
   const client = createSupabaseServerClient();
   const { data, error } = await client
     .from("sowing_plan_rows")
-    .select("*, work_adjustments(*), table_placements(*), change_history(*), plant_corrections(*)")
+    .select("*, work_adjustments(*), table_placements(*), change_history(*), plant_corrections(*), hus_events(*)")
     .eq("id", id)
     .single();
 
-  if (error && isPlantCorrectionsRelationError(error)) {
-    const fallback = await client
-      .from("sowing_plan_rows")
-      .select("*, work_adjustments(*), table_placements(*), change_history(*)")
-      .eq("id", id)
-      .single();
+  if (error && isOptionalRelationError(error)) {
+    const fallbackSelect = isHusEventsRelationError(error)
+      ? "*, work_adjustments(*), table_placements(*), change_history(*), plant_corrections(*)"
+      : "*, work_adjustments(*), table_placements(*), change_history(*)";
+    const fallback = await client.from("sowing_plan_rows").select(fallbackSelect).eq("id", id).single();
 
     if (fallback.error) {
       throw fallback.error;
     }
 
-    return recordToSowingPlanRow(fallback.data as SowingPlanRowWithRelations);
+    return recordToSowingPlanRow(fallback.data as unknown as SowingPlanRowWithRelations);
   }
 
   if (error) {
@@ -295,6 +298,32 @@ async function replacePlantCorrections(row: SowingPlanRow): Promise<void> {
   }
 }
 
+async function replaceHusEvents(row: SowingPlanRow): Promise<void> {
+  const client = createSupabaseServerClient();
+
+  const { error: deleteError } = await client.from("hus_events").delete().eq("sowing_plan_row_id", row.id);
+  if (deleteError && isHusEventsRelationError(deleteError) && (row.husEvents ?? []).length === 0) {
+    return;
+  }
+  if (deleteError && isHusEventsRelationError(deleteError)) {
+    throw new Error("hus_events tabula vai relācija nav pieejama. Pārbaudi, vai Supabase hus_events migrācija ir palaista un schema cache ir atjaunots.");
+  }
+  if (deleteError) {
+    throw new SupabasePersistenceError("Neizdevās dzēst iepriekšējos HUS žurnāla ierakstus", deleteError);
+  }
+
+  const records = rowHusEventsToRecords(row);
+  if (records.length === 0) {
+    return;
+  }
+
+  const { error } = await client.from("hus_events").upsert(records as HusEventRecord[], { onConflict: "id" });
+
+  if (error) {
+    throw new SupabasePersistenceError("Neizdevās saglabāt HUS žurnāla ierakstus", error);
+  }
+}
+
 async function upsertChangeHistory(row: SowingPlanRow): Promise<void> {
   const client = createSupabaseServerClient();
   const records = rowChangeHistoryToRecords(row).filter((record): record is ChangeHistoryRecord => Boolean(record.id));
@@ -338,6 +367,31 @@ function isPlantCorrectionsRelationError(error: unknown): boolean {
 
   return (
     haystack.includes("plant_corrections") &&
+    (haystack.includes("pgrst200") ||
+      haystack.includes("pgrst205") ||
+      haystack.includes("42p01") ||
+      haystack.includes("relationship") ||
+      haystack.includes("schema cache") ||
+      haystack.includes("does not exist"))
+  );
+}
+
+function isHusEventsRelationError(error: unknown): boolean {
+  return isMissingRelationError(error, "hus_events");
+}
+
+function isOptionalRelationError(error: unknown): boolean {
+  return isPlantCorrectionsRelationError(error) || isHusEventsRelationError(error);
+}
+
+function isMissingRelationError(error: unknown, relation: string): boolean {
+  const candidate = error as { code?: unknown; message?: unknown };
+  const code = typeof candidate.code === "string" ? candidate.code : "";
+  const message = typeof candidate.message === "string" ? candidate.message : "";
+  const haystack = `${code} ${message}`.toLowerCase();
+
+  return (
+    haystack.includes(relation) &&
     (haystack.includes("pgrst200") ||
       haystack.includes("pgrst205") ||
       haystack.includes("42p01") ||

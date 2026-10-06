@@ -106,6 +106,7 @@ function calendarItemLabel(item: WorkItem) {
 export function PlannerApp() {
   const [planRows, setPlanRows] = useState<SowingPlanRow[]>([]);
   const [repositoryMessage, setRepositoryMessage] = useState("Ielādē Supabase");
+  const [repositoryError, setRepositoryError] = useState("");
   const [activeView, setActiveView] = useState<MainView>("sowingPlan");
   const [viewMode, setViewMode] = useState<ViewMode>("month");
   const [anchorDate, setAnchorDate] = useState("2026-09-25");
@@ -168,9 +169,12 @@ export function PlannerApp() {
         setPlanRows(loadedRows);
         setSelectedRowId(loadedRows[0]?.id ?? "");
         setRepositoryMessage("Supabase aktīvs");
+        setRepositoryError("");
       } catch (error) {
         if (!cancelled) {
-          setRepositoryMessage(error instanceof Error ? error.message : "Neizdevās ielādēt Supabase plānu");
+          const message = error instanceof Error ? error.message : "Neizdevās ielādēt Supabase plānu";
+          setRepositoryMessage(message);
+          setRepositoryError(message);
         }
       }
     }
@@ -228,6 +232,7 @@ export function PlannerApp() {
     };
 
     setRepositoryMessage("Saglabā Supabase");
+    setRepositoryError("");
     try {
       const savedRow = await sowingPlanRepository.create(row);
       setPlanRows((current) => [savedRow, ...current]);
@@ -237,8 +242,11 @@ export function PlannerApp() {
       setDraft(initialDraft);
       setActiveView("worksheet");
       setRepositoryMessage("Supabase saglabāts");
+      setRepositoryError("");
     } catch (error) {
-      setRepositoryMessage(error instanceof Error ? error.message : "Neizdevās izveidot Hus Supabase");
+      const message = error instanceof Error ? error.message : "Neizdevās izveidot Hus Supabase";
+      setRepositoryMessage(message);
+      setRepositoryError(message);
     }
   }
 
@@ -261,6 +269,7 @@ export function PlannerApp() {
 
   function persistRowUpdate(previous: SowingPlanRow, next: SowingPlanRow): Promise<SowingPlanRow> {
     setRepositoryMessage("Saglabā Supabase");
+    setRepositoryError("");
     const baseline = rowSaveChainsRef.current.get(previous.id) ?? Promise.resolve(previous);
     const operation = baseline
       .then((latestSavedRow) =>
@@ -272,6 +281,7 @@ export function PlannerApp() {
       .then((savedRow) => {
         setPlanRows((current) => current.map((row) => (row.id === savedRow.id ? savedRow : row)));
         setRepositoryMessage("Supabase saglabāts");
+        setRepositoryError("");
         return savedRow;
       })
       .catch(async (error) => {
@@ -279,11 +289,13 @@ export function PlannerApp() {
         const message = error instanceof Error ? error.message : "Neizdevās saglabāt Hus Supabase";
         if (error instanceof SowingPlanApiConflictError) {
           setRepositoryMessage("Šis Hus ir mainīts citur. Dati pārlādēti; pārbaudi jaunāko versiju pirms atkārtotas izmaiņas.");
+          setRepositoryError("Šis Hus ir mainīts citur. Dati pārlādēti; pārbaudi jaunāko versiju pirms atkārtotas izmaiņas.");
           await reloadRows("Šis Hus ir mainīts citur. Pārbaudi jaunāko versiju.");
           return previous;
         }
 
         setRepositoryMessage(message);
+        setRepositoryError(message);
         await reloadRows(message).catch(() => {
           setPlanRows((current) => current.map((row) => (row.id === previous.id ? previous : row)));
         });
@@ -738,6 +750,27 @@ export function PlannerApp() {
           </form>
         </div>
       </header>
+
+      {repositoryError ? (
+        <section className="repository-error no-print" role="alert">
+          <div>
+            <strong>Neizdevās saglabāt Supabase</strong>
+            <code>{repositoryError}</code>
+          </div>
+          <div className="button-row">
+            <button
+              className="secondary-action secondary-action--small"
+              type="button"
+              onClick={() => void navigator.clipboard?.writeText(repositoryError)}
+            >
+              Kopēt kļūdu
+            </button>
+            <button className="secondary-action secondary-action--small" type="button" onClick={() => setRepositoryError("")}>
+              Aizvērt
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       <nav className="main-nav" aria-label="Galvenie skati">
         {navItems.map((item) => (

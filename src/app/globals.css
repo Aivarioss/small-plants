@@ -1194,6 +1194,29 @@ button:focus-visible {
   color: #9f1d1d;
 }
 
+.repository-error {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: start;
+  justify-content: space-between;
+  border: 1px solid #ef9a9a;
+  border-radius: 8px;
+  background: #fff2f2;
+  color: #7f1d1d;
+  padding: 10px 12px;
+}
+
+.repository-error div {
+  display: grid;
+  gap: 5px;
+}
+
+.repository-error code {
+  white-space: normal;
+  word-break: break-word;
+}
+
 .secondary-action--small,
 .danger-action--small {
   min-height: 32px;

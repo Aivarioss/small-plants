@@ -32,6 +32,25 @@ export class SowingPlanNotFoundError extends Error {
   }
 }
 
+export class SupabasePersistenceError extends Error {
+  code?: string;
+  details?: string;
+  hint?: string;
+  operation: string;
+
+  constructor(operation: string, error: unknown) {
+    const summary = supabaseErrorSummary(error);
+    super(`${operation}: ${summary}`);
+    this.name = "SupabasePersistenceError";
+    this.operation = operation;
+
+    const candidate = error as { code?: unknown; details?: unknown; hint?: unknown };
+    this.code = typeof candidate.code === "string" ? candidate.code : undefined;
+    this.details = typeof candidate.details === "string" ? candidate.details : undefined;
+    this.hint = typeof candidate.hint === "string" ? candidate.hint : undefined;
+  }
+}
+
 export function createSupabaseSowingPlanRepository(): RemoteSowingPlanRepository {
   return {
     create: createRowInSupabase,
@@ -248,7 +267,7 @@ async function replacePlantCorrections(row: SowingPlanRow): Promise<void> {
     throw new Error("plant_corrections tabula vai relācija nav pieejama. Pārbaudi, vai Supabase plant_corrections migrācija ir palaista un schema cache ir atjaunots.");
   }
   if (deleteError) {
-    throw new Error(`Neizdevās dzēst iepriekšējās stādu korekcijas: ${supabaseErrorSummary(deleteError)}`);
+    throw new SupabasePersistenceError("Neizdevās dzēst iepriekšējās stādu korekcijas", deleteError);
   }
 
   const records = rowPlantCorrectionsToRecords(row);
@@ -259,7 +278,7 @@ async function replacePlantCorrections(row: SowingPlanRow): Promise<void> {
   const { error } = await client.from("plant_corrections").upsert(records as PlantCorrectionRecord[], { onConflict: "id" });
 
   if (error) {
-    throw new Error(`Neizdevās saglabāt stādu korekcijas: ${supabaseErrorSummary(error)}`);
+    throw new SupabasePersistenceError("Neizdevās saglabāt stādu korekcijas", error);
   }
 }
 

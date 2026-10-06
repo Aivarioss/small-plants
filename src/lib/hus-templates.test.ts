@@ -10,7 +10,9 @@ import {
   updateDraftCycleLength,
   updateDraftMoveOutDate,
 } from "./hus-templates";
-import type { SowingPlanDraft } from "./types";
+import { generateWorkItemsForRows } from "./planning";
+import { plannerConfig } from "./demo-data";
+import type { SowingPlanDraft, SowingPlanRow } from "./types";
 
 const draft: SowingPlanDraft = {
   sectorName: "",
@@ -33,14 +35,30 @@ describe("Hus templates", () => {
 
     expect(next.sectorName).toBe("Hus 6");
     expect(next.variety).toBe("Baltazsara");
+    expect(next.greenhouseRequiredPlants).toBe("3419");
     expect(next.requiredPlants).toBe("3556");
   });
 
   it("defaults worker extra to +100", () => {
     const next = applyHusTemplateToDraft(draft, "Hus 3");
 
+    expect(next.greenhouseRequiredPlants).toBe("3600");
+    expect(next.requiredPlants).toBe("3744");
     expect(next.extraPlants).toBe(String(DEFAULT_WORKER_EXTRA));
     expect(operationalTotal(Number(next.requiredPlants), Number(next.extraPlants))).toBe(3844);
+  });
+
+  it.each([
+    ["Hus 1", 4757, 4947],
+    ["Hus 7", 5824, 6057],
+    ["Hus 8B", 3995, 4155],
+  ])("keeps greenhouse required and agronomist sow counts separate for %s", (hus, greenhouseRequiredPlants, requiredPlants) => {
+    const template = findHusTemplate(hus);
+    const next = applyHusTemplateToDraft(draft, hus);
+
+    expect(template).toMatchObject({ greenhouseRequiredPlants, agronomistSowCount: requiredPlants });
+    expect(next.greenhouseRequiredPlants).toBe(String(greenhouseRequiredPlants));
+    expect(next.requiredPlants).toBe(String(requiredPlants));
   });
 
   it("allows changing +100 for one cycle without changing the template", () => {
@@ -48,6 +66,7 @@ describe("Hus templates", () => {
 
     expect(operationalTotal(Number(next.requiredPlants), Number(next.extraPlants))).toBe(3606);
     expect(findHusTemplate("Hus 6")?.agronomistSowCount).toBe(3556);
+    expect(findHusTemplate("Hus 6")?.greenhouseRequiredPlants).toBe(3419);
   });
 
   it("calculates move-out dates from biological day cycle convention", () => {
@@ -70,6 +89,7 @@ describe("Hus templates", () => {
 
     expect(next.sectorName).toBe("Hus X");
     expect(next.requiredPlants).toBe("");
+    expect(next.greenhouseRequiredPlants).toBe("");
     expect(next.variety).toBe("");
   });
 
@@ -78,6 +98,26 @@ describe("Hus templates", () => {
     const next = updateDraftCycleLength({ ...applyHusTemplateToDraft(draft, "Hus 3"), variety: "Cita" }, 23);
 
     expect(next.variety).toBe("Cita");
-    expect(before).toEqual({ hus: "Hus 3", agronomistSowCount: 3744, variety: "Baltazsara" });
+    expect(before).toEqual({ hus: "Hus 3", greenhouseRequiredPlants: 3600, agronomistSowCount: 3744, variety: "Baltazsara" });
+  });
+
+  it("does not use greenhouse required plants for scheduler quantities", () => {
+    const row: SowingPlanRow = {
+      id: "hus-3",
+      sectorName: "Hus 3",
+      greenhouseRequiredPlants: 3600,
+      requiredPlants: 3744,
+      extraPlants: 100,
+      variety: "Baltazsara",
+      sowingDate: "2026-10-01",
+      harvestDate: "2026-10-23",
+      cycleLength: 23,
+      sectorType: 26,
+      plantsPerBox: 12,
+      correction: 0,
+    };
+    const withoutGreenhouseRequired = { ...row, greenhouseRequiredPlants: undefined };
+
+    expect(generateWorkItemsForRows([row], plannerConfig)).toEqual(generateWorkItemsForRows([withoutGreenhouseRequired], plannerConfig));
   });
 });

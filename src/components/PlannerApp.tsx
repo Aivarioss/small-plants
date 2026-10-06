@@ -1050,6 +1050,12 @@ function SowingPlanPanel({
             {operationalTotal(Number(draft.requiredPlants || 0), Number(draft.extraPlants || 0)).toLocaleString("lv-LV")} stādi
           </strong>
           <span>
+            Siltumnīcai nepieciešams {draft.greenhouseRequiredPlants ? Number(draft.greenhouseRequiredPlants).toLocaleString("lv-LV") : "nav norādīts"} ·
+            Agronoma sējamais {Number(draft.requiredPlants || 0).toLocaleString("lv-LV")} · Extra{" "}
+            {Number(draft.extraPlants || 0).toLocaleString("lv-LV")} · Kopā sējams{" "}
+            {operationalTotal(Number(draft.requiredPlants || 0), Number(draft.extraPlants || 0)).toLocaleString("lv-LV")}
+          </span>
+          <span>
             Izvākšana {shortDate(draft.harvestDate)} · {draft.cycleLength || "?"} dienu cikls
           </span>
         </div>

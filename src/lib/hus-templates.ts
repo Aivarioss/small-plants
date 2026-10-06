@@ -3,6 +3,7 @@ import { addDays, daysBetween } from "./planning";
 
 export type HusTemplate = {
   hus: string;
+  greenhouseRequiredPlants: number;
   agronomistSowCount: number;
   variety: string;
 };
@@ -10,20 +11,20 @@ export type HusTemplate = {
 export const DEFAULT_WORKER_EXTRA = 100;
 
 export const standardHusTemplates: HusTemplate[] = [
-  { hus: "Hus 3", agronomistSowCount: 3744, variety: "Baltazsara" },
-  { hus: "Hus 2N", agronomistSowCount: 3588, variety: "Baltazsara" },
-  { hus: "Hus 2S", agronomistSowCount: 3551, variety: "Baltazsara" },
-  { hus: "Hus 1", agronomistSowCount: 4947, variety: "Baltazsara" },
-  { hus: "Hus 10A", agronomistSowCount: 4195, variety: "Baltazsara" },
-  { hus: "Hus 10B", agronomistSowCount: 3584, variety: "Baltazsara" },
-  { hus: "Hus 11", agronomistSowCount: 3603, variety: "Baltazsara" },
-  { hus: "Hus 4", agronomistSowCount: 3819, variety: "Baltazsara" },
-  { hus: "Hus 5", agronomistSowCount: 3556, variety: "Baltazsara" },
-  { hus: "Hus 6", agronomistSowCount: 3556, variety: "Baltazsara" },
-  { hus: "Hus 7", agronomistSowCount: 6057, variety: "Baltazsara" },
-  { hus: "Hus 9", agronomistSowCount: 3707, variety: "Baltazsara" },
-  { hus: "Hus 8A", agronomistSowCount: 3457, variety: "Baltazsara" },
-  { hus: "Hus 8B", agronomistSowCount: 4155, variety: "Baltazsara" },
+  { hus: "Hus 3", greenhouseRequiredPlants: 3600, agronomistSowCount: 3744, variety: "Baltazsara" },
+  { hus: "Hus 2N", greenhouseRequiredPlants: 3450, agronomistSowCount: 3588, variety: "Baltazsara" },
+  { hus: "Hus 2S", greenhouseRequiredPlants: 3414, agronomistSowCount: 3551, variety: "Baltazsara" },
+  { hus: "Hus 1", greenhouseRequiredPlants: 4757, agronomistSowCount: 4947, variety: "Baltazsara" },
+  { hus: "Hus 10A", greenhouseRequiredPlants: 4034, agronomistSowCount: 4195, variety: "Baltazsara" },
+  { hus: "Hus 10B", greenhouseRequiredPlants: 3446, agronomistSowCount: 3584, variety: "Baltazsara" },
+  { hus: "Hus 11", greenhouseRequiredPlants: 3464, agronomistSowCount: 3603, variety: "Baltazsara" },
+  { hus: "Hus 4", greenhouseRequiredPlants: 3672, agronomistSowCount: 3819, variety: "Baltazsara" },
+  { hus: "Hus 5", greenhouseRequiredPlants: 3419, agronomistSowCount: 3556, variety: "Baltazsara" },
+  { hus: "Hus 6", greenhouseRequiredPlants: 3419, agronomistSowCount: 3556, variety: "Baltazsara" },
+  { hus: "Hus 7", greenhouseRequiredPlants: 5824, agronomistSowCount: 6057, variety: "Baltazsara" },
+  { hus: "Hus 9", greenhouseRequiredPlants: 3564, agronomistSowCount: 3707, variety: "Baltazsara" },
+  { hus: "Hus 8A", greenhouseRequiredPlants: 3324, agronomistSowCount: 3457, variety: "Baltazsara" },
+  { hus: "Hus 8B", greenhouseRequiredPlants: 3995, agronomistSowCount: 4155, variety: "Baltazsara" },
 ];
 
 export function findHusTemplate(hus: string): HusTemplate | undefined {
@@ -44,6 +45,7 @@ export function applyHusTemplateToDraft(draft: SowingPlanDraft, hus: string): So
   return {
     ...draft,
     sectorName: template.hus,
+    greenhouseRequiredPlants: String(template.greenhouseRequiredPlants),
     requiredPlants: String(template.agronomistSowCount),
     extraPlants: String(DEFAULT_WORKER_EXTRA),
     variety: template.variety,

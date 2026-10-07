@@ -5,9 +5,11 @@ import {
   formatPrintSowingPlan,
   formatPrintThinningPlan,
   localizedMonthlyPrintRows,
+  normalizeLanguage,
   printLabel,
   printMaterialSummary,
   printWorkTitle,
+  t,
 } from "./print-localization";
 import { generateWorkItems, getTotalSow } from "./planning";
 import type { SowingPlanRow, WorkType } from "./types";
@@ -56,6 +58,9 @@ describe("print localization", () => {
     expect(printLabel("lv", "worksheet")).toBe("Darba lapa");
     expect(printLabel("en", "worksheet")).toBe("Work sheet");
     expect(printLabel("en", "boxes")).toBe("Boxes");
+    expect(t("recalculatePlan", "en")).toBe("Recalculate plan");
+    expect(normalizeLanguage("fr")).toBe("lv");
+    expect(normalizeLanguage("en")).toBe("en");
   });
 
   it("formats material summaries in English without Latvian unit words", () => {
@@ -77,6 +82,17 @@ describe("print localization", () => {
     });
     expect(printMaterialSummary(row, "lv").thinning).toContain("stādi renē");
     expect(printMaterialSummary(row, "en").thinning).toContain("plants/trough");
+  });
+
+  it("keeps language switching presentation-only for the same row data", () => {
+    const changedRow = { ...row, requiredPlants: 3800, extraPlants: 100 };
+    const workItems = generateWorkItems(changedRow, plannerConfig);
+    const lvRows = localizedMonthlyPrintRows(workItems, [changedRow], "lv");
+    const enRows = localizedMonthlyPrintRows(workItems, [changedRow], "en");
+
+    expect(getTotalSow(changedRow)).toBe(3900);
+    expect(lvRows.find((item) => item.workTitle === "Sēšana")?.plantCount).toBe(3900);
+    expect(enRows.find((item) => item.workTitle === "Seeding")?.plantCount).toBe(3900);
   });
 
   it("localizes common monthly print rows, including minor work notes", () => {

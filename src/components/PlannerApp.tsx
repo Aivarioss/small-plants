@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, FormEvent, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { plannerConfig } from "@/lib/demo-data";
 import {
   addDays,
@@ -25,7 +25,6 @@ import {
   groupMonthlyPrintRowsIntoDateGroups,
   greenhouseRows,
   hasManualWorkMoves,
-  husEventTypeLabel,
   husEventTypes,
   isAllowedMove,
   parseSowingTableSelection,
@@ -52,12 +51,25 @@ import {
   importCandidateValidationErrors,
 } from "@/lib/production-plan-import";
 import {
+  formatCycleDay,
+  formatCycleDays,
+  formatPlants,
+  formatPrintHarvestBoxes,
+  formatPrintSowingPlan,
+  formatPrintThinningPlan,
+  formatReserveShortage,
+  husEventTypeTitle,
+  localizedWorkDetails,
   localizedMonthlyPrintRows,
+  plantCorrectionReasonTitle,
   printLabel,
   printMaterialSummary,
   printWorkTitle,
-  type PrintLanguage,
-} from "@/lib/print-localization";
+  readStoredLanguage,
+  t,
+  writeStoredLanguage,
+  type AppLanguage,
+} from "@/lib/localization";
 import { SowingPlanApiConflictError } from "@/lib/repositories/api-sowing-plan-repository";
 import { sowingPlanRepository } from "@/lib/repositories/sowing-plan-repository";
 import type {
@@ -78,18 +90,28 @@ import type {
   WorkloadBalanceProposal,
 } from "@/lib/types";
 
-const navItems: Array<{ id: MainView; label: string }> = [
-  { id: "sowingPlan", label: "Plāns" },
-  { id: "calendar", label: "Kalendārs" },
-  { id: "hus", label: "Hus" },
+const navItems: Array<{ id: MainView; labelKey: "plan" | "calendar" | "allHus" }> = [
+  { id: "sowingPlan", labelKey: "plan" },
+  { id: "calendar", labelKey: "calendar" },
+  { id: "hus", labelKey: "allHus" },
 ];
 
-const viewModes: Array<{ id: ViewMode; label: string }> = [
-  { id: "month", label: "Mēnesis" },
-  { id: "tenDays", label: "10 dienas" },
+const viewModes: Array<{ id: ViewMode; label: Record<AppLanguage, string> }> = [
+  { id: "month", label: { lv: "Mēnesis", en: "Month" } },
+  { id: "tenDays", label: { lv: "10 dienas", en: "10 days" } },
 ];
 
 const weekdayLabels = ["P", "O", "T", "C", "P", "S", "Sv"];
+const weekdayLabelsByLanguage: Record<AppLanguage, string[]> = {
+  en: ["M", "T", "W", "T", "F", "S", "Su"],
+  lv: weekdayLabels,
+};
+
+const LanguageContext = createContext<AppLanguage>("lv");
+
+function useAppLanguage(): AppLanguage {
+  return useContext(LanguageContext);
+}
 
 const initialDraft: SowingPlanDraft = {
   sectorName: "",
@@ -106,13 +128,17 @@ const initialDraft: SowingPlanDraft = {
   plantsPerBox: String(plannerConfig.defaultPlantsPerBox),
 };
 
-function calendarItemLabel(item: WorkItem) {
+function calendarItemLabel(item: WorkItem, language: AppLanguage) {
   const placementLabel =
     item.type === "thinning" && item.placement
-      ? ` · ${item.placement.primaryRow ? `Rinda ${item.placement.primaryRow}` : "Nav rindas"} · ${item.placement.tables} galdi`
+      ? ` · ${
+          item.placement.primaryRow
+            ? language === "lv" ? `Rinda ${item.placement.primaryRow}` : `Row ${item.placement.primaryRow}`
+            : language === "lv" ? "Nav rindas" : "No row"
+        } · ${item.placement.tables} ${language === "lv" ? "galdi" : "tables"}`
       : "";
 
-  return `${item.title} · ${item.sectorName}${placementLabel} · ${compactNumber(item.plantCount)}`;
+  return `${printWorkTitle(item.type, language)} · ${item.sectorName}${placementLabel} · ${compactNumber(item.plantCount)}`;
 }
 
 export function PlannerApp() {
@@ -121,7 +147,7 @@ export function PlannerApp() {
   const [repositoryError, setRepositoryError] = useState("");
   const [activeView, setActiveView] = useState<MainView>("sowingPlan");
   const [viewMode, setViewMode] = useState<ViewMode>("month");
-  const [printLanguage, setPrintLanguage] = useState<PrintLanguage>("lv");
+  const [printLanguage, setPrintLanguage] = useState<AppLanguage>(() => readStoredLanguage());
   const [anchorDate, setAnchorDate] = useState("2026-09-25");
   const [selectedDate, setSelectedDate] = useState("2026-09-25");
   const [selectedRowId, setSelectedRowId] = useState("");
@@ -133,6 +159,10 @@ export function PlannerApp() {
   const [importPreviewUrl, setImportPreviewUrl] = useState("");
   const [balancePreview, setBalancePreview] = useState<WorkloadBalanceProposal[] | null>(null);
   const rowSaveChainsRef = useRef(new Map<string, Promise<SowingPlanRow>>());
+
+  useEffect(() => {
+    writeStoredLanguage(printLanguage);
+  }, [printLanguage]);
 
   const workItems = useMemo(
     () =>
@@ -746,19 +776,21 @@ export function PlannerApp() {
   }
 
   return (
+    <LanguageContext.Provider value={printLanguage}>
     <main className="app-shell">
       <header className="topbar">
         <div>
-          <p className="eyebrow">Privāts ražošanas plānotājs</p>
-          <h1>Gurķu stādu cikli</h1>
+          <p className="eyebrow">{t("privatePlanner", printLanguage)}</p>
+          <h1>{printLanguage === "lv" ? "Gurķu stādu cikli" : "Cucumber plant cycles"}</h1>
         </div>
         <div className="topbar__stats">
           <span>{repositoryMessage}</span>
-          <span>{planRows.length} plāna rindas</span>
-          <strong>{workItems.length} darbi</strong>
+          <span>{planRows.length} {t("plannedRows", printLanguage)}</span>
+          <strong>{workItems.length} {t("work", printLanguage).toLowerCase()}</strong>
+          <LanguageToggle language={printLanguage} onChange={setPrintLanguage} />
           <form action="/api/auth/logout" method="post">
             <button className="secondary-action" type="submit">
-              Iziet
+              {printLanguage === "lv" ? "Iziet" : "Logout"}
             </button>
           </form>
         </div>
@@ -767,7 +799,7 @@ export function PlannerApp() {
       {repositoryError ? (
         <section className="repository-error no-print" role="alert">
           <div>
-            <strong>Neizdevās saglabāt Supabase</strong>
+            <strong>{printLanguage === "lv" ? "Neizdevās saglabāt Supabase" : "Could not save Supabase data"}</strong>
             <code>{repositoryError}</code>
           </div>
           <div className="button-row">
@@ -776,16 +808,16 @@ export function PlannerApp() {
               type="button"
               onClick={() => void navigator.clipboard?.writeText(repositoryError)}
             >
-              Kopēt kļūdu
+              {t("copyError", printLanguage)}
             </button>
             <button className="secondary-action secondary-action--small" type="button" onClick={() => setRepositoryError("")}>
-              Aizvērt
+              {printLanguage === "lv" ? "Aizvērt" : "Close"}
             </button>
           </div>
         </section>
       ) : null}
 
-      <nav className="main-nav" aria-label="Galvenie skati">
+      <nav className="main-nav" aria-label={t("mainViews", printLanguage)}>
         {navItems.map((item) => (
           <button
             className={item.id === activeView ? "is-active" : ""}
@@ -793,7 +825,7 @@ export function PlannerApp() {
             onClick={() => setActiveView(item.id)}
             type="button"
           >
-            {item.label}
+            {t(item.labelKey, printLanguage)}
           </button>
         ))}
       </nav>
@@ -857,6 +889,7 @@ export function PlannerApp() {
               items={selectedDayItems}
               onMove={moveWork}
               onMoveRange={moveFlexibleWorkRange}
+              rows={planRows}
               selectedDate={selectedDate}
             />
           </section>
@@ -938,16 +971,17 @@ export function PlannerApp() {
         <section className="panel">
           <div className="panel-header">
             <div>
-              <p className="eyebrow">Hus darba lapa</p>
-              <h2>Nav izvēlēts Hus</h2>
+              <p className="eyebrow">{t("worksheet", printLanguage)}</p>
+              <h2>{t("noHusSelected", printLanguage)}</h2>
             </div>
             <button className="primary-action" type="button" onClick={() => setActiveView("sowingPlan")}>
-              Atvērt sēšanas plānu
+              {t("openPlan", printLanguage)}
             </button>
           </div>
         </section>
       ) : null}
     </main>
+    </LanguageContext.Provider>
   );
 }
 
@@ -992,16 +1026,18 @@ function SowingPlanPanel({
   onUpdateRow: (id: string, patch: Partial<SowingPlanRow>) => void;
   rows: SowingPlanRow[];
 }) {
+  const language = useAppLanguage();
+
   return (
     <section className="panel plan-panel">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">Sezonas pamats</p>
-          <h2>Plāns</h2>
+          <p className="eyebrow">{t("seasonBase", language)}</p>
+          <h2>{t("plan", language)}</h2>
         </div>
         <div className="button-row">
           <label className="file-action">
-            Nolasīt plānu
+            {t("importPlan", language)}
             <input
               accept="image/png,image/jpeg"
               capture="environment"
@@ -1017,7 +1053,7 @@ function SowingPlanPanel({
           </label>
           {hasDemoRows ? (
             <button className="secondary-action" type="button" onClick={onDeleteDemo}>
-              Dzēst demo datus
+              {t("deleteDemoData", language)}
             </button>
           ) : null}
         </div>
@@ -1033,7 +1069,7 @@ function SowingPlanPanel({
           />
         </div>
       ) : null}
-      {importBusy ? <p className="import-note">Nolasa plānu no foto...</p> : null}
+      {importBusy ? <p className="import-note">{language === "lv" ? "Nolasa plānu no foto..." : "Reading plan from photo..."}</p> : null}
       {importMessage ? <p className="import-note">{importMessage}</p> : null}
       {importResult ? (
         <ImportReviewPanel
@@ -1054,7 +1090,7 @@ function SowingPlanPanel({
               required
               value={standardHusTemplates.some((template) => template.hus === draft.sectorName) ? draft.sectorName : ""}
             >
-              <option value="">Izvēlies Hus</option>
+              <option value="">{t("chooseHus", language)}</option>
               {standardHusTemplates.map((template) => (
                 <option key={template.hus} value={template.hus}>
                   {template.hus}
@@ -1063,7 +1099,7 @@ function SowingPlanPanel({
             </select>
           </label>
           <label>
-            Sēšana
+            {t("seeding", language)}
             <input
               onChange={(event) => onDraftChange(updateDraftSowingDate(draft, event.target.value))}
               required
@@ -1072,7 +1108,7 @@ function SowingPlanPanel({
             />
           </label>
           <div className="cycle-picker">
-            <span>Cikls</span>
+            <span>{t("cycle", language)}</span>
             <div className="segmented segmented--compact">
               {[21, 22, 23].map((cycleLength) => (
                 <button
@@ -1089,12 +1125,12 @@ function SowingPlanPanel({
                 onClick={() => onDraftChange({ ...draft, cycleMode: "moveOut", cycleLength: String(deriveCycleLength(draft.sowingDate, draft.harvestDate)) })}
                 type="button"
               >
-                Cits
+                {language === "lv" ? "Cits" : "Custom"}
               </button>
             </div>
           </div>
           <label>
-            Izvākšana
+            {t("moveOut", language)}
             <input
               onChange={(event) => onDraftChange(updateDraftMoveOutDate(draft, event.target.value))}
               required
@@ -1106,26 +1142,26 @@ function SowingPlanPanel({
 
         <div className="quick-entry-summary">
           <strong>
-            {draft.variety || "Šķirne"} · {Number(draft.requiredPlants || 0).toLocaleString("lv-LV")} +{" "}
+            {draft.variety || t("variety", language)} · {Number(draft.requiredPlants || 0).toLocaleString("lv-LV")} +{" "}
             {Number(draft.extraPlants || 0).toLocaleString("lv-LV")} →{" "}
-            {operationalTotal(Number(draft.requiredPlants || 0), Number(draft.extraPlants || 0)).toLocaleString("lv-LV")} stādi
+            {formatPlants(operationalTotal(Number(draft.requiredPlants || 0), Number(draft.extraPlants || 0)), language)}
           </strong>
           <span>
-            Siltumnīcai nepieciešams {draft.greenhouseRequiredPlants ? Number(draft.greenhouseRequiredPlants).toLocaleString("lv-LV") : "nav norādīts"} ·
-            Agronoma sējamais {Number(draft.requiredPlants || 0).toLocaleString("lv-LV")} · Extra{" "}
-            {Number(draft.extraPlants || 0).toLocaleString("lv-LV")} · Kopā sējams{" "}
+            {t("greenhouseRequired", language)} {draft.greenhouseRequiredPlants ? Number(draft.greenhouseRequiredPlants).toLocaleString("lv-LV") : t("noTablesSet", language).toLowerCase()} ·
+            {t("agronomistSowing", language)} {Number(draft.requiredPlants || 0).toLocaleString("lv-LV")} · {t("extra", language)}{" "}
+            {Number(draft.extraPlants || 0).toLocaleString("lv-LV")} · {t("totalSow", language)}{" "}
             {operationalTotal(Number(draft.requiredPlants || 0), Number(draft.extraPlants || 0)).toLocaleString("lv-LV")}
           </span>
           <span>
-            Izvākšana {shortDate(draft.harvestDate)} · {draft.cycleLength || "?"} dienu cikls
+            {t("moveOut", language)} {shortDate(draft.harvestDate)} · {draft.cycleLength || "?"} {language === "lv" ? "dienu cikls" : "day cycle"}
           </span>
         </div>
 
         <details className="advanced-fields">
-          <summary>Mainīt parametrus</summary>
+          <summary>{t("changeDetails", language)}</summary>
           <div className="advanced-fields__grid">
             <label>
-              Hus nosaukums
+              {t("husName", language)}
               <input
                 onChange={(event) => onDraftChange({ ...draft, sectorName: event.target.value })}
                 placeholder="Hus 3"
@@ -1134,7 +1170,7 @@ function SowingPlanPanel({
               />
             </label>
             <label>
-              Siltumnīcai nepieciešams
+              {t("greenhouseRequired", language)}
               <input
                 min="1"
                 onChange={(event) => onDraftChange({ ...draft, greenhouseRequiredPlants: event.target.value })}
@@ -1143,7 +1179,7 @@ function SowingPlanPanel({
               />
             </label>
             <label>
-              Agronoma sējamais skaits
+              {t("agronomistSowing", language)}
               <input
                 min="1"
                 onChange={(event) => {
@@ -1157,7 +1193,7 @@ function SowingPlanPanel({
               />
             </label>
             <label>
-              Darbinieka extra
+              {language === "lv" ? "Darbinieka extra" : "Worker extra"}
               <input
                 onChange={(event) => {
                   const extraPlants = event.target.value;
@@ -1169,7 +1205,7 @@ function SowingPlanPanel({
               />
             </label>
             <label>
-              Šķirne
+              {t("variety", language)}
               <input
                 onChange={(event) => onDraftChange({ ...draft, variety: event.target.value })}
                 placeholder="Baltazsara"
@@ -1179,37 +1215,37 @@ function SowingPlanPanel({
             </label>
             <SowingTablesPicker value={draft.sowingTables} onSave={(value) => onDraftChange({ ...draft, sowingTables: value })} />
             <label>
-              Sektora galdi
+              {t("sectorTables", language)}
               <select
                 value={draft.sectorType}
                 onChange={(event) => onDraftChange({ ...draft, sectorType: Number(event.target.value) as SectorType })}
               >
-                <option value={26}>26 galdi</option>
-                <option value={39}>39 galdi</option>
+                <option value={26}>26 {t("tables", language).toLowerCase()}</option>
+                <option value={39}>39 {t("tables", language).toLowerCase()}</option>
               </select>
             </label>
           </div>
         </details>
 
         <button className="primary-action" type="submit">
-          Pievienot Hus
+          {t("addHus", language)}
         </button>
       </form>
 
-      <div className="plan-table" role="table" aria-label="Plāna Hus rindas">
+      <div className="plan-table" role="table" aria-label={language === "lv" ? "Plāna Hus rindas" : "Plan Hus rows"}>
         <div className="plan-row plan-row--head" role="row">
           <span>Hus</span>
-          <span>Sēšanas galdi</span>
-          <span>Nepieciešams</span>
-          <span>Agronoma sēja</span>
-          <span>Extra</span>
-          <span>Kopā sēt</span>
-          <span>Šķirne</span>
-          <span>Sēšana</span>
-          <span>Izvākšana</span>
-          <span>Darbības</span>
+          <span>{t("seedingTables", language)}</span>
+          <span>{t("greenhouseRequired", language)}</span>
+          <span>{t("agronomistSowing", language)}</span>
+          <span>{t("extra", language)}</span>
+          <span>{t("totalSow", language)}</span>
+          <span>{t("variety", language)}</span>
+          <span>{t("seeding", language)}</span>
+          <span>{t("moveOut", language)}</span>
+          <span>{language === "lv" ? "Darbības" : "Actions"}</span>
         </div>
-        {rows.length === 0 ? <p className="empty-state">Plāna rindu vēl nav.</p> : null}
+        {rows.length === 0 ? <p className="empty-state">{t("noPlanRows", language)}</p> : null}
         {rows.map((row) => {
           const totalSow = getTotalSow(row);
 
@@ -1249,10 +1285,10 @@ function SowingPlanPanel({
               <input type="date" value={row.harvestDate} onChange={(event) => onUpdateDate(row, "harvestDate", event.target.value)} />
               <span className="button-row">
                 <button className="secondary-action" type="button" onClick={() => onOpenRow(row.id)}>
-                  Atvērt Hus
+                  {t("openHus", language)}
                 </button>
                 <button className="danger-action" type="button" onClick={() => onDelete(row.id)}>
-                  Dzēst
+                  {t("delete", language)}
                 </button>
               </span>
             </div>
@@ -1276,6 +1312,7 @@ function ImportReviewPanel({
   onDuplicateActionChange: (id: string, duplicateAction: NonNullable<PlanImportCandidate["duplicateAction"]>) => void;
   onSelectionChange: (id: string, selected: boolean) => void;
 }) {
+  const language = useAppLanguage();
   const selectedCount = importResult.candidates.filter((candidate) => candidate.selected).length;
   const importableCount = importResult.candidates.filter(
     (candidate) => candidate.selected && (!candidate.duplicateOf || candidate.duplicateAction === "replace"),
@@ -1285,30 +1322,32 @@ function ImportReviewPanel({
     <section className="import-review">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">Foto imports</p>
-          <h3>Pārbaudīt atpazīto plānu</h3>
+          <p className="eyebrow">{t("photoImport", language)}</p>
+          <h3>{t("importDetectedPlan", language)}</h3>
         </div>
         <span className="mock-badge">
-          {importResult.providerConfigured ? importResult.provider : "Providers nav konfigurēts"} · {importResult.fileName}
+          {importResult.providerConfigured ? importResult.provider : language === "lv" ? "Providers nav konfigurēts" : "Provider not configured"} · {importResult.fileName}
         </span>
       </div>
       <p className="import-note">
-        Pārbaudi, vai OCR nav sajaucis “Siltumnīcai nepieciešams” un “Agronoma sējamais”. Saglabāšana notiek tikai pēc apstiprināšanas.
+        {language === "lv"
+          ? "Pārbaudi, vai OCR nav sajaucis “Siltumnīcai nepieciešams” un “Agronoma sējamais”. Saglabāšana notiek tikai pēc apstiprināšanas."
+          : "Check that OCR has not mixed up “Greenhouse required” and “Agronomist sowing”. Saving happens only after confirmation."}
       </p>
       <div className="import-table" role="table" aria-label="Atpazītā plāna pārbaude">
         <div className="import-row import-row--head" role="row">
           <span>✓</span>
           <span>Hus</span>
-          <span>Šķirne</span>
-          <span>Siltumnīcai nepieciešams</span>
-          <span>Agronoma sējamais</span>
-          <span>+ Rezerve</span>
-          <span>Kopā</span>
-          <span>Sēšana</span>
-          <span>Izvākšana</span>
-          <span>Cikls</span>
-          <span>Statuss</span>
-          <span>Dublikāts</span>
+          <span>{t("variety", language)}</span>
+          <span>{t("greenhouseRequired", language)}</span>
+          <span>{t("agronomistSowing", language)}</span>
+          <span>+ {language === "lv" ? "Rezerve" : "Reserve"}</span>
+          <span>{t("total", language)}</span>
+          <span>{t("seeding", language)}</span>
+          <span>{t("moveOut", language)}</span>
+          <span>{t("cycle", language)}</span>
+          <span>{t("status", language)}</span>
+          <span>{t("duplicate", language)}</span>
         </div>
         {importResult.candidates.map((candidate) => (
           <div className="import-row" key={candidate.id} role="row">
@@ -1327,46 +1366,46 @@ function ImportReviewPanel({
             <strong>{candidate.operationalTotal.toLocaleString("lv-LV")}</strong>
             <ReviewInput candidate={candidate} field="sowingDate" onChange={onChange} type="date" />
             <ReviewInput candidate={candidate} field="harvestDate" onChange={onChange} type="date" />
-            <strong>{candidate.cycleLength ? `${candidate.cycleLength} dienas` : "⚠"}</strong>
+            <strong>{candidate.cycleLength ? formatCycleDays(candidate.cycleLength, language) : "⚠"}</strong>
             <div className="status-cell">
               {candidate.warnings.length > 0 || Object.values(candidate.fields).some((field) => field.needsReview) ? (
                 <ul>
-                  {[...candidate.warnings, ...fieldWarnings(candidate)].map((warning) => (
+                  {[...candidate.warnings, ...fieldWarnings(candidate, language)].map((warning) => (
                     <li key={warning}>⚠ {warning}</li>
                   ))}
                 </ul>
               ) : (
-                <span>Gatavs pārbaudei</span>
+                <span>{t("importReady", language)}</span>
               )}
-              {candidate.duplicateOf ? <small>Iespējams dublikāts ar esošu Hus ciklu.</small> : null}
+              {candidate.duplicateOf ? <small>{language === "lv" ? "Iespējams dublikāts ar esošu Hus ciklu." : "Possible duplicate of an existing Hus cycle."}</small> : null}
             </div>
             <div className="status-cell">
               {candidate.duplicateOf ? (
                 <select
-                  aria-label="Dublikāta darbība"
+                  aria-label={language === "lv" ? "Dublikāta darbība" : "Duplicate action"}
                   value={candidate.duplicateAction ?? "keepExisting"}
                   onChange={(event) =>
                     onDuplicateActionChange(candidate.id, event.target.value as NonNullable<PlanImportCandidate["duplicateAction"]>)
                   }
                 >
-                  <option value="keepExisting">Neimportēt dublikātu</option>
-                  <option value="replace">Atjaunot esošo</option>
+                  <option value="keepExisting">{t("deleteDuplicate", language)}</option>
+                  <option value="replace">{language === "lv" ? "Atjaunot esošo" : "Update existing"}</option>
                 </select>
               ) : (
-                <span>Izveidot jaunu</span>
+                <span>{language === "lv" ? "Izveidot jaunu" : "Create new"}</span>
               )}
             </div>
           </div>
         ))}
       </div>
-      {importResult.candidates.length === 0 ? <p className="empty-state">Nav nolasītu rindu pārbaudei.</p> : null}
+      {importResult.candidates.length === 0 ? <p className="empty-state">{t("noRowsForReview", language)}</p> : null}
       {importResult.candidates.length > 0 ? (
         <div className="import-actions">
           <span>
-            Izvēlētas {selectedCount}; saglabās {importableCount}
+            {t("importSelected", language)} {selectedCount}; {language === "lv" ? "saglabās" : "will save"} {importableCount}
           </span>
           <button className="primary-action" disabled={importableCount === 0} onClick={onConfirm} type="button">
-            Apstiprināt importu
+            {language === "lv" ? "Apstiprināt importu" : "Confirm import"}
           </button>
         </div>
       ) : null}
@@ -1375,6 +1414,7 @@ function ImportReviewPanel({
 }
 
 function CapacityAlerts({ items, onOpen }: { items: WorkItem[]; onOpen: (date: string) => void }) {
+  const language = useAppLanguage();
   const warnings = items.filter((item) => item.capacityWarning);
 
   if (warnings.length === 0) {
@@ -1385,7 +1425,7 @@ function CapacityAlerts({ items, onOpen }: { items: WorkItem[]; onOpen: (date: s
     <section className="capacity-alerts no-print">
       {warnings.map((item) => (
         <button key={item.id} type="button" onClick={() => onOpen(item.date)}>
-          ⚠ {item.sectorName} retināšanai {shortDate(item.date)} jāpārbauda galdu noslodze
+          ⚠ {item.sectorName} {printWorkTitle("thinning", language)} {shortDate(item.date)} {language === "lv" ? "jāpārbauda galdu noslodze" : "table load needs checking"}
         </button>
       ))}
     </section>
@@ -1401,9 +1441,9 @@ function WorksheetView({
   workItems,
 }: {
   onEdit: () => void;
-  onPrintLanguageChange: (language: PrintLanguage) => void;
+  onPrintLanguageChange: (language: AppLanguage) => void;
   onUpdateRow: (id: string, patch: Partial<SowingPlanRow>) => void;
-  printLanguage: PrintLanguage;
+  printLanguage: AppLanguage;
   row: SowingPlanRow;
   workItems: WorkItem[];
 }) {
@@ -1427,7 +1467,11 @@ function WorksheetView({
   }
 
   function deletePlantCorrection(entry: PlantCorrectionEntry) {
-    if (!window.confirm(`Dzēst korekciju ${signedNumber(entry.amount)} (${plantCorrectionReasonLabel(entry.reason)})?`)) {
+    if (!window.confirm(
+      printLanguage === "lv"
+        ? `Dzēst korekciju ${signedNumber(entry.amount)} (${plantCorrectionReasonTitle(entry.reason, printLanguage)})?`
+        : `Delete correction ${signedNumber(entry.amount)} (${plantCorrectionReasonTitle(entry.reason, printLanguage)})?`,
+    )) {
       return;
     }
 
@@ -1441,8 +1485,12 @@ function WorksheetView({
   }
 
   function deleteHusEvent(entry: HusEventEntry) {
-    const linkedMessage = entry.plantCorrectionId ? " Saistītā stādu korekcija arī tiks dzēsta." : "";
-    if (!window.confirm(`Dzēst HUS žurnāla ierakstu?${linkedMessage}`)) {
+    const linkedMessage = entry.plantCorrectionId
+      ? printLanguage === "lv"
+        ? " Saistītā stādu korekcija arī tiks dzēsta."
+        : " The linked plant correction will also be deleted."
+      : "";
+    if (!window.confirm(`${printLanguage === "lv" ? "Dzēst HUS žurnāla ierakstu?" : "Delete HUS journal entry?"}${linkedMessage}`)) {
       return;
     }
 
@@ -1468,10 +1516,10 @@ function WorksheetView({
         <div className="button-row">
           <PrintLanguageToggle language={printLanguage} onChange={onPrintLanguageChange} />
           <button className="secondary-action" type="button" onClick={onEdit}>
-            Rediģēt
+            {t("edit", printLanguage)}
           </button>
           <button className="primary-action" type="button" onClick={() => window.print()}>
-            Printēt
+            {t("print", printLanguage)}
           </button>
         </div>
       </div>
@@ -1482,14 +1530,14 @@ function WorksheetView({
           onClick={() => setActiveWorksheetTab("works")}
           type="button"
         >
-          HUS info
+          {t("husInfo", printLanguage)}
         </button>
         <button
           className={activeWorksheetTab === "worksheet" ? "is-active" : ""}
           onClick={() => setActiveWorksheetTab("worksheet")}
           type="button"
         >
-          Darba lapa
+          {t("worksheet", printLanguage)}
         </button>
       </div>
 
@@ -1498,7 +1546,7 @@ function WorksheetView({
           <section className="plant-balance-box">
             <div className="hus-info-heading">
               <div>
-                <p className="eyebrow">HUS info</p>
+                <p className="eyebrow">{t("husInfo", printLanguage)}</p>
                 <h3>{row.sectorName}</h3>
                 <span>{row.variety}</span>
               </div>
@@ -1506,15 +1554,15 @@ function WorksheetView({
             </div>
             <div className="plant-balance-grid">
               <span>
-                Siltumnīcai nepieciešams:{" "}
-                {balance.requiredPlants === null ? "Nav norādīts" : balance.requiredPlants.toLocaleString("lv-LV")}
+                {t("greenhouseRequired", printLanguage)}:{" "}
+                {balance.requiredPlants === null ? t("noTablesSet", printLanguage) : balance.requiredPlants.toLocaleString("lv-LV")}
               </span>
-              <span>Agronoma sējamais: {row.requiredPlants.toLocaleString("lv-LV")}</span>
-              <span>Extra: {signedNumber(row.extraPlants)}</span>
-              <span>Sākotnēji iesēts: {balance.initialPlants.toLocaleString("lv-LV")}</span>
-              <span>Zudumi/korekcijas: {signedNumber(balance.correctionTotal)}</span>
-              <span>Faktiski šobrīd: {balance.actualPlants.toLocaleString("lv-LV")}</span>
-              <span>{balance.difference === null ? "Rezerve/trūkums: Nav aprēķināms" : balance.difference >= 0 ? `Rezerve: ${signedNumber(balance.difference)}` : `Trūkst: ${Math.abs(balance.difference)}`}</span>
+              <span>{t("agronomistSowing", printLanguage)}: {row.requiredPlants.toLocaleString("lv-LV")}</span>
+              <span>{t("extra", printLanguage)}: {signedNumber(row.extraPlants)}</span>
+              <span>{t("seededInitial", printLanguage)}: {balance.initialPlants.toLocaleString("lv-LV")}</span>
+              <span>{printLanguage === "lv" ? "Zudumi/korekcijas" : "Losses/corrections"}: {signedNumber(balance.correctionTotal)}</span>
+              <span>{t("currentActual", printLanguage)}: {balance.actualPlants.toLocaleString("lv-LV")}</span>
+              <span>{formatReserveShortage(balance.difference, printLanguage)}</span>
             </div>
             <button
               className="secondary-action"
@@ -1524,14 +1572,14 @@ function WorksheetView({
                 setCorrectionDialogOpen(true);
               }}
             >
-              + Reģistrēt izmaiņu
+              {t("recordChange", printLanguage)}
             </button>
             {row.plantCorrections && row.plantCorrections.length > 0 ? (
               <ul className="plant-correction-list">
                 {row.plantCorrections.map((entry) => (
                   <li key={entry.id}>
                     <time>{shortDate(entry.date)}</time>
-                    <span>{plantCorrectionReasonLabel(entry.reason)}{entry.note ? ` · ${entry.note}` : ""}</span>
+                    <span>{plantCorrectionReasonTitle(entry.reason, printLanguage)}{entry.note ? ` · ${entry.note}` : ""}</span>
                     <strong>{signedNumber(entry.amount)}</strong>
                     <span className="button-row">
                       <button
@@ -1542,24 +1590,24 @@ function WorksheetView({
                           setCorrectionDialogOpen(true);
                         }}
                       >
-                        Rediģēt
+                        {t("edit", printLanguage)}
                       </button>
                       <button className="danger-action danger-action--small" type="button" onClick={() => deletePlantCorrection(entry)}>
-                        Dzēst
+                        {t("delete", printLanguage)}
                       </button>
                     </span>
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="empty-state">Stādu skaita korekcijas vēl nav reģistrētas.</p>
+              <p className="empty-state">{t("noCorrections", printLanguage)}</p>
             )}
           </section>
           <section className="hus-journal-box">
             <div className="hus-info-heading">
               <div>
-                <p className="eyebrow">HUS žurnāls</p>
-                <h3>Notikumi</h3>
+                <p className="eyebrow">{t("husJournal", printLanguage)}</p>
+                <h3>{printLanguage === "lv" ? "Notikumi" : "Events"}</h3>
               </div>
               <button
                 className="secondary-action"
@@ -1569,7 +1617,7 @@ function WorksheetView({
                   setEventDialogOpen(true);
                 }}
               >
-                + Pievienot ierakstu
+                {t("addEntry", printLanguage)}
               </button>
             </div>
             {row.husEvents && row.husEvents.length > 0 ? (
@@ -1578,10 +1626,10 @@ function WorksheetView({
                   <li key={entry.id}>
                     <div className="hus-journal-list__date">
                       <time>{shortDate(entry.eventDate)}</time>
-                      <span>{getCycleDay(row, entry.eventDate)}. diena</span>
+                      <span>{formatCycleDay(getCycleDay(row, entry.eventDate), printLanguage)}</span>
                     </div>
                     <div className="hus-journal-list__body">
-                      <strong>{husEventTypeLabel(entry.eventType)}</strong>
+                      <strong>{husEventTypeTitle(entry.eventType, printLanguage)}</strong>
                       {entry.location || entry.destinationLocation ? (
                         <span>
                           {entry.location || "—"}
@@ -1589,7 +1637,7 @@ function WorksheetView({
                         </span>
                       ) : null}
                       {typeof entry.plantChange === "number" && entry.plantChange !== 0 ? (
-                        <em>{signedNumber(entry.plantChange)} stādi</em>
+                        <em>{formatPlants(entry.plantChange, printLanguage)}</em>
                       ) : null}
                       {entry.note ? <p>{entry.note}</p> : null}
                     </div>
@@ -1602,17 +1650,17 @@ function WorksheetView({
                           setEventDialogOpen(true);
                         }}
                       >
-                        Rediģēt
+                        {t("edit", printLanguage)}
                       </button>
                       <button className="danger-action danger-action--small" type="button" onClick={() => deleteHusEvent(entry)}>
-                        Dzēst
+                        {t("delete", printLanguage)}
                       </button>
                     </span>
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="empty-state">Šim Hus vēl nav žurnāla ierakstu.</p>
+              <p className="empty-state">{t("noJournal", printLanguage)}</p>
             )}
           </section>
           <div className="work-list">
@@ -1620,13 +1668,13 @@ function WorksheetView({
               <article className={`hus-work-row work-card--${item.color}`} key={item.id}>
                 <time>{shortDate(item.date)}</time>
                 <div>
-                  <strong>{item.title}</strong>
+                  <strong>{printWorkTitle(item.type, printLanguage)}</strong>
                   <span>
-                    {item.cycleDay}. diena · {item.source === "manual" ? "Manuāli" : "Automātiski"}
+                    {formatCycleDay(item.cycleDay, printLanguage)} · {item.source === "manual" ? t("manual", printLanguage) : t("automatic", printLanguage)}
                   </span>
-                  {item.details.length > 0 ? (
+                  {localizedWorkDetails(item, row, printLanguage).length > 0 ? (
                     <ul>
-                      {item.details.map((detail) => (
+                      {localizedWorkDetails(item, row, printLanguage).map((detail) => (
                         <li key={detail}>{detail}</li>
                       ))}
                     </ul>
@@ -1715,9 +1763,9 @@ function MonthlyPrintPlan({
   startDate,
   workItems,
 }: {
-  onPrintLanguageChange: (language: PrintLanguage) => void;
+  onPrintLanguageChange: (language: AppLanguage) => void;
   onStartChange: (date: string) => void;
-  printLanguage: PrintLanguage;
+  printLanguage: AppLanguage;
   rows: SowingPlanRow[];
   startDate: string;
   workItems: WorkItem[];
@@ -1733,13 +1781,13 @@ function MonthlyPrintPlan({
     <section className="print-host">
       <div className="panel panel-header no-print">
         <div>
-          <p className="eyebrow">Drukājams kopsavilkums</p>
-          <h2>Darba plāns</h2>
+          <p className="eyebrow">{printLanguage === "lv" ? "Drukājams kopsavilkums" : "Printable summary"}</p>
+          <h2>{t("workPlan", printLanguage)}</h2>
         </div>
         <div className="button-row month-controls">
           <PrintLanguageToggle language={printLanguage} onChange={onPrintLanguageChange} />
           <label>
-            Sākuma mēnesis
+            {printLanguage === "lv" ? "Sākuma mēnesis" : "Start month"}
             <input
               type="month"
               value={monthInputValue(startDate)}
@@ -1747,7 +1795,7 @@ function MonthlyPrintPlan({
             />
           </label>
           <button className="primary-action" type="button" onClick={() => window.print()}>
-            Printēt darba plānu
+            {t("printWorkPlan", printLanguage)}
           </button>
         </div>
       </div>
@@ -1755,7 +1803,7 @@ function MonthlyPrintPlan({
       <article className="print-page month-page">
         <header className="month-print-header">
           <h1>{workPlanPrintTitle(items, printLanguage)}</h1>
-          <p>{printLanguage === "lv" ? "Kopējais darba plāns visiem Hus" : "Common work plan for all Hus"}</p>
+          <p>{t("commonWorkPlanForAllHus", printLanguage)}</p>
         </header>
         <table className="month-print-table">
           <thead>
@@ -1797,17 +1845,17 @@ function MonthlyPrintPlan({
   );
 }
 
-function PrintLanguageToggle({
+function LanguageToggle({
   language,
   onChange,
 }: {
-  language: PrintLanguage;
-  onChange: (language: PrintLanguage) => void;
+  language: AppLanguage;
+  onChange: (language: AppLanguage) => void;
 }) {
   return (
     <div className="print-language-toggle">
-      <span>{printLabel("lv", "printLanguage")}:</span>
-      <div className="segmented segmented--compact" aria-label="Printa valoda">
+      <span>{t("language", language)}:</span>
+      <div className="segmented segmented--compact" aria-label={language === "lv" ? "Printa valoda" : "Print language"}>
         <button
           className={language === "lv" ? "is-active" : ""}
           onClick={() => onChange("lv")}
@@ -1827,6 +1875,10 @@ function PrintLanguageToggle({
   );
 }
 
+function PrintLanguageToggle(props: { language: AppLanguage; onChange: (language: AppLanguage) => void }) {
+  return <LanguageToggle {...props} />;
+}
+
 function SowingTablesPicker({
   compact = false,
   onSave,
@@ -1836,6 +1888,7 @@ function SowingTablesPicker({
   onSave: (value: string) => void;
   value: string;
 }) {
+  const language = useAppLanguage();
   const [selected, setSelected] = useState<string[]>(() => parseSowingTableSelection(value));
   const [open, setOpen] = useState(false);
   const savedLabel = formatSowingTableSelection(parseSowingTableSelection(value));
@@ -1862,23 +1915,23 @@ function SowingTablesPicker({
 
   return (
     <div className={compact ? "sowing-tables sowing-tables--compact" : "sowing-tables"}>
-      <span>Sēšanas galdi</span>
+      <span>{t("seedingTables", language)}</span>
       <button className="sowing-tables__trigger" type="button" onClick={openDialog}>
-        {savedLabel || "Norādīt"}
+        {savedLabel || (language === "lv" ? "Norādīt" : "Set")}
       </button>
       {open ? (
         <div className="dialog-backdrop" role="presentation">
           <section
             aria-modal="true"
-            aria-label="Izvēlēties sēšanas galdus"
+            aria-label={language === "lv" ? "Izvēlēties sēšanas galdus" : "Choose seeding tables"}
             className="sowing-tables-dialog"
             role="dialog"
           >
             <div>
-              <p className="eyebrow">Sēšanas galdi</p>
-              <h3>Izvēlies A1-A13</h3>
+              <p className="eyebrow">{t("seedingTables", language)}</p>
+              <h3>{t("selectTables", language)}</h3>
             </div>
-            <div className="sowing-table-options" aria-label="Sēšanas galdi A1 līdz A13">
+            <div className="sowing-table-options" aria-label={language === "lv" ? "Sēšanas galdi A1 līdz A13" : "Seeding tables A1 to A13"}>
               {sowingTableIds.map((table) => (
                 <button
                   className={selected.includes(table) ? "is-active" : ""}
@@ -1890,13 +1943,13 @@ function SowingTablesPicker({
                 </button>
               ))}
             </div>
-            <strong className="sowing-tables__preview">{draftLabel || "Nav norādīti"}</strong>
+            <strong className="sowing-tables__preview">{draftLabel || t("noTablesSet", language)}</strong>
             <div className="button-row">
               <button className="secondary-action" type="button" onClick={cancelDialog}>
-                Atcelt
+                {t("cancel", language)}
               </button>
               <button className="primary-action" type="button" onClick={saveDialog}>
-                Saglabāt
+                {t("save", language)}
               </button>
             </div>
           </section>
@@ -1915,6 +1968,7 @@ function PlantCorrectionDialog({
   onCancel: () => void;
   onSave: (entry: PlantCorrectionEntry) => void;
 }) {
+  const language = useAppLanguage();
   const [direction, setDirection] = useState<"loss" | "addition">(() => (entry && entry.amount > 0 ? "addition" : "loss"));
   const [amount, setAmount] = useState(() => (entry ? String(Math.abs(entry.amount)) : ""));
   const [date, setDate] = useState(() => entry?.date ?? new Date().toISOString().slice(0, 10));
@@ -1925,29 +1979,29 @@ function PlantCorrectionDialog({
 
   return (
     <div className="dialog-backdrop" role="presentation">
-      <section aria-modal="true" aria-label="Reģistrēt stādu skaita izmaiņu" className="sowing-tables-dialog" role="dialog">
+      <section aria-modal="true" aria-label={language === "lv" ? "Reģistrēt stādu skaita izmaiņu" : "Register plant count change"} className="sowing-tables-dialog" role="dialog">
         <div>
-          <p className="eyebrow">Stādu korekcija</p>
-          <h3>{entry ? "Rediģēt izmaiņu" : "Reģistrēt izmaiņu"}</h3>
+          <p className="eyebrow">{t("plantCorrections", language)}</p>
+          <h3>{entry ? (language === "lv" ? "Rediģēt izmaiņu" : "Edit change") : (language === "lv" ? "Reģistrēt izmaiņu" : "Register change")}</h3>
         </div>
-        <div className="segmented segmented--compact" aria-label="Korekcijas veids">
+        <div className="segmented segmented--compact" aria-label={language === "lv" ? "Korekcijas veids" : "Correction type"}>
           <button
             className={direction === "loss" ? "is-active" : ""}
             onClick={() => setDirection("loss")}
             type="button"
           >
-            − Zudums
+            − {language === "lv" ? "Zudums" : "Loss"}
           </button>
           <button
             className={direction === "addition" ? "is-active" : ""}
             onClick={() => setDirection("addition")}
             type="button"
           >
-            + Papildinājums
+            + {language === "lv" ? "Papildinājums" : "Addition"}
           </button>
         </div>
         <label>
-          Daudzums
+          {t("amount", language)}
           <input
             autoFocus
             inputMode="numeric"
@@ -1959,27 +2013,27 @@ function PlantCorrectionDialog({
           />
         </label>
         <label>
-          Datums
+          {t("date", language)}
           <input type="date" value={date} onChange={(event) => setDate(event.target.value)} />
         </label>
         <label>
-          Iemesls
+          {language === "lv" ? "Iemesls" : "Reason"}
           <select value={reason} onChange={(event) => setReason(event.target.value as PlantCorrectionReason)}>
-            <option value="thinning">Retināšana</option>
-            <option value="brownRoots">Brūnās saknes</option>
-            <option value="damaged">Bojāti</option>
-            <option value="other">Cits</option>
+            <option value="thinning">{plantCorrectionReasonTitle("thinning", language)}</option>
+            <option value="brownRoots">{plantCorrectionReasonTitle("brownRoots", language)}</option>
+            <option value="damaged">{plantCorrectionReasonTitle("damaged", language)}</option>
+            <option value="other">{plantCorrectionReasonTitle("other", language)}</option>
           </select>
         </label>
         {reason === "other" ? (
           <label>
-            Piezīme
+            {t("notes", language)}
             <input maxLength={80} value={note} onChange={(event) => setNote(event.target.value)} />
           </label>
         ) : null}
         <div className="button-row">
           <button className="secondary-action" type="button" onClick={onCancel}>
-            Atcelt
+            {t("cancel", language)}
           </button>
           <button
             className="primary-action"
@@ -1995,7 +2049,7 @@ function PlantCorrectionDialog({
               })
             }
           >
-            Saglabāt
+            {t("save", language)}
           </button>
         </div>
       </section>
@@ -2014,6 +2068,7 @@ function HusEventDialog({
   onSave: (entry: HusEventEntry) => void;
   row: SowingPlanRow;
 }) {
+  const language = useAppLanguage();
   type PlantChangeMode = "none" | "loss" | "addition";
   const initialPlantChangeMode: PlantChangeMode =
     typeof entry?.plantChange !== "number" || entry.plantChange === 0
@@ -2043,34 +2098,34 @@ function HusEventDialog({
 
   return (
     <div className="dialog-backdrop" role="presentation">
-      <section aria-modal="true" aria-label="HUS žurnāla ieraksts" className="sowing-tables-dialog" role="dialog">
+      <section aria-modal="true" aria-label={language === "lv" ? "HUS žurnāla ieraksts" : "HUS journal entry"} className="sowing-tables-dialog" role="dialog">
         <div>
-          <p className="eyebrow">HUS žurnāls</p>
-          <h3>{entry ? "Rediģēt ierakstu" : "Pievienot ierakstu"}</h3>
+          <p className="eyebrow">{t("husJournal", language)}</p>
+          <h3>{entry ? t("editEntry", language) : t("addEntry", language)}</h3>
           <span className="dialog-hint">
-            {eventDate ? `${shortDate(eventDate)} · ${getCycleDay(row, eventDate)}. diena` : "Izvēlies datumu"}
+            {eventDate ? `${shortDate(eventDate)} · ${formatCycleDay(getCycleDay(row, eventDate), language)}` : t("chooseDate", language)}
           </span>
         </div>
         <label>
-          Datums
+          {t("date", language)}
           <input autoFocus type="date" value={eventDate} onChange={(event) => setEventDate(event.target.value)} />
         </label>
         <label>
-          Notikums
+          {language === "lv" ? "Notikums" : "Event"}
           <select value={eventType} onChange={(event) => setEventType(event.target.value as HusEventType)}>
             {husEventTypes.map((type) => (
               <option key={type.value} value={type.value}>
-                {type.label}
+                {husEventTypeTitle(type.value, language)}
               </option>
             ))}
           </select>
         </label>
         <label>
-          Vieta / No
+          {language === "lv" ? "Vieta / No" : "Location / From"}
           <input maxLength={80} placeholder="A7, C5, C1-C10" value={location} onChange={(event) => setLocation(event.target.value)} />
         </label>
         <label>
-          Uz
+          {language === "lv" ? "Uz" : "To"}
           <input
             maxLength={80}
             placeholder="C1-C10"
@@ -2079,34 +2134,34 @@ function HusEventDialog({
           />
         </label>
         <div className="plant-change-field">
-          Stādu izmaiņa
-          <div className="segmented segmented--compact plant-change-mode" aria-label="Stādu izmaiņas veids">
+          {t("plantChange", language)}
+          <div className="segmented segmented--compact plant-change-mode" aria-label={language === "lv" ? "Stādu izmaiņas veids" : "Plant change type"}>
             <button
               className={plantChangeMode === "none" ? "is-active" : ""}
               onClick={() => setPlantChangeMode("none")}
               type="button"
             >
-              Nav
+              {language === "lv" ? "Nav" : "None"}
             </button>
             <button
               className={plantChangeMode === "loss" ? "is-active" : ""}
               onClick={() => setPlantChangeMode("loss")}
               type="button"
             >
-              − Zudums
+              − {language === "lv" ? "Zudums" : "Loss"}
             </button>
             <button
               className={plantChangeMode === "addition" ? "is-active" : ""}
               onClick={() => setPlantChangeMode("addition")}
               type="button"
             >
-              + Papildinājums
+              + {language === "lv" ? "Papildinājums" : "Addition"}
             </button>
           </div>
         </div>
         {plantChangeMode !== "none" ? (
           <label>
-            Daudzums
+            {t("amount", language)}
             <input
               inputMode="numeric"
               min="1"
@@ -2118,12 +2173,12 @@ function HusEventDialog({
           </label>
         ) : null}
         <label>
-          Piezīme
+          {t("notes", language)}
           <textarea maxLength={240} rows={3} value={note} onChange={(event) => setNote(event.target.value)} />
         </label>
         <div className="button-row">
           <button className="secondary-action" type="button" onClick={onCancel}>
-            Atcelt
+            {t("cancel", language)}
           </button>
           <button
             className="primary-action"
@@ -2144,7 +2199,7 @@ function HusEventDialog({
               })
             }
           >
-            Saglabāt
+            {t("save", language)}
           </button>
         </div>
       </section>
@@ -2163,6 +2218,7 @@ function ReviewInput({
   onChange: (id: string, field: ImportFieldKey, value: string) => void;
   type?: "text" | "number" | "date";
 }) {
+  const language = useAppLanguage();
   const value = candidate.fields[field];
 
   return (
@@ -2173,30 +2229,46 @@ function ReviewInput({
         type={type}
         value={value.value === null || value.value === undefined ? "" : String(value.value)}
       />
-      {value.needsReview ? <small>Pārbaudi ({Math.round(value.confidence * 100)}%)</small> : null}
+      {value.needsReview ? <small>{language === "lv" ? "Pārbaudi" : "Review"} ({Math.round(value.confidence * 100)}%)</small> : null}
     </label>
   );
 }
 
-function fieldWarnings(candidate: PlanImportCandidate): string[] {
+function fieldWarnings(candidate: PlanImportCandidate, language: AppLanguage): string[] {
   return Object.entries(candidate.fields)
     .filter(([, field]) => field.needsReview)
-    .map(([key, field]) => `${importFieldLabel(key as ImportFieldKey)} jāpārbauda (${Math.round(field.confidence * 100)}%).`);
+    .map(([key, field]) =>
+      language === "lv"
+        ? `${importFieldLabel(key as ImportFieldKey, language)} jāpārbauda (${Math.round(field.confidence * 100)}%).`
+        : `${importFieldLabel(key as ImportFieldKey, language)} needs review (${Math.round(field.confidence * 100)}%).`,
+    );
 }
 
-function importFieldLabel(field: ImportFieldKey): string {
-  const labels: Record<ImportFieldKey, string> = {
-    extraPlants: "Rezerve",
-    greenhouseRequiredPlants: "Siltumnīcai nepieciešams",
-    harvestDate: "Izvākšana",
-    requiredPlants: "Agronoma sējamais",
-    sectorName: "Hus",
-    sowingDate: "Sēšana",
-    variety: "Šķirne",
-    weekNumber: "Nedēļa",
+function importFieldLabel(field: ImportFieldKey, language: AppLanguage): string {
+  const labels: Record<AppLanguage, Record<ImportFieldKey, string>> = {
+    en: {
+      extraPlants: "Reserve",
+      greenhouseRequiredPlants: "Greenhouse required",
+      harvestDate: "Planting",
+      requiredPlants: "Agronomist sowing",
+      sectorName: "Hus",
+      sowingDate: "Seeding",
+      variety: "Variety",
+      weekNumber: "Week",
+    },
+    lv: {
+      extraPlants: "Rezerve",
+      greenhouseRequiredPlants: "Siltumnīcai nepieciešams",
+      harvestDate: "Izvākšana",
+      requiredPlants: "Agronoma sējamais",
+      sectorName: "Hus",
+      sowingDate: "Sēšana",
+      variety: "Šķirne",
+      weekNumber: "Nedēļa",
+    },
   };
 
-  return labels[field];
+  return labels[language][field];
 }
 
 function CalendarPanel({
@@ -2228,14 +2300,15 @@ function CalendarPanel({
   viewMode: ViewMode;
   workItems: WorkItem[];
 }) {
+  const language = useAppLanguage();
   const rangeDays = calendarDays.filter((day) => day.inCurrentRange);
 
   return (
     <div className="panel calendar-panel no-print">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">Kopējais kalendārs</p>
-          <h2>{calendarTitle(anchorDate, viewMode)}</h2>
+          <p className="eyebrow">{t("commonCalendar", language)}</p>
+          <h2>{calendarTitle(anchorDate, viewMode, language)}</h2>
         </div>
         <div className="calendar-controls">
           <button type="button" onClick={() => onSetAnchorDate(shiftAnchor(anchorDate, viewMode, -1))}>
@@ -2249,22 +2322,22 @@ function CalendarPanel({
               onSelectDate(today);
             }}
           >
-            Šodien
+            {t("today", language)}
           </button>
           <button type="button" onClick={() => onSetAnchorDate(shiftAnchor(anchorDate, viewMode, 1))}>
             →
           </button>
           <details className="calendar-actions">
-            <summary>⋮ Plāna darbības</summary>
+            <summary>{t("planActions", language)}</summary>
             <div>
               <button type="button" onClick={onRecalculatePlan}>
-                Pārrēķināt plānu
+                {t("recalculatePlan", language)}
               </button>
               <button type="button" onClick={onPreviewBalance}>
-                Izlīdzināt darbus
+                {language === "lv" ? "Izlīdzināt darbus" : "Balance work"}
               </button>
               <button type="button" onClick={() => window.print()}>
-                Printēt darba plānu
+                {t("printWorkPlan", language)}
               </button>
             </div>
           </details>
@@ -2275,7 +2348,7 @@ function CalendarPanel({
         <BalancePreview proposals={balancePreview} onApply={onApplyBalance} onCancel={onCancelBalance} />
       ) : null}
 
-      <div className="segmented calendar-view-toggle" aria-label="Kalendāra skata režīms">
+      <div className="segmented calendar-view-toggle" aria-label={t("calendarViewMode", language)}>
         {viewModes.map((mode) => (
           <button
             className={viewMode === mode.id ? "is-active" : ""}
@@ -2283,14 +2356,14 @@ function CalendarPanel({
             onClick={() => onSetViewMode(mode.id)}
             type="button"
           >
-            {mode.label}
+            {mode.label[language]}
           </button>
         ))}
       </div>
 
       {viewMode === "month" ? (
         <div className="calendar-grid">
-          {weekdayLabels.map((day, index) => (
+          {weekdayLabelsByLanguage[language].map((day, index) => (
             <span className="weekday" key={`${day}-${index}`}>
               {day}
             </span>
@@ -2318,7 +2391,7 @@ function CalendarPanel({
                 <span className="calendar-day__items">
                   {dayItems.slice(0, 3).map((item) => (
                     <span className={`work-chip work-chip--${item.color}`} key={item.id}>
-                      {calendarItemLabel(item)}
+                      {calendarItemLabel(item, language)}
                     </span>
                   ))}
                 </span>
@@ -2332,7 +2405,7 @@ function CalendarPanel({
           {rangeDays.map((day) => {
             const dayItems = workItems
               .filter((item) => item.date === day.isoDate)
-              .sort((a, b) => a.title.localeCompare(b.title, "lv") || a.sectorName.localeCompare(b.sectorName, "lv"));
+              .sort((a, b) => printWorkTitle(a.type, language).localeCompare(printWorkTitle(b.type, language), "lv") || a.sectorName.localeCompare(b.sectorName, "lv"));
             const mainWorkload = countMainWork(dayItems, day.isoDate);
             const overloaded = mainWorkload > 1;
 
@@ -2349,13 +2422,13 @@ function CalendarPanel({
               >
                 <span className="agenda-day__date">
                   <strong>{shortDate(day.isoDate)}</strong>
-                  <span>{weekdayName(day.isoDate)}</span>
+                  <span>{weekdayName(day.isoDate, language)}</span>
                 </span>
                 <span className="agenda-day__items">
-                  {dayItems.length === 0 ? <span className="empty-state">Nav darbu</span> : null}
+                  {dayItems.length === 0 ? <span className="empty-state">{t("noWork", language)}</span> : null}
                   {dayItems.map((item) => (
                     <span className={`agenda-work work-chip--${item.color}`} key={item.id}>
-                      <strong>{item.title}</strong>
+                      <strong>{printWorkTitle(item.type, language)}</strong>
                       <span>{item.sectorName} · {item.plantCount.toLocaleString("lv-LV")}</span>
                     </span>
                   ))}
@@ -2374,27 +2447,32 @@ function DayDetails({
   items,
   onMove,
   onMoveRange,
+  rows,
   selectedDate,
 }: {
   errors: Record<string, string>;
   items: WorkItem[];
   onMove: (item: WorkItem, date: string) => void;
   onMoveRange: (item: WorkItem, startDate: string, endDate: string) => void;
+  rows: SowingPlanRow[];
   selectedDate: string;
 }) {
+  const language = useAppLanguage();
+  const rowsById = new Map(rows.map((row) => [row.id, row]));
+
   return (
     <aside className="panel side-panel no-print">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">Dienas darbi</p>
+          <p className="eyebrow">{t("dayWork", language)}</p>
           <h2>{dateLabel(selectedDate)}</h2>
         </div>
-        {countMainWork(items, selectedDate) > 1 ? <span className="overload-badge">Pārslodze</span> : null}
+        {countMainWork(items, selectedDate) > 1 ? <span className="overload-badge">{t("overload", language)}</span> : null}
       </div>
       <div className="work-list">
-        {items.length === 0 ? <p className="empty-state">Šajā dienā nav ieplānotu darbu.</p> : null}
+        {items.length === 0 ? <p className="empty-state">{language === "lv" ? "Šajā dienā nav ieplānotu darbu." : "No work is planned for this day."}</p> : null}
         {items.map((item) => (
-          <WorkItemCard errors={errors} item={item} key={item.id} onMove={onMove} onMoveRange={onMoveRange} />
+          <WorkItemCard errors={errors} item={item} key={item.id} onMove={onMove} onMoveRange={onMoveRange} row={rowsById.get(item.planRowId)} />
         ))}
       </div>
     </aside>
@@ -2410,21 +2488,23 @@ function BalancePreview({
   onCancel: () => void;
   proposals: WorkloadBalanceProposal[];
 }) {
+  const language = useAppLanguage();
+
   return (
     <section className="balance-preview">
       <div>
-        <strong>Darbu izlīdzināšanas priekšskatījums</strong>
+        <strong>{t("balancePreview", language)}</strong>
         <p>
           {proposals.length === 0
-            ? "Nav atrasts labāks sadalījums, ko piedāvāt."
-            : "Izmaiņas tiks saglabātas tikai pēc apstiprināšanas."}
+            ? t("noBetterBalance", language)
+            : t("scheduleWillSaveAfterConfirm", language)}
         </p>
       </div>
       {proposals.length > 0 ? (
         <ul>
           {proposals.map((proposal) => (
             <li key={`${proposal.planRowId}-${proposal.type}`}>
-              {proposal.title} {proposal.sectorName}: {formatDateRange(proposal.fromDates)} →{" "}
+              {printWorkTitle(proposal.type, language)} {proposal.sectorName}: {formatDateRange(proposal.fromDates)} →{" "}
               {formatDateRange(proposal.toDates)}
               {proposal.warning ? <strong> {proposal.warning}</strong> : null}
             </li>
@@ -2433,10 +2513,10 @@ function BalancePreview({
       ) : null}
       <div className="button-row">
         <button className="primary-action" disabled={proposals.length === 0} type="button" onClick={onApply}>
-          Apstiprināt
+          {t("confirm", language)}
         </button>
         <button className="secondary-action" type="button" onClick={onCancel}>
-          Atcelt
+          {t("cancel", language)}
         </button>
       </div>
     </section>
@@ -2452,24 +2532,25 @@ function GreenhousePanel({
   onDateChange: (date: string) => void;
   rows: SowingPlanRow[];
 }) {
+  const language = useAppLanguage();
   const snapshot = buildGreenhouseSnapshot(rows, date);
 
   return (
     <section className="panel greenhouse-panel">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">Fiziskā kapacitāte</p>
-          <h2>Stādu māja</h2>
+          <p className="eyebrow">{t("greenhouseCapacity", language)}</p>
+          <h2>{t("greenhouse", language)}</h2>
         </div>
         <label className="inline-date greenhouse-date">
-          Datums
+          {t("date", language)}
           <input type="date" value={date} onChange={(event) => onDateChange(event.target.value)} />
         </label>
       </div>
 
       <div className="greenhouse-stats">
-        <strong>Standarta kapacitāte: {snapshot.standardUsed}/78 galdi aizņemti</strong>
-        <strong>Papildu: {snapshot.extraUsed}/13</strong>
+        <strong>{language === "lv" ? "Standarta kapacitāte" : "Standard capacity"}: {snapshot.standardUsed}/78 {language === "lv" ? "galdi aizņemti" : "tables occupied"}</strong>
+        <strong>{language === "lv" ? "Papildu" : "Extra"}: {snapshot.extraUsed}/13</strong>
       </div>
 
       <div className="greenhouse-grid">
@@ -2477,16 +2558,16 @@ function GreenhousePanel({
           <article className="greenhouse-row" key={row.rowId}>
             <div>
               <strong>{row.label}</strong>
-              <span>{row.usedTables}/{row.capacity} galdi</span>
+              <span>{row.usedTables}/{row.capacity} {t("tables", language).toLowerCase()}</span>
             </div>
             {row.assignment ? (
               <p>
-                {row.assignment.sectorName} — līdz {dateLabel(row.assignment.harvestDate)} —
+                {row.assignment.sectorName} — {language === "lv" ? "līdz" : "until"} {dateLabel(row.assignment.harvestDate)} —
                 {" "}
-                {row.assignment.averagePlantsPerGutter.toFixed(1)} stādi/renē
+                {row.assignment.averagePlantsPerGutter.toFixed(1)} {language === "lv" ? "stādi/renē" : "plants/trough"}
               </p>
             ) : (
-              <p>Brīva</p>
+              <p>{language === "lv" ? "Brīva" : "Free"}</p>
             )}
           </article>
         ))}
@@ -2494,12 +2575,12 @@ function GreenhousePanel({
 
       {snapshot.conflicts.map((conflict) => (
         <div className="capacity-warning" key={`${conflict.date}-${conflict.totalTables}`}>
-          <strong>⚠️ Šajā periodā vienlaikus stādu mājā būs {conflict.overlapping.length} Hus cikli.</strong>
-          <span>Kopā nepieciešami {conflict.totalTables} galdi; standarta kapacitāte 78, kopā ar papildu rindu 91.</span>
-          <span>{conflict.extraCanCover ? "13 papildu galdi var nosegt pārklāšanos." : `Deficīts: ${conflict.deficit} galdi.`}</span>
+          <strong>⚠️ {language === "lv" ? `Šajā periodā vienlaikus stādu mājā būs ${conflict.overlapping.length} Hus cikli.` : `${conflict.overlapping.length} Hus cycles are in the greenhouse at the same time in this period.`}</strong>
+          <span>{language === "lv" ? `Kopā nepieciešami ${conflict.totalTables} galdi; standarta kapacitāte 78, kopā ar papildu rindu 91.` : `${conflict.totalTables} tables required; standard capacity is 78, or 91 with the extra row.`}</span>
+          <span>{conflict.extraCanCover ? (language === "lv" ? "13 papildu galdi var nosegt pārklāšanos." : "13 extra tables can cover the overlap.") : language === "lv" ? `Deficīts: ${conflict.deficit} galdi.` : `Deficit: ${conflict.deficit} tables.`}</span>
           <ul>
             {conflict.overlapping.map((item) => (
-              <li key={item.planRowId}>{item.sectorName}: {item.tables} galdi</li>
+              <li key={item.planRowId}>{item.sectorName}: {item.tables} {t("tables", language).toLowerCase()}</li>
             ))}
           </ul>
         </div>
@@ -2513,35 +2594,39 @@ function WorkItemCard({
   item,
   onMove,
   onMoveRange,
+  row,
 }: {
   errors: Record<string, string>;
   item: WorkItem;
   onMove: (item: WorkItem, date: string) => void;
   onMoveRange: (item: WorkItem, startDate: string, endDate: string) => void;
+  row?: SowingPlanRow;
 }) {
+  const language = useAppLanguage();
   const workDates = item.scheduleKind === "flexible" ? flexibleItemDates(item) : [item.date];
   const rangeStart = workDates[0] ?? item.date;
   const rangeEnd = workDates.at(-1) ?? item.date;
+  const details = localizedWorkDetails(item, row, language);
 
   return (
     <article className={`work-card work-card--${item.color}`}>
       <div>
-        <strong>{item.title}</strong>
+        <strong>{printWorkTitle(item.type, language)}</strong>
         <span>
-          {item.sectorName} · {item.plantCount.toLocaleString("lv-LV")} stādi · {item.cycleDay}. diena
+          {item.sectorName} · {formatPlants(item.plantCount, language)} · {formatCycleDay(item.cycleDay, language)}
         </span>
       </div>
       <ul>
-        {item.details.map((detail) => (
+        {details.map((detail) => (
           <li key={detail}>{detail}</li>
         ))}
       </ul>
       {item.fixed ? (
-        <small>Fiksēts datums</small>
+        <small>{t("fixedDate", language)}</small>
       ) : item.scheduleKind === "flexible" ? (
         <div className="range-fields">
           <label className="inline-date">
-            No
+            {language === "lv" ? "No" : "From"}
             <input
               max={item.allowedDateRange?.end}
               min={item.allowedDateRange?.start}
@@ -2551,7 +2636,7 @@ function WorkItemCard({
             />
           </label>
           <label className="inline-date">
-            Līdz
+            {language === "lv" ? "Līdz" : "To"}
             <input
               max={item.allowedDateRange?.end}
               min={item.allowedDateRange?.start}
@@ -2563,7 +2648,7 @@ function WorkItemCard({
         </div>
       ) : (
         <label className="inline-date">
-          Pārcelt
+          {t("move", language)}
           <input
             max={item.allowedDateRange?.end}
             min={item.allowedDateRange?.start}
@@ -2584,6 +2669,7 @@ function flexibleItemDates(item: WorkItem): string[] {
 }
 
 function HusList({ onOpen, rows }: { onOpen: (id: string) => void; rows: SowingPlanRow[] }) {
+  const language = useAppLanguage();
   const groupedRows = Array.from(
     rows.reduce((groups, row) => {
       const group = groups.get(row.sectorName) ?? [];
@@ -2603,11 +2689,11 @@ function HusList({ onOpen, rows }: { onOpen: (id: string) => void; rows: SowingP
       <div className="panel-header">
         <div>
           <p className="eyebrow">Hus</p>
-          <h2>Darba lapas</h2>
+          <h2>{t("worksheet", language)}</h2>
         </div>
       </div>
       <div className="batch-list">
-        {rows.length === 0 ? <p className="empty-state">Hus ierakstu vēl nav.</p> : null}
+        {rows.length === 0 ? <p className="empty-state">{language === "lv" ? "Hus ierakstu vēl nav." : "No Hus records yet."}</p> : null}
         {groupedRows.map(({ cycles, sectorName }) => {
           const row = cycles[0];
           const totalSow = getTotalSow(row);
@@ -2621,9 +2707,9 @@ function HusList({ onOpen, rows }: { onOpen: (id: string) => void; rows: SowingP
                     {row.variety} · {dateLabel(row.sowingDate)} - {dateLabel(row.harvestDate)}
                   </small>
                 </span>
-                <span>{totalSow.toLocaleString("lv-LV")} stādi</span>
-                <span>{row.cycleLength} dienas</span>
-                <span>Atvērt darba lapu</span>
+                <span>{formatPlants(totalSow, language)}</span>
+                <span>{formatCycleDays(row.cycleLength, language)}</span>
+                <span>{t("openWorksheet", language)}</span>
               </button>
               {cycles.length > 1 ? (
                 <div className="previous-cycles">
@@ -2657,6 +2743,7 @@ function BatchEditor({
   row: SowingPlanRow;
   rows: SowingPlanRow[];
 }) {
+  const language = useAppLanguage();
   const totalSow = getTotalSow(row);
   const availability = calculateAvailability(row);
   const placement = createPlacementPlan(row, rows);
@@ -2666,16 +2753,16 @@ function BatchEditor({
     <section className="panel form-panel">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">Hus dati</p>
+          <p className="eyebrow">{t("husData", language)}</p>
           <h2>{row.sectorName}</h2>
         </div>
       </div>
       <label>
-        Sektors
+        {language === "lv" ? "Sektors" : "Sector"}
         <input value={row.sectorName} onChange={(event) => onUpdateRow(row.id, { sectorName: event.target.value })} />
       </label>
       <label>
-        Šķirne
+        {t("variety", language)}
         <input value={row.variety} onChange={(event) => onUpdateRow(row.id, { variety: event.target.value })} />
       </label>
       <SowingTablesPicker
@@ -2684,7 +2771,7 @@ function BatchEditor({
         onSave={(value) => onUpdateRow(row.id, { sowingTables: value || undefined })}
       />
       <label>
-        Nedēļas numurs
+        {t("weekNumber", language)}
         <input
           min="1"
           type="number"
@@ -2693,19 +2780,19 @@ function BatchEditor({
         />
       </label>
       <label>
-        Statuss
+        {t("status", language)}
         <select
           value={row.status ?? "planned"}
           onChange={(event) => onUpdateRow(row.id, { status: event.target.value as SowingPlanRow["status"] })}
         >
-          <option value="planned">Plānots</option>
-          <option value="imported">Importēts</option>
-          <option value="active">Aktīvs</option>
-          <option value="done">Pabeigts</option>
+          <option value="planned">{language === "lv" ? "Plānots" : "Planned"}</option>
+          <option value="imported">{language === "lv" ? "Importēts" : "Imported"}</option>
+          <option value="active">{language === "lv" ? "Aktīvs" : "Active"}</option>
+          <option value="done">{t("done", language)}</option>
         </select>
       </label>
       <label>
-        Siltumnīcai nepieciešams
+        {t("greenhouseRequired", language)}
         <input
           min="1"
           type="number"
@@ -2718,7 +2805,7 @@ function BatchEditor({
         />
       </label>
       <label>
-        Agronoma sējamais skaits
+        {t("agronomistSowing", language)}
         <input
           min="1"
           type="number"
@@ -2727,7 +2814,7 @@ function BatchEditor({
         />
       </label>
       <label>
-        Darbinieka extra
+        {language === "lv" ? "Darbinieka extra" : "Worker extra"}
         <input
           type="number"
           value={row.extraPlants}
@@ -2735,19 +2822,19 @@ function BatchEditor({
         />
       </label>
       <div className="metric-inline">
-        <span>Kopā sēt</span>
+        <span>{t("totalSow", language)}</span>
         <strong>{totalSow.toLocaleString("lv-LV")}</strong>
       </div>
       <label>
-        Sēšanas datums
+        {t("seedingDate", language)}
         <input type="date" value={row.sowingDate} onChange={(event) => onUpdateDate(row, "sowingDate", event.target.value)} />
       </label>
       <label>
-        Izvākšanas datums
+        {t("moveOutDate", language)}
         <input type="date" value={row.harvestDate} onChange={(event) => onUpdateDate(row, "harvestDate", event.target.value)} />
       </label>
       <label>
-        Previcure datums
+        {language === "lv" ? "Previcure datums" : "Previcur date"}
         <input
           type="date"
           value={row.previcureDate ?? ""}
@@ -2755,7 +2842,7 @@ function BatchEditor({
         />
       </label>
       <label>
-        Cikla garums
+        {t("cycleLength", language)}
         <input
           min="1"
           type="number"
@@ -2764,45 +2851,45 @@ function BatchEditor({
         />
       </label>
       <label>
-        Sektora galdi
+        {t("sectorTables", language)}
         <select
           value={row.sectorType}
           onChange={(event) => onUpdateRow(row.id, { sectorType: Number(event.target.value) as SectorType })}
         >
-          <option value={26}>26 galdi</option>
-          <option value={39}>39 galdi</option>
+          <option value={26}>26 {t("tables", language).toLowerCase()}</option>
+          <option value={39}>39 {t("tables", language).toLowerCase()}</option>
         </select>
       </label>
       <div className={`availability availability--${availability.tone}`}>
-        <span>Faktiski pieejams: {availability.availablePlants.toLocaleString("lv-LV")}</span>
+        <span>{language === "lv" ? "Faktiski pieejams" : "Actually available"}: {availability.availablePlants.toLocaleString("lv-LV")}</span>
         <strong>{availability.label}</strong>
       </div>
       <section className="placement-box">
         <div>
-          <p className="eyebrow">Izvietojums pēc retināšanas</p>
+          <p className="eyebrow">{language === "lv" ? "Izvietojums pēc retināšanas" : "Placement after moving"}</p>
           <strong>{placement.label}</strong>
         </div>
-        <span>Kopā stādi: {totalSow.toLocaleString("lv-LV")}</span>
-        <span>Retināšana: {dateLabel(placement.thinningDate)}</span>
-        <span>Renes: {placement.gutters}</span>
-        <span>Vidēji: {placement.averagePlantsPerGutter.toFixed(2)} stādi/renē</span>
-        <span>Kastītes: {boxPlan.label}</span>
+        <span>{t("total", language)} {t("plants", language).toLowerCase()}: {totalSow.toLocaleString("lv-LV")}</span>
+        <span>{printWorkTitle("thinning", language)}: {dateLabel(placement.thinningDate)}</span>
+        <span>{language === "lv" ? "Renes" : "Troughs"}: {placement.gutters}</span>
+        <span>{language === "lv" ? "Vidēji" : "Average"}: {placement.averagePlantsPerGutter.toFixed(2)} {language === "lv" ? "stādi/renē" : "plants/trough"}</span>
+        <span>{language === "lv" ? "Kastītes" : "Boxes"}: {language === "lv" ? boxPlan.label : formatPrintHarvestBoxes(row, language)}</span>
         <label>
-          Rinda
+          {language === "lv" ? "Rinda" : "Row"}
           <select
             value={placement.primaryRow ?? ""}
             onChange={(event) =>
               onUpdatePlacement(row, { primaryRow: event.target.value as NonNullable<SowingPlanRow["placement"]>["primaryRow"] })
             }
           >
-            <option value="">Automātiski</option>
+            <option value="">{t("automatic", language)}</option>
             {greenhouseRows.map((greenhouseRow) => (
               <option key={greenhouseRow.id} value={greenhouseRow.id}>{greenhouseRow.id}</option>
             ))}
           </select>
         </label>
         <label>
-          Izmantoti galdi
+          {language === "lv" ? "Izmantoti galdi" : "Tables used"}
           <input
             min="1"
             max="39"
@@ -2815,8 +2902,8 @@ function BatchEditor({
       </section>
       <section className="history-box">
         <div>
-          <p className="eyebrow">Izmaiņu vēsture</p>
-          <strong>{row.changeHistory?.length ?? 0} ieraksti</strong>
+          <p className="eyebrow">{t("changeHistory", language)}</p>
+          <strong>{row.changeHistory?.length ?? 0} {language === "lv" ? "ieraksti" : "entries"}</strong>
         </div>
         {row.changeHistory && row.changeHistory.length > 0 ? (
           <ul>
@@ -2830,7 +2917,7 @@ function BatchEditor({
             ))}
           </ul>
         ) : (
-          <p>Šim Hus vēl nav reģistrētu labojumu.</p>
+          <p>{language === "lv" ? "Šim Hus vēl nav reģistrētu labojumu." : "This Hus has no registered changes yet."}</p>
         )}
       </section>
     </section>
@@ -2852,6 +2939,7 @@ function BatchTimeline({
   onMoveRange: (item: WorkItem, startDate: string, endDate: string) => void;
   row: SowingPlanRow;
 }) {
+  const language = useAppLanguage();
   const totalSow = getTotalSow(row);
   const sowing = calculateSowingPlan(totalSow);
   const thinning = calculateThinningPlan(totalSow, row.sectorType);
@@ -2861,26 +2949,26 @@ function BatchTimeline({
     <section className="panel timeline-panel">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">Pilns darba cikls</p>
-          <h2>Laika līnija</h2>
+          <p className="eyebrow">{t("workCycle", language)}</p>
+          <h2>{language === "lv" ? "Laika līnija" : "Timeline"}</h2>
         </div>
         <div className="button-row no-print">
           <button className="secondary-action" type="button" onClick={onOpenWorksheet}>
-            Atvērt darba lapu
+            {t("openWorksheet", language)}
           </button>
         </div>
       </div>
       <div className="summary-strip">
-        <span>{sowing.label}</span>
-        <span>{thinning.label}</span>
-        <span>{row.cycleLength} dienu cikls</span>
+        <span>{language === "lv" ? sowing.label : formatPrintSowingPlan(totalSow, language)}</span>
+        <span>{language === "lv" ? thinning.label : formatPrintThinningPlan(row, language)}</span>
+        <span>{row.cycleLength} {language === "lv" ? "dienu cikls" : "day cycle"}</span>
         <span>{availability.label}</span>
       </div>
       <div className="timeline">
         {items.map((item) => (
           <div className="timeline-item" key={item.id}>
             <time>{dateLabel(item.date)}</time>
-            <WorkItemCard errors={errors} item={item} onMove={onMove} onMoveRange={onMoveRange} />
+            <WorkItemCard errors={errors} item={item} onMove={onMove} onMoveRange={onMoveRange} row={row} />
           </div>
         ))}
       </div>
@@ -3090,10 +3178,10 @@ function shiftAnchor(anchorDate: string, viewMode: ViewMode, direction: -1 | 1):
   return addDays(anchorDate, days * direction);
 }
 
-function calendarTitle(anchorDate: string, viewMode: ViewMode): string {
+function calendarTitle(anchorDate: string, viewMode: ViewMode, language: AppLanguage): string {
   const days = getCalendarDays(anchorDate, viewMode).filter((day) => day.inCurrentRange);
   if (viewMode === "month") {
-    return new Intl.DateTimeFormat("lv-LV", { month: "long", year: "numeric" }).format(
+    return new Intl.DateTimeFormat(language === "lv" ? "lv-LV" : "en-GB", { month: "long", year: "numeric" }).format(
       new Date(`${anchorDate}T12:00:00`),
     );
   }
@@ -3110,8 +3198,8 @@ function shortDate(date: string): string {
   }).format(new Date(`${date}T12:00:00`));
 }
 
-function weekdayName(date: string): string {
-  return new Intl.DateTimeFormat("lv-LV", {
+function weekdayName(date: string, language: AppLanguage = "lv"): string {
+  return new Intl.DateTimeFormat(language === "lv" ? "lv-LV" : "en-GB", {
     weekday: "long",
   }).format(new Date(`${date}T12:00:00`));
 }
@@ -3129,7 +3217,7 @@ function printPlanStartDate(anchorDate: string, viewMode: ViewMode): string {
   return toIsoDate(new Date(anchor.getFullYear(), anchor.getMonth(), 1, 12));
 }
 
-function workPlanPrintTitle(items: Array<{ date: string }>, language: PrintLanguage): string {
+function workPlanPrintTitle(items: Array<{ date: string }>, language: AppLanguage): string {
   const first = items[0]?.date;
   const last = items.at(-1)?.date;
   const title = language === "lv" ? "DARBA PLĀNS" : "WORK PLAN";
@@ -3172,17 +3260,6 @@ function formatDateRange(dates: string[]): string {
 
 function signedNumber(value: number): string {
   return value > 0 ? `+${value.toLocaleString("lv-LV")}` : value.toLocaleString("lv-LV");
-}
-
-function plantCorrectionReasonLabel(reason: PlantCorrectionReason): string {
-  const labels: Record<PlantCorrectionReason, string> = {
-    brownRoots: "Brūnās saknes",
-    damaged: "Bojāti",
-    other: "Cits",
-    thinning: "Retināšana",
-  };
-
-  return labels[reason];
 }
 
 function historyDateLabel(timestamp: string): string {

@@ -544,6 +544,24 @@ textarea {
   gap: 8px;
 }
 
+.print-language-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+
+.print-language-toggle .segmented {
+  width: 116px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.print-language-toggle .segmented button {
+  min-height: 38px;
+}
+
 .layout-grid--wide {
   grid-template-columns: 1fr;
 }

@@ -11,11 +11,9 @@ import {
   calculateBoxPlan,
   calculateAvailability,
   calculatePlantBalance,
-  continuousWorkPlanPrintRows,
   countMainWork,
   calculateSowingPlan,
   calculateThinningPlan,
-  calculateWorkMaterialSummary,
   createPlacementPlan,
   dateLabel,
   eachDate,
@@ -53,6 +51,13 @@ import {
   importCandidateToSowingPlanRow,
   importCandidateValidationErrors,
 } from "@/lib/production-plan-import";
+import {
+  localizedMonthlyPrintRows,
+  printLabel,
+  printMaterialSummary,
+  printWorkTitle,
+  type PrintLanguage,
+} from "@/lib/print-localization";
 import { SowingPlanApiConflictError } from "@/lib/repositories/api-sowing-plan-repository";
 import { sowingPlanRepository } from "@/lib/repositories/sowing-plan-repository";
 import type {
@@ -116,6 +121,7 @@ export function PlannerApp() {
   const [repositoryError, setRepositoryError] = useState("");
   const [activeView, setActiveView] = useState<MainView>("sowingPlan");
   const [viewMode, setViewMode] = useState<ViewMode>("month");
+  const [printLanguage, setPrintLanguage] = useState<PrintLanguage>("lv");
   const [anchorDate, setAnchorDate] = useState("2026-09-25");
   const [selectedDate, setSelectedDate] = useState("2026-09-25");
   const [selectedRowId, setSelectedRowId] = useState("");
@@ -856,7 +862,10 @@ export function PlannerApp() {
           </section>
           <div className="calendar-print-source">
             <MonthlyPrintPlan
+              onPrintLanguageChange={setPrintLanguage}
               onStartChange={setAnchorDate}
+              printLanguage={printLanguage}
+              rows={planRows}
               startDate={printPlanStartDate(anchorDate, viewMode)}
               workItems={workItems}
             />
@@ -885,7 +894,9 @@ export function PlannerApp() {
       {activeView === "worksheet" && selectedRow ? (
         <WorksheetView
           onEdit={() => setActiveView("batch")}
+          onPrintLanguageChange={setPrintLanguage}
           onUpdateRow={updatePlanRow}
+          printLanguage={printLanguage}
           row={selectedRow}
           workItems={workItems.filter((item) => item.planRowId === selectedRow.id)}
         />
@@ -893,7 +904,10 @@ export function PlannerApp() {
 
       {activeView === "monthPlan" ? (
         <MonthlyPrintPlan
+          onPrintLanguageChange={setPrintLanguage}
           onStartChange={setAnchorDate}
+          printLanguage={printLanguage}
+          rows={planRows}
           startDate={printPlanStartDate(anchorDate, viewMode)}
           workItems={workItems}
         />
@@ -1380,12 +1394,16 @@ function CapacityAlerts({ items, onOpen }: { items: WorkItem[]; onOpen: (date: s
 
 function WorksheetView({
   onEdit,
+  onPrintLanguageChange,
   onUpdateRow,
+  printLanguage,
   row,
   workItems,
 }: {
   onEdit: () => void;
+  onPrintLanguageChange: (language: PrintLanguage) => void;
   onUpdateRow: (id: string, patch: Partial<SowingPlanRow>) => void;
+  printLanguage: PrintLanguage;
   row: SowingPlanRow;
   workItems: WorkItem[];
 }) {
@@ -1395,7 +1413,7 @@ function WorksheetView({
   const [eventDialogOpen, setEventDialogOpen] = useState(false);
   const [editingEvent, setEditingEvent] = useState<HusEventEntry | null>(null);
   const totalSow = getTotalSow(row);
-  const materials = calculateWorkMaterialSummary(row);
+  const materials = printMaterialSummary(row, printLanguage);
   const balance = calculatePlantBalance(row);
   const worksheetDays = generateWorksheetDaysFromWorkItems(row, workItems);
   const chronologicalWorkItems = [...workItems].sort(
@@ -1448,6 +1466,7 @@ function WorksheetView({
           <h2>{row.sectorName}</h2>
         </div>
         <div className="button-row">
+          <PrintLanguageToggle language={printLanguage} onChange={onPrintLanguageChange} />
           <button className="secondary-action" type="button" onClick={onEdit}>
             Rediģēt
           </button>
@@ -1642,32 +1661,32 @@ function WorksheetView({
 
       <article className={`print-page worksheet-page ${activeWorksheetTab === "worksheet" ? "" : "screen-hidden"}`}>
         <header className="worksheet-header">
-          <h1 className="print-only-title">{row.sectorName}</h1>
+          <h1 className="print-only-title">{row.sectorName} · {printLabel(printLanguage, "worksheet")}</h1>
           <div className="worksheet-meta">
-            <span><strong>Sēšana:</strong> {shortDate(row.sowingDate)}</span>
-            <span><strong>Stādi:</strong> {totalSow.toLocaleString("lv-LV")}</span>
-            <span><strong>Šķirne:</strong> {row.variety}</span>
-            <span><strong>Izvākšana:</strong> {shortDate(row.harvestDate)}</span>
-            <span><strong>Sēšanas galdi:</strong> {row.sowingTables || "Nav norādīti"}</span>
+            <span><strong>{printLabel(printLanguage, "sowing")}:</strong> {shortDate(row.sowingDate)}</span>
+            <span><strong>{printLabel(printLanguage, "plants")}:</strong> {totalSow.toLocaleString("lv-LV")}</span>
+            <span><strong>{printLabel(printLanguage, "variety")}:</strong> {row.variety}</span>
+            <span><strong>{printLabel(printLanguage, "planting")}:</strong> {shortDate(row.harvestDate)}</span>
+            <span><strong>{printLabel(printLanguage, "sowingTables")}:</strong> {materials.sowingTables}</span>
           </div>
           <div className="worksheet-needed">
-            <strong>Nepieciešams</strong>
-            <span>Sēšana: {materials.sowing}</span>
-            <span>Sēšanas galdi: {materials.sowingTables}</span>
-            <span>Retināšana: {materials.thinning}</span>
-            <span>Izvākšana: {materials.harvest}</span>
+            <strong>{printLabel(printLanguage, "needed")}</strong>
+            <span>{printWorkTitle("sowing", printLanguage)}: {materials.sowing}</span>
+            <span>{printLabel(printLanguage, "sowingTables")}: {materials.sowingTables}</span>
+            <span>{printWorkTitle("thinning", printLanguage)}: {materials.thinning}</span>
+            <span>{printWorkTitle("harvest", printLanguage)}: {materials.harvest}</span>
           </div>
         </header>
 
         <table className="worksheet-table">
           <thead>
             <tr>
-              <th>Day</th>
-              <th>Date</th>
+              <th>{printLabel(printLanguage, "day")}</th>
+              <th>{printLabel(printLanguage, "date")}</th>
               <th>Water min</th>
               <th>Temp</th>
               <th>Plants out</th>
-              <th>Div / Darbi</th>
+              <th>{printLabel(printLanguage, "divWork")}</th>
             </tr>
           </thead>
           <tbody>
@@ -1678,7 +1697,7 @@ function WorksheetView({
                 <td aria-label="Water min" />
                 <td aria-label="Temp" />
                 <td aria-label="Plants out" />
-                <td>{day.works.map((work) => work.title).join(" + ")}</td>
+                <td>{day.works.map((work) => printWorkTitle(work.type, printLanguage)).join(" + ")}</td>
               </tr>
             ))}
           </tbody>
@@ -1689,15 +1708,25 @@ function WorksheetView({
 }
 
 function MonthlyPrintPlan({
+  onPrintLanguageChange,
   onStartChange,
+  printLanguage,
+  rows,
   startDate,
   workItems,
 }: {
+  onPrintLanguageChange: (language: PrintLanguage) => void;
   onStartChange: (date: string) => void;
+  printLanguage: PrintLanguage;
+  rows: SowingPlanRow[];
   startDate: string;
   workItems: WorkItem[];
 }) {
-  const items = continuousWorkPlanPrintRows(workItems, startDate);
+  const items = localizedMonthlyPrintRows(
+    workItems.filter((item) => item.date >= startDate),
+    rows,
+    printLanguage,
+  );
   const groups = groupMonthlyPrintRowsIntoDateGroups(items);
 
   return (
@@ -1708,6 +1737,7 @@ function MonthlyPrintPlan({
           <h2>Darba plāns</h2>
         </div>
         <div className="button-row month-controls">
+          <PrintLanguageToggle language={printLanguage} onChange={onPrintLanguageChange} />
           <label>
             Sākuma mēnesis
             <input
@@ -1724,23 +1754,27 @@ function MonthlyPrintPlan({
 
       <article className="print-page month-page">
         <header className="month-print-header">
-          <h1>{workPlanPrintTitle(items)}</h1>
-          <p>Kopējais darba plāns visiem Hus</p>
+          <h1>{workPlanPrintTitle(items, printLanguage)}</h1>
+          <p>{printLanguage === "lv" ? "Kopējais darba plāns visiem Hus" : "Common work plan for all Hus"}</p>
         </header>
         <table className="month-print-table">
           <thead>
             <tr>
-              <th>Datums</th>
+              <th>{printLabel(printLanguage, "date")}</th>
               <th>Hus</th>
-              <th>Darbs</th>
-              <th>Stādi</th>
-              <th>Piezīmes</th>
+              <th>{printLabel(printLanguage, "work")}</th>
+              <th>{printLabel(printLanguage, "plants")}</th>
+              <th>{printLabel(printLanguage, "notes")}</th>
             </tr>
           </thead>
           {groups.length === 0 ? (
             <tbody>
               <tr>
-                <td colSpan={5}>No izvēlētā sākuma datuma nav ieplānotu darbu.</td>
+                <td colSpan={5}>
+                  {printLanguage === "lv"
+                    ? "No izvēlētā sākuma datuma nav ieplānotu darbu."
+                    : "No work is planned from the selected start date."}
+                </td>
               </tr>
             </tbody>
           ) : null}
@@ -1760,6 +1794,36 @@ function MonthlyPrintPlan({
         </table>
       </article>
     </section>
+  );
+}
+
+function PrintLanguageToggle({
+  language,
+  onChange,
+}: {
+  language: PrintLanguage;
+  onChange: (language: PrintLanguage) => void;
+}) {
+  return (
+    <div className="print-language-toggle">
+      <span>{printLabel("lv", "printLanguage")}:</span>
+      <div className="segmented segmented--compact" aria-label="Printa valoda">
+        <button
+          className={language === "lv" ? "is-active" : ""}
+          onClick={() => onChange("lv")}
+          type="button"
+        >
+          LV
+        </button>
+        <button
+          className={language === "en" ? "is-active" : ""}
+          onClick={() => onChange("en")}
+          type="button"
+        >
+          EN
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -3065,15 +3129,16 @@ function printPlanStartDate(anchorDate: string, viewMode: ViewMode): string {
   return toIsoDate(new Date(anchor.getFullYear(), anchor.getMonth(), 1, 12));
 }
 
-function workPlanPrintTitle(items: ReturnType<typeof continuousWorkPlanPrintRows>): string {
+function workPlanPrintTitle(items: Array<{ date: string }>, language: PrintLanguage): string {
   const first = items[0]?.date;
   const last = items.at(-1)?.date;
+  const title = language === "lv" ? "DARBA PLĀNS" : "WORK PLAN";
 
   if (!first || !last) {
-    return "DARBA PLĀNS";
+    return title;
   }
 
-  return `DARBA PLĀNS · ${printDateRange(first, last)}`;
+  return `${title} · ${printDateRange(first, last)}`;
 }
 
 function printDateRange(first: string, last: string): string {

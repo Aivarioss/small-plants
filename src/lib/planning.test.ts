@@ -706,15 +706,65 @@ describe("planning calculations", () => {
   it("generates minor Hus tasks without adding main workload", () => {
     const items = generateWorkItems(row, { defaultPlantsPerBox: 30 });
     const byType = Object.fromEntries(items.map((item) => [item.type, item]));
+    const animalDates = items.filter((item) => item.type === "animals").map((item) => item.date);
 
     expect(byType.removeFilm.date).toBe(cycleDayDateForTest(row, 3));
     expect(byType.addAgrofilm.date).toBe(cycleDayDateForTest(row, 3));
     expect(byType.removeAgrofilm.date).toBe(cycleDayDateForTest(row, 5));
+    expect(animalDates).toEqual(["2026-10-01", "2026-10-08", "2026-10-15"]);
     expect(byType.previcur.date).toBe(byType.thinning.date);
     expect(byType.disinfectTables.date).toBe(byType.thinning.date);
     expect(byType.sprayTables.date).toBe(row.harvestDate);
     expect(countMainWork(items, byType.thinning.date)).toBe(1);
     expect(countMainWork(items, cycleDayDateForTest(row, 3))).toBe(0);
+    expect(countMainWork(items, "2026-10-01")).toBe(0);
+  });
+
+  it("generates Animals only on Thursdays after agroplastic off and before Planting", () => {
+    const items = generateWorkItems(row, { defaultPlantsPerBox: 30 });
+    const animals = items.filter((item) => item.type === "animals");
+
+    expect(animals.map((item) => item.date)).toEqual(["2026-10-01", "2026-10-08", "2026-10-15"]);
+    expect(animals.every((item) => item.title === "Animals")).toBe(true);
+    expect(animals.every((item) => item.fixed && item.locked && item.workloadWeight === 0)).toBe(true);
+    expect(items.some((item) => item.type === "animals" && item.date <= cycleDayDateForTest(row, 5))).toBe(false);
+    expect(items.some((item) => item.type === "animals" && item.date >= row.harvestDate)).toBe(false);
+  });
+
+  it("keeps Animals on the Thursday before a Friday Planting", () => {
+    const fridayPlanting = {
+      ...row,
+      harvestDate: "2026-10-16",
+    };
+    const animalDates = generateWorkItems(fridayPlanting, { defaultPlantsPerBox: 30 })
+      .filter((item) => item.type === "animals")
+      .map((item) => item.date);
+
+    expect(animalDates).toContain("2026-10-15");
+  });
+
+  it("does not generate Animals on a Thursday Planting date", () => {
+    const thursdayPlanting = {
+      ...row,
+      harvestDate: "2026-10-15",
+    };
+    const animalDates = generateWorkItems(thursdayPlanting, { defaultPlantsPerBox: 30 })
+      .filter((item) => item.type === "animals")
+      .map((item) => item.date);
+
+    expect(animalDates).toEqual(["2026-10-01", "2026-10-08"]);
+    expect(animalDates).not.toContain("2026-10-15");
+  });
+
+  it("does not move Animals during workload balancing", () => {
+    const baseDates = generateBaseWorkItemsForRows([row], { defaultPlantsPerBox: 30 })
+      .filter((item) => item.type === "animals")
+      .map((item) => item.date);
+    const balancedDates = generateWorkItemsForRows([row], { defaultPlantsPerBox: 30 })
+      .filter((item) => item.type === "animals")
+      .map((item) => item.date);
+
+    expect(balancedDates).toEqual(baseDates);
   });
 
   it("formats sowing table selections as compact ranges", () => {
@@ -1150,7 +1200,9 @@ describe("planning calculations", () => {
     );
 
     expect(items.filter((item) => item.date === "2026-10-22").map((item) => item.type)).toEqual([
+      "animals",
       "rings",
+      "animals",
       "thinning",
       "previcur",
       "disinfectTables",
@@ -1776,6 +1828,7 @@ function expectMandatoryWork(items: WorkItem[], planRowId: string) {
 
   expect(actual).toEqual([
     "addAgrofilm",
+    "animals",
     "disinfectTables",
     "harvest",
     "previcur",

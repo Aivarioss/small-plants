@@ -6,6 +6,7 @@ export type WorkType =
   | "removeFilm"
   | "addAgrofilm"
   | "removeAgrofilm"
+  | "animals"
   | "thinning"
   | "previcur"
   | "disinfectTables"

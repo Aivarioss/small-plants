@@ -91,6 +91,7 @@ export const workTypeMeta: Record<WorkType, { title: string; color: string }> = 
   removeFilm: { title: "Noņemt plēvi", color: "mint" },
   addAgrofilm: { title: "Uzlikt agroplēvi", color: "mint" },
   removeAgrofilm: { title: "Noņemt agroplēvi", color: "mint" },
+  animals: { title: "Animals", color: "teal" },
   thinning: { title: "Retināšana", color: "teal" },
   previcur: { title: "Previcur", color: "teal" },
   disinfectTables: { title: "Dezinficēt galdus", color: "teal" },
@@ -111,6 +112,7 @@ const workTypeSortOrder: WorkType[] = [
   "removeFilm",
   "addAgrofilm",
   "removeAgrofilm",
+  "animals",
   "thinning",
   "previcur",
   "disinfectTables",
@@ -159,6 +161,10 @@ export function getCycleDay(row: Pick<SowingPlanRow, "sowingDate">, date: string
 
 export function getBiologicalCycleDays(row: Pick<SowingPlanRow, "sowingDate" | "harvestDate">): number {
   return daysBetween(row.sowingDate, row.harvestDate);
+}
+
+function isThursday(date: string): boolean {
+  return new Date(`${date}T12:00:00`).getDay() === 4;
 }
 
 export function eachDate(startDate: string, endDate: string): string[] {
@@ -812,10 +818,12 @@ export function generateBaseWorkItemsForRows(rows: SowingPlanRow[], config: Plan
 function generateSmallWorkItems(rows: SowingPlanRow[], baseItems: WorkItem[]): WorkItem[] {
   return rows.flatMap((row) => {
     const thinningDate = baseItems.find((item) => item.planRowId === row.id && item.type === "thinning")?.date;
+    const removeAgrofilmDate = cycleDayDate(row, 5);
     const smallItems = [
       smallWorkItem(row, "removeFilm", cycleDayDate(row, 3), "Saistīts ar sēšanu"),
       smallWorkItem(row, "addAgrofilm", cycleDayDate(row, 3), "Saistīts ar sēšanu"),
-      smallWorkItem(row, "removeAgrofilm", cycleDayDate(row, 5), "Saistīts ar sēšanu"),
+      smallWorkItem(row, "removeAgrofilm", removeAgrofilmDate, "Saistīts ar sēšanu"),
+      ...generateAnimalWorkItems(row, removeAgrofilmDate),
       smallWorkItem(row, "sprayTables", row.harvestDate, "Pēc izvākšanas"),
     ];
 
@@ -828,6 +836,20 @@ function generateSmallWorkItems(rows: SowingPlanRow[], baseItems: WorkItem[]): W
 
     return smallItems;
   });
+}
+
+function generateAnimalWorkItems(row: SowingPlanRow, removeAgrofilmDate: string): WorkItem[] {
+  const startDate = addDays(removeAgrofilmDate, 1);
+  const endDate = addDays(row.harvestDate, -1);
+
+  if (startDate > endDate) {
+    return [];
+  }
+
+  const dates = eachDate(startDate, endDate);
+  return dates
+    .filter(isThursday)
+    .map((date) => smallWorkItem(row, "animals", date, "Pēc agroplēves noņemšanas"));
 }
 
 function smallWorkItem(row: SowingPlanRow, type: WorkType, date: string, detail: string): WorkItem {

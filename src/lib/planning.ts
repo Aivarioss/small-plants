@@ -167,6 +167,44 @@ export function defaultHusEventDate(entry?: Pick<HusEventEntry, "eventDate"> | n
   return entry?.eventDate ?? localTodayIso(now);
 }
 
+export function compareSowingRowsByDate(left: Pick<SowingPlanRow, "sectorName" | "sowingDate">, right: Pick<SowingPlanRow, "sectorName" | "sowingDate">): number {
+  return left.sowingDate.localeCompare(right.sowingDate) || left.sectorName.localeCompare(right.sectorName, "lv", { numeric: true });
+}
+
+export type HusEventMovementRow = {
+  from: string;
+  to: string;
+};
+
+export function parseHusEventMovementRows(entry: Pick<HusEventEntry, "location" | "destinationLocation">): HusEventMovementRow[] {
+  const fromValues = splitEventLocationLines(entry.location);
+  const toValues = splitEventLocationLines(entry.destinationLocation);
+  const length = Math.max(fromValues.length, toValues.length);
+
+  return Array.from({ length }, (_, index) => ({
+    from: fromValues[index] ?? "",
+    to: toValues[index] ?? "",
+  })).filter((row) => row.from || row.to);
+}
+
+export function serializeHusEventMovementRows(rows: HusEventMovementRow[]): Pick<HusEventEntry, "location" | "destinationLocation"> {
+  const cleanedRows = rows
+    .map((row) => ({ from: row.from.trim(), to: row.to.trim() }))
+    .filter((row) => row.from || row.to);
+
+  return {
+    location: cleanedRows.map((row) => row.from).join("\n") || undefined,
+    destinationLocation: cleanedRows.map((row) => row.to).join("\n") || undefined,
+  };
+}
+
+function splitEventLocationLines(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
 export function getBiologicalCycleDays(row: Pick<SowingPlanRow, "sowingDate" | "harvestDate">): number {
   return daysBetween(row.sowingDate, row.harvestDate);
 }

@@ -1369,6 +1369,31 @@ textarea {
   font-weight: 800;
 }
 
+.movement-lines,
+.event-lines {
+  display: grid;
+  gap: 8px;
+}
+
+.movement-lines span {
+  overflow-wrap: anywhere;
+}
+
+.event-line-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.event-line-grid label {
+  min-width: 0;
+}
+
+.event-line-grid input {
+  width: 100%;
+}
+
 .dialog-hint {
   display: block;
   margin-top: 4px;
@@ -1729,6 +1754,11 @@ textarea {
   .hus-journal-list .secondary-action--small,
   .hus-journal-list .danger-action--small {
     min-height: 36px;
+  }
+
+  .event-line-grid {
+    grid-template-columns: 1fr;
+    align-items: stretch;
   }
 }
 

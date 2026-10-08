@@ -9,6 +9,7 @@ import {
   calculatePlantBalance,
   calculateRecommendedTables,
   compactMonthlyPrintRows,
+  compareSowingRowsByDate,
   calculateSowingPlan,
   calculateThinningPlan,
   calculateWorkMaterialSummary,
@@ -36,10 +37,12 @@ import {
   formatSowingTableSelection,
   isAllowedMove,
   parseSowingTableSelection,
+  parseHusEventMovementRows,
   removePlantCorrection,
   removeHusEventEntry,
   signedPlantCorrectionAmount,
   sowingTableIds,
+  serializeHusEventMovementRows,
   toggleSowingTableSelection,
   upsertHusEventEntry,
   upsertPlantCorrection,
@@ -291,6 +294,24 @@ describe("planning calculations", () => {
     expect(removeHusEventEntry(entries, "move-1")).toEqual([]);
   });
 
+  it("sorts Hus cards by sowing date and then Hus identifier", () => {
+    const rows = [
+      { ...row, id: "hus-2s", sectorName: "Hus 2S", sowingDate: "2026-11-05" },
+      { ...row, id: "hus-5", sectorName: "Hus 5", sowingDate: "2026-09-24" },
+      { ...row, id: "hus-4", sectorName: "Hus 4", sowingDate: "2026-09-22" },
+      { ...row, id: "hus-3", sectorName: "Hus 3", sowingDate: "2026-10-27" },
+      { ...row, id: "hus-1", sectorName: "Hus 1", sowingDate: "2026-09-24" },
+    ];
+
+    expect(rows.slice().sort(compareSowingRowsByDate).map((item) => item.sectorName)).toEqual([
+      "Hus 4",
+      "Hus 1",
+      "Hus 5",
+      "Hus 3",
+      "Hus 2S",
+    ]);
+  });
+
   it("defaults a new Hus event to the local calendar date and preserves edit dates", () => {
     const localMidnight = new Date(2026, 0, 1, 0, 30);
 
@@ -301,29 +322,38 @@ describe("planning calculations", () => {
   });
 
   it("links Moving events with removed plants to one thinning correction", () => {
+    const locations = serializeHusEventMovementRows([
+      { from: "A7", to: "C1-C10" },
+      { from: "A8", to: "C11-C20" },
+      { from: "A9", to: "C21-C24" },
+    ]);
     const saved = applyHusEventSave(row, {
       id: "event-move",
       eventDate: "2026-10-11",
       eventType: "move",
-      location: "A7",
-      destinationLocation: "D1-D10",
+      ...locations,
       plantChange: -52,
     }, () => "correction-move", () => "2026-10-11T08:00:00.000Z");
 
     expect(saved.husEvents?.[0]).toMatchObject({
       eventType: "move",
-      location: "A7",
-      destinationLocation: "D1-D10",
+      location: "A7\nA8\nA9",
+      destinationLocation: "C1-C10\nC11-C20\nC21-C24",
       plantChange: -52,
       plantCorrectionId: "correction-move",
     });
+    expect(parseHusEventMovementRows(saved.husEvents![0])).toEqual([
+      { from: "A7", to: "C1-C10" },
+      { from: "A8", to: "C11-C20" },
+      { from: "A9", to: "C21-C24" },
+    ]);
     expect(saved.plantCorrections).toEqual([
       {
         id: "correction-move",
         amount: -52,
         date: "2026-10-11",
         reason: "thinning",
-        note: "Moving · A7 · → D1-D10",
+        note: "Moving · A7\nA8\nA9 · → C1-C10\nC11-C20\nC21-C24",
       },
     ]);
   });
@@ -408,6 +438,55 @@ describe("planning calculations", () => {
     expect(saved.husEvents?.[0].plantCorrectionId).toBeUndefined();
     expect(saved.plantCorrections).toEqual([
       { id: "legacy-loss", amount: -100, date: "2026-10-08", reason: "thinning" },
+    ]);
+  });
+
+  it("stores Other / Observation plant changes as linked corrections", () => {
+    const loss = applyHusEventSave(row, {
+      id: "event-other",
+      eventDate: "2026-10-12",
+      eventType: "other",
+      location: "C6",
+      plantChange: -5,
+      note: "Nolauzti galotnes",
+    }, () => "correction-other", () => "2026-10-12T08:00:00.000Z");
+    const addition = applyHusEventSave(loss, {
+      ...loss.husEvents![0],
+      plantChange: 20,
+    }, () => "new-correction-should-not-be-used", () => "2026-10-12T09:00:00.000Z");
+    const none = applyHusEventSave(addition, {
+      ...addition.husEvents![0],
+      plantChange: undefined,
+    }, () => "new-correction-should-not-be-used", () => "2026-10-12T10:00:00.000Z");
+
+    expect(loss.plantCorrections).toEqual([
+      expect.objectContaining({ id: "correction-other", amount: -5, reason: "other" }),
+    ]);
+    expect(addition.plantCorrections).toEqual([
+      expect.objectContaining({ id: "correction-other", amount: 20, reason: "other" }),
+    ]);
+    expect(none.husEvents?.[0].plantCorrectionId).toBeUndefined();
+    expect(none.plantCorrections).toEqual([]);
+  });
+
+  it("saves multiple brown-roots table rows as separate corrections in one batch", () => {
+    const drafts = [
+      { id: "roots-c4", eventDate: "2026-10-11", eventType: "brownRoots" as const, location: "C4", plantChange: -3 },
+      { id: "roots-c7", eventDate: "2026-10-11", eventType: "brownRoots" as const, location: "C7", plantChange: -12 },
+      { id: "roots-c22", eventDate: "2026-10-11", eventType: "brownRoots" as const, location: "C22", plantChange: -10 },
+      { id: "roots-c24", eventDate: "2026-10-11", eventType: "brownRoots" as const, location: "C24", plantChange: -8 },
+    ];
+    const saved = drafts.reduce<Pick<SowingPlanRow, "husEvents" | "plantCorrections">>(
+      (current, entry, index) => applyHusEventSave(current, entry, () => `correction-roots-${index + 1}`, () => "2026-10-11T08:00:00.000Z"),
+      { husEvents: row.husEvents, plantCorrections: row.plantCorrections },
+    );
+
+    expect(saved.husEvents).toHaveLength(4);
+    expect(saved.plantCorrections).toEqual([
+      expect.objectContaining({ amount: -3, reason: "brownRoots", note: "Brūnās saknes · C4" }),
+      expect.objectContaining({ amount: -12, reason: "brownRoots", note: "Brūnās saknes · C7" }),
+      expect.objectContaining({ amount: -10, reason: "brownRoots", note: "Brūnās saknes · C22" }),
+      expect.objectContaining({ amount: -8, reason: "brownRoots", note: "Brūnās saknes · C24" }),
     ]);
   });
 

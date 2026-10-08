@@ -15,6 +15,7 @@ import {
   countMainWork,
   calculateSowingPlan,
   calculateThinningPlan,
+  compareSowingRowsByDate,
   createPlacementPlan,
   dateLabel,
   eachDate,
@@ -29,7 +30,9 @@ import {
   hasManualWorkMoves,
   isAllowedMove,
   defaultHusEventDate,
+  parseHusEventMovementRows,
   parseSowingTableSelection,
+  serializeHusEventMovementRows,
   sowingTableIds,
   toggleSowingTableSelection,
   toIsoDate,
@@ -961,7 +964,6 @@ export function PlannerApp() {
           </section>
           <div className="calendar-print-source">
             <MonthlyPrintPlan
-              onPrintLanguageChange={setPrintLanguage}
               onStartChange={setAnchorDate}
               printLanguage={printLanguage}
               rows={planRows}
@@ -993,7 +995,6 @@ export function PlannerApp() {
       {activeView === "worksheet" && selectedRow ? (
         <WorksheetView
           onEdit={() => setActiveView("batch")}
-          onPrintLanguageChange={setPrintLanguage}
           onUpdateRow={updatePlanRow}
           printLanguage={printLanguage}
           row={selectedRow}
@@ -1003,7 +1004,6 @@ export function PlannerApp() {
 
       {activeView === "monthPlan" ? (
         <MonthlyPrintPlan
-          onPrintLanguageChange={setPrintLanguage}
           onStartChange={setAnchorDate}
           printLanguage={printLanguage}
           rows={planRows}
@@ -1622,14 +1622,12 @@ function CapacityAlerts({ items, onOpen }: { items: WorkItem[]; onOpen: (date: s
 
 function WorksheetView({
   onEdit,
-  onPrintLanguageChange,
   onUpdateRow,
   printLanguage,
   row,
   workItems,
 }: {
   onEdit: () => void;
-  onPrintLanguageChange: (language: AppLanguage) => void;
   onUpdateRow: (id: string, patch: Partial<SowingPlanRow>) => void;
   printLanguage: AppLanguage;
   row: SowingPlanRow;
@@ -1646,8 +1644,13 @@ function WorksheetView({
     (left, right) => left.date.localeCompare(right.date) || left.title.localeCompare(right.title, "lv"),
   );
 
-  function saveHusEvent(entry: HusEventEntry) {
-    onUpdateRow(row.id, applyHusEventSave(row, entry));
+  function saveHusEvents(entries: HusEventEntry[]) {
+    const next = entries.reduce<Pick<SowingPlanRow, "husEvents" | "plantCorrections">>(
+      (current, entry) => applyHusEventSave(current, entry),
+      { husEvents: row.husEvents, plantCorrections: row.plantCorrections },
+    );
+
+    onUpdateRow(row.id, next);
   }
 
   function deleteHusEvent(entry: HusEventEntry) {
@@ -1675,7 +1678,6 @@ function WorksheetView({
           <h2>{row.sectorName}</h2>
         </div>
         <div className="button-row">
-          <PrintLanguageToggle language={printLanguage} onChange={onPrintLanguageChange} />
           <button className="secondary-action" type="button" onClick={onEdit}>
             {t("edit", printLanguage)}
           </button>
@@ -1753,7 +1755,15 @@ function WorksheetView({
                     </div>
                     <div className="hus-journal-list__body">
                       <strong>{husEventTypeTitle(entry.eventType, printLanguage)}</strong>
-                      {entry.location || entry.destinationLocation ? (
+                      {entry.eventType === "move" && parseHusEventMovementRows(entry).length > 0 ? (
+                        <div className="movement-lines">
+                          {parseHusEventMovementRows(entry).map((movement, index) => (
+                            <span key={`${entry.id}-movement-${index}`}>
+                              {movement.from || "—"} → {movement.to || "—"}
+                            </span>
+                          ))}
+                        </div>
+                      ) : entry.location || entry.destinationLocation ? (
                         <span>
                           {entry.location || "—"}
                           {entry.destinationLocation ? ` → ${entry.destinationLocation}` : ""}
@@ -1812,8 +1822,8 @@ function WorksheetView({
             <HusEventDialog
               entry={editingEvent}
               onCancel={closeEventDialog}
-              onSave={(entry) => {
-                saveHusEvent(entry);
+              onSave={(entries) => {
+                saveHusEvents(entries);
                 closeEventDialog();
               }}
               row={row}
@@ -1871,14 +1881,12 @@ function WorksheetView({
 }
 
 function MonthlyPrintPlan({
-  onPrintLanguageChange,
   onStartChange,
   printLanguage,
   rows,
   startDate,
   workItems,
 }: {
-  onPrintLanguageChange: (language: AppLanguage) => void;
   onStartChange: (date: string) => void;
   printLanguage: AppLanguage;
   rows: SowingPlanRow[];
@@ -1900,7 +1908,6 @@ function MonthlyPrintPlan({
           <h2>{t("workPlan", printLanguage)}</h2>
         </div>
         <div className="button-row month-controls">
-          <PrintLanguageToggle language={printLanguage} onChange={onPrintLanguageChange} />
           <label>
             {printLanguage === "lv" ? "Sākuma mēnesis" : "Start month"}
             <input
@@ -1988,10 +1995,6 @@ function LanguageToggle({
       </div>
     </div>
   );
-}
-
-function PrintLanguageToggle(props: { language: AppLanguage; onChange: (language: AppLanguage) => void }) {
-  return <LanguageToggle {...props} />;
 }
 
 function SowingTablesPicker({
@@ -2082,6 +2085,45 @@ function editableHusEventType(type: HusEventType | undefined): "move" | "brownRo
   return type === "move" || type === "brownRoots" || type === "other" ? type : "other";
 }
 
+type MovementDraftRow = {
+  id: string;
+  from: string;
+  to: string;
+};
+
+type BrownRootsDraftRow = {
+  id: string;
+  location: string;
+  amount: string;
+};
+
+function newDraftId(): string {
+  return crypto.randomUUID();
+}
+
+function createMovementDraftRows(entry: HusEventEntry | null): MovementDraftRow[] {
+  if (entry?.eventType !== "move") {
+    return [{ id: newDraftId(), from: "", to: "" }];
+  }
+
+  const rows = parseHusEventMovementRows(entry).map((row) => ({ id: newDraftId(), from: row.from, to: row.to }));
+  return rows.length > 0 ? rows : [{ id: newDraftId(), from: entry.location ?? "", to: entry.destinationLocation ?? "" }];
+}
+
+function createBrownRootsDraftRows(entry: HusEventEntry | null): BrownRootsDraftRow[] {
+  if (entry?.eventType !== "brownRoots") {
+    return [{ id: newDraftId(), location: "", amount: "" }];
+  }
+
+  return [
+    {
+      id: newDraftId(),
+      location: entry.location ?? "",
+      amount: typeof entry.plantChange === "number" && entry.plantChange !== 0 ? String(Math.abs(entry.plantChange)) : "0",
+    },
+  ];
+}
+
 function HusEventDialog({
   entry,
   onCancel,
@@ -2090,44 +2132,141 @@ function HusEventDialog({
 }: {
   entry: HusEventEntry | null;
   onCancel: () => void;
-  onSave: (entry: HusEventEntry) => void;
+  onSave: (entries: HusEventEntry[]) => void;
   row: SowingPlanRow;
 }) {
   const language = useAppLanguage();
   const [eventDate, setEventDate] = useState(() => defaultHusEventDate(entry));
   const [eventType, setEventType] = useState<HusEventType>(() => editableHusEventType(entry?.eventType));
-  const [location, setLocation] = useState(entry?.location ?? "");
-  const [destinationLocation, setDestinationLocation] = useState(entry?.destinationLocation ?? "");
-  const [plantChangeAmount, setPlantChangeAmount] = useState(() =>
-    typeof entry?.plantChange === "number" && entry.plantChange !== 0 ? String(Math.abs(entry.plantChange)) : "",
+  const [movementRows, setMovementRows] = useState<MovementDraftRow[]>(() => createMovementDraftRows(entry));
+  const [brownRootsRows, setBrownRootsRows] = useState<BrownRootsDraftRow[]>(() => createBrownRootsDraftRows(entry));
+  const [moveLossAmount, setMoveLossAmount] = useState(() =>
+    entry?.eventType === "move" && typeof entry.plantChange === "number" && entry.plantChange !== 0
+      ? String(Math.abs(entry.plantChange))
+      : "0",
+  );
+  const [otherLocation, setOtherLocation] = useState(entry?.eventType === "other" ? entry.location ?? "" : "");
+  const [otherPlantChangeMode, setOtherPlantChangeMode] = useState<"none" | "loss" | "addition">(() => {
+    if (entry?.eventType !== "other" || typeof entry.plantChange !== "number" || entry.plantChange === 0) {
+      return "none";
+    }
+
+    return entry.plantChange < 0 ? "loss" : "addition";
+  });
+  const [otherPlantChangeAmount, setOtherPlantChangeAmount] = useState(() =>
+    entry?.eventType === "other" && typeof entry.plantChange === "number" && entry.plantChange !== 0
+      ? String(Math.abs(entry.plantChange))
+      : "",
   );
   const [note, setNote] = useState(entry?.note ?? "");
-  const parsedLossAmount = plantChangeAmount.trim() === "" ? undefined : Number(plantChangeAmount);
+  const parsedMoveLossAmount = moveLossAmount.trim() === "" ? undefined : Number(moveLossAmount);
+  const parsedOtherAmount = otherPlantChangeAmount.trim() === "" ? undefined : Number(otherPlantChangeAmount);
   const cycleDay = eventDate ? getCycleDay(row, eventDate) : 0;
   const maxCycleDay = getBiologicalCycleDays(row);
   const dateOutsideCycle = Boolean(eventDate) && (cycleDay < 1 || cycleDay > maxCycleDay);
-  const needsDestination = eventType === "move";
-  const needsLocation = eventType === "move" || eventType === "brownRoots";
-  const needsLossAmount = eventType === "move" || eventType === "brownRoots";
   const needsNote = eventType === "other";
-  const hasValidLossAmount =
-    !needsLossAmount ||
-    (plantChangeAmount.trim().length > 0 &&
-      Number.isFinite(parsedLossAmount) &&
-      parsedLossAmount !== undefined &&
-      Number.isInteger(parsedLossAmount) &&
-      parsedLossAmount >= 0);
-  const plantChange =
-    needsLossAmount && Number.isFinite(parsedLossAmount) && parsedLossAmount !== undefined && parsedLossAmount > 0
-      ? -Math.trunc(parsedLossAmount)
+  const cleanedMovementRows = movementRows.map((draft) => ({ from: draft.from.trim(), to: draft.to.trim() }));
+  const validMovementRows = cleanedMovementRows.filter((draft) => draft.from || draft.to);
+  const movementRowsComplete = validMovementRows.length > 0 && validMovementRows.every((draft) => draft.from && draft.to);
+  const cleanedBrownRootsRows = brownRootsRows.map((draft) => ({
+    location: draft.location.trim(),
+    amount: draft.amount.trim() === "" ? undefined : Number(draft.amount),
+  }));
+  const validBrownRootsRows = cleanedBrownRootsRows.filter((draft) => draft.location || draft.amount !== undefined);
+  const brownRootsRowsComplete =
+    validBrownRootsRows.length > 0 &&
+    validBrownRootsRows.every(
+      (draft) => draft.location && draft.amount !== undefined && Number.isInteger(draft.amount) && draft.amount >= 0,
+    );
+  const moveLossValid =
+    parsedMoveLossAmount !== undefined &&
+    Number.isFinite(parsedMoveLossAmount) &&
+    Number.isInteger(parsedMoveLossAmount) &&
+    parsedMoveLossAmount >= 0;
+  const otherAmountValid =
+    otherPlantChangeMode === "none" ||
+    (parsedOtherAmount !== undefined && Number.isFinite(parsedOtherAmount) && Number.isInteger(parsedOtherAmount) && parsedOtherAmount > 0);
+  const otherPlantChange =
+    otherPlantChangeMode === "none" || parsedOtherAmount === undefined
+      ? undefined
+      : otherPlantChangeMode === "loss"
+        ? -Math.trunc(parsedOtherAmount)
+        : Math.trunc(parsedOtherAmount);
+  const movePlantChange =
+    eventType === "move" && Number.isFinite(parsedMoveLossAmount) && parsedMoveLossAmount !== undefined && parsedMoveLossAmount > 0
+      ? -Math.trunc(parsedMoveLossAmount)
       : undefined;
   const canSave =
     Boolean(eventDate) &&
     !dateOutsideCycle &&
-    (!needsLocation || location.trim().length > 0) &&
-    (!needsDestination || destinationLocation.trim().length > 0) &&
+    (eventType !== "move" || (movementRowsComplete && moveLossValid)) &&
+    (eventType !== "brownRoots" || brownRootsRowsComplete) &&
     (!needsNote || note.trim().length > 0) &&
-    hasValidLossAmount;
+    otherAmountValid;
+
+  function updateMovementRow(id: string, patch: Partial<MovementDraftRow>) {
+    setMovementRows((current) => current.map((draft) => (draft.id === id ? { ...draft, ...patch } : draft)));
+  }
+
+  function updateBrownRootsRow(id: string, patch: Partial<BrownRootsDraftRow>) {
+    setBrownRootsRows((current) => current.map((draft) => (draft.id === id ? { ...draft, ...patch } : draft)));
+  }
+
+  function numericValue(value: string): string {
+    return value.replace(/\D/g, "");
+  }
+
+  function saveEntries() {
+    if (eventType === "move") {
+      const locations = serializeHusEventMovementRows(validMovementRows);
+      onSave([
+        {
+          id: entry?.eventType === "move" ? entry.id : crypto.randomUUID(),
+          eventDate,
+          eventType,
+          location: locations.location,
+          destinationLocation: locations.destinationLocation,
+          plantChange: movePlantChange,
+          plantCorrectionId: entry?.eventType === "move" ? entry.plantCorrectionId : undefined,
+          note: note.trim() || undefined,
+          createdAt: entry?.eventType === "move" ? entry.createdAt : undefined,
+          updatedAt: entry?.eventType === "move" ? entry.updatedAt : undefined,
+        },
+      ]);
+      return;
+    }
+
+    if (eventType === "brownRoots") {
+      onSave(
+        validBrownRootsRows.map((draft, index) => ({
+          id: entry?.eventType === "brownRoots" && index === 0 ? entry.id : crypto.randomUUID(),
+          eventDate,
+          eventType,
+          location: draft.location,
+          plantChange: draft.amount && draft.amount > 0 ? -Math.trunc(draft.amount) : undefined,
+          plantCorrectionId: entry?.eventType === "brownRoots" && index === 0 ? entry.plantCorrectionId : undefined,
+          note: note.trim() || undefined,
+          createdAt: entry?.eventType === "brownRoots" && index === 0 ? entry.createdAt : undefined,
+          updatedAt: entry?.eventType === "brownRoots" && index === 0 ? entry.updatedAt : undefined,
+        })),
+      );
+      return;
+    }
+
+    onSave([
+      {
+        id: entry?.eventType === "other" ? entry.id : crypto.randomUUID(),
+        eventDate,
+        eventType,
+        location: otherLocation.trim() || undefined,
+        plantChange: otherPlantChange,
+        plantCorrectionId: entry?.eventType === "other" ? entry.plantCorrectionId : undefined,
+        note: note.trim() || undefined,
+        createdAt: entry?.eventType === "other" ? entry.createdAt : undefined,
+        updatedAt: entry?.eventType === "other" ? entry.updatedAt : undefined,
+      },
+    ]);
+  }
 
   return (
     <div className="dialog-backdrop" role="presentation">
@@ -2157,12 +2296,6 @@ function HusEventDialog({
               key={type}
               onClick={() => {
                 setEventType(type);
-                if (type !== "move") {
-                  setDestinationLocation("");
-                }
-                if (type === "other") {
-                  setPlantChangeAmount("");
-                }
               }}
               type="button"
             >
@@ -2171,46 +2304,105 @@ function HusEventDialog({
           ))}
         </div>
         {eventType === "move" ? (
-          <>
+          <div className="event-lines">
+            <strong>{language === "lv" ? "Pārvietošanas rindas" : "Movement rows"}</strong>
+            {movementRows.map((draft) => (
+              <div className="event-line-grid event-line-grid--movement" key={draft.id}>
+                <label>
+                  {language === "lv" ? "No galda" : "From table"}
+                  <input maxLength={40} placeholder="A7" value={draft.from} onChange={(event) => updateMovementRow(draft.id, { from: event.target.value })} />
+                </label>
+                <label>
+                  {language === "lv" ? "Uz galdiem" : "To tables"}
+                  <input maxLength={80} placeholder="C1-C10" value={draft.to} onChange={(event) => updateMovementRow(draft.id, { to: event.target.value })} />
+                </label>
+                <button
+                  className="danger-action danger-action--small"
+                  disabled={movementRows.length === 1}
+                  type="button"
+                  onClick={() => setMovementRows((current) => current.filter((row) => row.id !== draft.id))}
+                >
+                  {t("delete", language)}
+                </button>
+              </div>
+            ))}
+            <button
+              className="secondary-action"
+              type="button"
+              onClick={() => setMovementRows((current) => [...current, { id: newDraftId(), from: "", to: "" }])}
+            >
+              + {language === "lv" ? "Pievienot galdu" : "Add table"}
+            </button>
             <label>
-              {language === "lv" ? "No galdiem" : "From tables"}
-              <input maxLength={80} placeholder="A7-A9" value={location} onChange={(event) => setLocation(event.target.value)} />
+              {language === "lv" ? "Kopā izņemtie stādi no visa HUS" : "Total removed plants from this Hus"}
+              <input inputMode="numeric" pattern="[0-9]*" placeholder="0" type="text" value={moveLossAmount} onChange={(event) => setMoveLossAmount(numericValue(event.target.value))} />
             </label>
-            <label>
-              {language === "lv" ? "Uz galdiem" : "To tables"}
-              <input
-                maxLength={80}
-                placeholder="D1-D10"
-                value={destinationLocation}
-                onChange={(event) => setDestinationLocation(event.target.value)}
-              />
-            </label>
-          </>
+          </div>
         ) : null}
         {eventType === "brownRoots" ? (
-          <label>
-            {language === "lv" ? "Galds / vieta" : "Table / location"}
-            <input maxLength={80} placeholder="C7" value={location} onChange={(event) => setLocation(event.target.value)} />
-          </label>
+          <div className="event-lines">
+            <strong>{language === "lv" ? "Bojātie galdi" : "Damaged tables"}</strong>
+            {brownRootsRows.map((draft) => (
+              <div className="event-line-grid event-line-grid--roots" key={draft.id}>
+                <label>
+                  {language === "lv" ? "Galds" : "Table"}
+                  <input maxLength={40} placeholder="C7" value={draft.location} onChange={(event) => updateBrownRootsRow(draft.id, { location: event.target.value })} />
+                </label>
+                <label>
+                  {language === "lv" ? "Bojātie stādi" : "Damaged plants"}
+                  <input inputMode="numeric" pattern="[0-9]*" placeholder="0" type="text" value={draft.amount} onChange={(event) => updateBrownRootsRow(draft.id, { amount: numericValue(event.target.value) })} />
+                </label>
+                <button
+                  className="danger-action danger-action--small"
+                  disabled={brownRootsRows.length === 1}
+                  type="button"
+                  onClick={() => setBrownRootsRows((current) => current.filter((row) => row.id !== draft.id))}
+                >
+                  {t("delete", language)}
+                </button>
+              </div>
+            ))}
+            <button
+              className="secondary-action"
+              type="button"
+              onClick={() => setBrownRootsRows((current) => [...current, { id: newDraftId(), location: "", amount: "" }])}
+            >
+              + {language === "lv" ? "Pievienot galdu" : "Add table"}
+            </button>
+            <strong>
+              {language === "lv" ? "Kopā bojāti" : "Total damaged"}:{" "}
+              {validBrownRootsRows.reduce((sum, draft) => sum + (typeof draft.amount === "number" && draft.amount > 0 ? draft.amount : 0), 0)}{" "}
+              {language === "lv" ? "stādi" : "plants"}
+            </strong>
+          </div>
         ) : null}
         {eventType === "other" ? (
-          <label>
-            {language === "lv" ? "Galds / vieta" : "Table / location"}
-            <input maxLength={80} placeholder="C6" value={location} onChange={(event) => setLocation(event.target.value)} />
-          </label>
-        ) : null}
-        {needsLossAmount ? (
-          <label>
-            {eventType === "move" ? t("takenPlants", language) : language === "lv" ? "Bojātie stādi" : "Damaged plants"}
-            <input
-              inputMode="numeric"
-              pattern="[0-9]*"
-              placeholder="0"
-              type="text"
-              value={plantChangeAmount}
-              onChange={(event) => setPlantChangeAmount(event.target.value.replace(/\D/g, ""))}
-            />
-          </label>
+          <div className="event-lines">
+            <label>
+              {language === "lv" ? "Galds / vieta" : "Table / location"}
+              <input maxLength={80} placeholder="C6" value={otherLocation} onChange={(event) => setOtherLocation(event.target.value)} />
+            </label>
+            <div className="plant-change-field">
+              {t("plantChange", language)}
+              <div className="segmented segmented--compact plant-change-mode" aria-label={language === "lv" ? "Stādu izmaiņas veids" : "Plant change type"}>
+                <button className={otherPlantChangeMode === "none" ? "is-active" : ""} onClick={() => setOtherPlantChangeMode("none")} type="button">
+                  {language === "lv" ? "Nav" : "None"}
+                </button>
+                <button className={otherPlantChangeMode === "loss" ? "is-active" : ""} onClick={() => setOtherPlantChangeMode("loss")} type="button">
+                  − {language === "lv" ? "Zudums" : "Loss"}
+                </button>
+                <button className={otherPlantChangeMode === "addition" ? "is-active" : ""} onClick={() => setOtherPlantChangeMode("addition")} type="button">
+                  + {language === "lv" ? "Papildinājums" : "Addition"}
+                </button>
+              </div>
+            </div>
+            {otherPlantChangeMode !== "none" ? (
+              <label>
+                {t("amount", language)}
+                <input inputMode="numeric" pattern="[0-9]*" placeholder="20" type="text" value={otherPlantChangeAmount} onChange={(event) => setOtherPlantChangeAmount(numericValue(event.target.value))} />
+              </label>
+            ) : null}
+          </div>
         ) : null}
         <label>
           {t("notes", language)}
@@ -2224,20 +2416,7 @@ function HusEventDialog({
             className="primary-action"
             disabled={!canSave}
             type="button"
-            onClick={() =>
-              onSave({
-                id: entry?.id ?? crypto.randomUUID(),
-                eventDate,
-                eventType,
-                location: location.trim() || undefined,
-                destinationLocation: destinationLocation.trim() || undefined,
-                plantChange,
-                plantCorrectionId: entry?.plantCorrectionId,
-                note: note.trim() || undefined,
-                createdAt: entry?.createdAt,
-                updatedAt: entry?.updatedAt,
-              })
-            }
+            onClick={saveEntries}
           >
             {t("save", language)}
           </button>
@@ -2722,7 +2901,7 @@ function HusList({ onOpen, rows }: { onOpen: (id: string) => void; rows: SowingP
       sectorName,
       cycles: group.slice().sort((a, b) => b.sowingDate.localeCompare(a.sowingDate)),
     }))
-    .sort((a, b) => a.sectorName.localeCompare(b.sectorName, "lv", { numeric: true }));
+    .sort((a, b) => compareSowingRowsByDate(a.cycles[0], b.cycles[0]));
 
   return (
     <section className="panel">

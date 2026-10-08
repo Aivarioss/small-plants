@@ -137,6 +137,10 @@ export function toIsoDate(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+export function localTodayIso(now: Date = new Date()): string {
+  return toIsoDate(now);
+}
+
 export function dateLabel(date: string): string {
   return new Intl.DateTimeFormat("lv-LV", {
     day: "2-digit",
@@ -157,6 +161,10 @@ export function cycleDayDate(row: Pick<SowingPlanRow, "sowingDate">, cycleDay: n
 
 export function getCycleDay(row: Pick<SowingPlanRow, "sowingDate">, date: string): number {
   return daysBetween(row.sowingDate, date);
+}
+
+export function defaultHusEventDate(entry?: Pick<HusEventEntry, "eventDate"> | null, now: Date = new Date()): string {
+  return entry?.eventDate ?? localTodayIso(now);
 }
 
 export function getBiologicalCycleDays(row: Pick<SowingPlanRow, "sowingDate" | "harvestDate">): number {
@@ -209,13 +217,13 @@ export function removePlantCorrection(entries: PlantCorrectionEntry[] | undefine
 
 export const husEventTypes: Array<{ value: HusEventType; label: string }> = [
   { value: "thinning", label: "Retināšana" },
-  { value: "move", label: "Pārvietošana" },
+  { value: "move", label: "Moving" },
   { value: "brownRoots", label: "Brūnās saknes" },
   { value: "watering", label: "Laistīšana" },
   { value: "extraWatering", label: "Extra laistīšana" },
   { value: "treatment", label: "Apstrāde" },
-  { value: "observation", label: "Novērojums" },
-  { value: "other", label: "Cits" },
+  { value: "observation", label: "Cits / Novērojums" },
+  { value: "other", label: "Cits / Novērojums" },
 ];
 
 export function husEventTypeLabel(type: HusEventType): string {
@@ -298,7 +306,7 @@ function hasPlantChange(entry: HusEventEntry): entry is HusEventEntry & { plantC
 }
 
 function plantCorrectionReasonForHusEvent(type: HusEventType): PlantCorrectionEntry["reason"] {
-  if (type === "thinning") {
+  if (type === "thinning" || type === "move") {
     return "thinning";
   }
 

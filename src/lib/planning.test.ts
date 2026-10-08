@@ -17,6 +17,7 @@ import {
   createPlacementPlan,
   continuousWorkPlanPrintRows,
   daysBetween,
+  defaultHusEventDate,
   getAllCapacityConflicts,
   applyWorkloadBalanceProposals,
   generateBaseWorkItemsForRows,
@@ -29,6 +30,7 @@ import {
   getCycleDay,
   getPlantCorrectionTotal,
   getTotalSow,
+  localTodayIso,
   groupMonthlyPrintRowsByDate,
   groupMonthlyPrintRowsIntoDateGroups,
   formatSowingTableSelection,
@@ -289,6 +291,61 @@ describe("planning calculations", () => {
     expect(removeHusEventEntry(entries, "move-1")).toEqual([]);
   });
 
+  it("defaults a new Hus event to the local calendar date and preserves edit dates", () => {
+    const localMidnight = new Date(2026, 0, 1, 0, 30);
+
+    expect(localTodayIso(localMidnight)).toBe("2026-01-01");
+    expect(localMidnight.toISOString().slice(0, 10)).not.toBe(localTodayIso(localMidnight));
+    expect(defaultHusEventDate(null, new Date(2026, 9, 8, 10))).toBe("2026-10-08");
+    expect(defaultHusEventDate({ eventDate: "2026-10-07" }, new Date(2026, 9, 8, 10))).toBe("2026-10-07");
+  });
+
+  it("links Moving events with removed plants to one thinning correction", () => {
+    const saved = applyHusEventSave(row, {
+      id: "event-move",
+      eventDate: "2026-10-11",
+      eventType: "move",
+      location: "A7",
+      destinationLocation: "D1-D10",
+      plantChange: -52,
+    }, () => "correction-move", () => "2026-10-11T08:00:00.000Z");
+
+    expect(saved.husEvents?.[0]).toMatchObject({
+      eventType: "move",
+      location: "A7",
+      destinationLocation: "D1-D10",
+      plantChange: -52,
+      plantCorrectionId: "correction-move",
+    });
+    expect(saved.plantCorrections).toEqual([
+      {
+        id: "correction-move",
+        amount: -52,
+        date: "2026-10-11",
+        reason: "thinning",
+        note: "Moving · A7 · → D1-D10",
+      },
+    ]);
+  });
+
+  it("keeps Moving events with zero removed plants without creating a correction", () => {
+    const saved = applyHusEventSave(row, {
+      id: "event-move-zero",
+      eventDate: "2026-10-11",
+      eventType: "move",
+      location: "A7",
+      destinationLocation: "D1-D10",
+    }, () => "unused-correction", () => "2026-10-11T08:00:00.000Z");
+
+    expect(saved.husEvents?.[0]).toMatchObject({
+      eventType: "move",
+      location: "A7",
+      destinationLocation: "D1-D10",
+    });
+    expect(saved.husEvents?.[0].plantCorrectionId).toBeUndefined();
+    expect(saved.plantCorrections).toEqual([]);
+  });
+
   it("links brown-roots Hus journal plant changes to exactly one plant correction", () => {
     const saved = applyHusEventSave(row, {
       id: "event-roots",
@@ -315,6 +372,45 @@ describe("planning calculations", () => {
     expect(getPlantCorrectionTotal({ correction: 0, plantCorrections: saved.plantCorrections })).toBe(-32);
   });
 
+  it("keeps brown-roots events with zero damaged plants without creating a correction", () => {
+    const saved = applyHusEventSave(row, {
+      id: "event-roots-zero",
+      eventDate: "2026-10-11",
+      eventType: "brownRoots",
+      location: "C7",
+    }, () => "unused-correction", () => "2026-10-11T08:00:00.000Z");
+
+    expect(saved.husEvents?.[0]).toMatchObject({
+      eventType: "brownRoots",
+      location: "C7",
+    });
+    expect(saved.husEvents?.[0].plantCorrectionId).toBeUndefined();
+    expect(saved.plantCorrections).toEqual([]);
+  });
+
+  it("stores Other / Observation events without touching plant corrections", () => {
+    const saved = applyHusEventSave({
+      husEvents: [],
+      plantCorrections: [{ id: "legacy-loss", amount: -100, date: "2026-10-08", reason: "thinning" }],
+    }, {
+      id: "event-other",
+      eventDate: "2026-10-12",
+      eventType: "other",
+      location: "C6",
+      note: "Lapa paliek dzeltena",
+    }, () => "unused-correction", () => "2026-10-12T08:00:00.000Z");
+
+    expect(saved.husEvents?.[0]).toMatchObject({
+      eventType: "other",
+      location: "C6",
+      note: "Lapa paliek dzeltena",
+    });
+    expect(saved.husEvents?.[0].plantCorrectionId).toBeUndefined();
+    expect(saved.plantCorrections).toEqual([
+      { id: "legacy-loss", amount: -100, date: "2026-10-08", reason: "thinning" },
+    ]);
+  });
+
   it("edits a linked Hus journal plant change by updating the same correction", () => {
     const first = applyHusEventSave(row, {
       id: "event-roots",
@@ -337,6 +433,48 @@ describe("planning calculations", () => {
       id: "correction-roots",
       amount: -20,
     });
+  });
+
+  it("edits a Moving loss and keeps a single linked correction", () => {
+    const first = applyHusEventSave(row, {
+      id: "event-move",
+      eventDate: "2026-10-11",
+      eventType: "move",
+      location: "A7",
+      destinationLocation: "D1-D10",
+      plantChange: -52,
+    }, () => "correction-move", () => "2026-10-11T08:00:00.000Z");
+    const edited = applyHusEventSave(first, {
+      ...first.husEvents![0],
+      plantChange: -40,
+    }, () => "new-correction-should-not-be-used", () => "2026-10-11T09:00:00.000Z");
+
+    expect(edited.husEvents?.[0].plantCorrectionId).toBe("correction-move");
+    expect(edited.plantCorrections).toEqual([
+      expect.objectContaining({
+        id: "correction-move",
+        amount: -40,
+        reason: "thinning",
+      }),
+    ]);
+  });
+
+  it("removes the linked correction when a Moving loss is changed to zero", () => {
+    const first = applyHusEventSave(row, {
+      id: "event-move",
+      eventDate: "2026-10-11",
+      eventType: "move",
+      location: "A7",
+      destinationLocation: "D1-D10",
+      plantChange: -52,
+    }, () => "correction-move", () => "2026-10-11T08:00:00.000Z");
+    const zeroLoss = applyHusEventSave(first, {
+      ...first.husEvents![0],
+      plantChange: undefined,
+    }, () => "new-correction-should-not-be-used", () => "2026-10-11T09:00:00.000Z");
+
+    expect(zeroLoss.husEvents?.[0].plantCorrectionId).toBeUndefined();
+    expect(zeroLoss.plantCorrections).toEqual([]);
   });
 
   it("deletes a Hus journal event together with its linked correction", () => {
@@ -531,6 +669,49 @@ describe("planning calculations", () => {
         updated_at: "2026-10-11T09:00:00.000Z",
       },
     ]);
+    expect(mapped.husEvents).toEqual(eventRow.husEvents);
+    expect(mapped.plantCorrections).toEqual(eventRow.plantCorrections);
+  });
+
+  it("round-trips Moving events and linked thinning corrections through Supabase mappers", () => {
+    const eventRow: SowingPlanRow = {
+      ...row,
+      plantCorrections: [{ id: "correction-move", amount: -52, date: "2026-10-11", reason: "thinning", note: "Moving · A7 · → D1-D10" }],
+      husEvents: [
+        {
+          id: "event-move",
+          eventDate: "2026-10-11",
+          eventType: "move",
+          location: "A7",
+          destinationLocation: "D1-D10",
+          plantChange: -52,
+          plantCorrectionId: "correction-move",
+          createdAt: "2026-10-11T08:00:00.000Z",
+          updatedAt: "2026-10-11T09:00:00.000Z",
+        },
+      ],
+    };
+    const mapped = recordToSowingPlanRow({
+      id: row.id,
+      hus: row.sectorName,
+      greenhouse_required_plants: 3300,
+      required_plants: row.requiredPlants,
+      extra_plants: row.extraPlants,
+      variety: row.variety,
+      week_number: null,
+      sowing_tables: null,
+      sowing_date: row.sowingDate,
+      move_out_date: row.harvestDate,
+      previcure_date: null,
+      cycle_length: row.cycleLength,
+      sector_type: row.sectorType,
+      correction: row.correction,
+      status: "planned",
+      source: "user",
+      plant_corrections: rowPlantCorrectionsToRecords(eventRow),
+      hus_events: rowHusEventsToRecords(eventRow),
+    });
+
     expect(mapped.husEvents).toEqual(eventRow.husEvents);
     expect(mapped.plantCorrections).toEqual(eventRow.plantCorrections);
   });

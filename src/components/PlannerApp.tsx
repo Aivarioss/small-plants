@@ -21,20 +21,18 @@ import {
   formatSowingTableSelection,
   generateWorksheetDaysFromWorkItems,
   generateWorkItemsForRows,
-  getTotalSow,
+  getBiologicalCycleDays,
   getCycleDay,
+  getTotalSow,
   groupMonthlyPrintRowsIntoDateGroups,
   greenhouseRows,
   hasManualWorkMoves,
-  husEventTypes,
   isAllowedMove,
+  defaultHusEventDate,
   parseSowingTableSelection,
-  removePlantCorrection,
   sowingTableIds,
-  signedPlantCorrectionAmount,
   toggleSowingTableSelection,
   toIsoDate,
-  upsertPlantCorrection,
 } from "@/lib/planning";
 import {
   applyHusTemplateToDraft,
@@ -62,7 +60,6 @@ import {
   husEventTypeTitle,
   localizedWorkDetails,
   localizedMonthlyPrintRows,
-  plantCorrectionReasonTitle,
   printLabel,
   printMaterialSummary,
   printWorkTitle,
@@ -79,8 +76,6 @@ import type {
   HusEventType,
   ImportFieldKey,
   MainView,
-  PlantCorrectionEntry,
-  PlantCorrectionReason,
   PlanImportCandidate,
   PlanImportResult,
   SectorType,
@@ -1641,8 +1636,6 @@ function WorksheetView({
   workItems: WorkItem[];
 }) {
   const [activeWorksheetTab, setActiveWorksheetTab] = useState<"works" | "worksheet">("works");
-  const [correctionDialogOpen, setCorrectionDialogOpen] = useState(false);
-  const [editingCorrection, setEditingCorrection] = useState<PlantCorrectionEntry | null>(null);
   const [eventDialogOpen, setEventDialogOpen] = useState(false);
   const [editingEvent, setEditingEvent] = useState<HusEventEntry | null>(null);
   const totalSow = getTotalSow(row);
@@ -1652,26 +1645,6 @@ function WorksheetView({
   const chronologicalWorkItems = [...workItems].sort(
     (left, right) => left.date.localeCompare(right.date) || left.title.localeCompare(right.title, "lv"),
   );
-
-  function savePlantCorrection(entry: PlantCorrectionEntry) {
-    onUpdateRow(row.id, {
-      plantCorrections: upsertPlantCorrection(row.plantCorrections, entry),
-    });
-  }
-
-  function deletePlantCorrection(entry: PlantCorrectionEntry) {
-    if (!window.confirm(
-      printLanguage === "lv"
-        ? `Dzēst korekciju ${signedNumber(entry.amount)} (${plantCorrectionReasonTitle(entry.reason, printLanguage)})?`
-        : `Delete correction ${signedNumber(entry.amount)} (${plantCorrectionReasonTitle(entry.reason, printLanguage)})?`,
-    )) {
-      return;
-    }
-
-    onUpdateRow(row.id, {
-      plantCorrections: removePlantCorrection(row.plantCorrections, entry.id),
-    });
-  }
 
   function saveHusEvent(entry: HusEventEntry) {
     onUpdateRow(row.id, applyHusEventSave(row, entry));
@@ -1683,16 +1656,11 @@ function WorksheetView({
         ? " Saistītā stādu korekcija arī tiks dzēsta."
         : " The linked plant correction will also be deleted."
       : "";
-    if (!window.confirm(`${printLanguage === "lv" ? "Dzēst HUS žurnāla ierakstu?" : "Delete HUS journal entry?"}${linkedMessage}`)) {
+    if (!window.confirm(`${printLanguage === "lv" ? "Dzēst HUS notikumu?" : "Delete HUS event?"}${linkedMessage}`)) {
       return;
     }
 
     onUpdateRow(row.id, applyHusEventDelete(row, entry.id));
-  }
-
-  function closeCorrectionDialog() {
-    setCorrectionDialogOpen(false);
-    setEditingCorrection(null);
   }
 
   function closeEventDialog() {
@@ -1757,49 +1725,11 @@ function WorksheetView({
               <span>{t("currentActual", printLanguage)}: {balance.actualPlants.toLocaleString("lv-LV")}</span>
               <span>{formatReserveShortage(balance.difference, printLanguage)}</span>
             </div>
-            <button
-              className="secondary-action"
-              type="button"
-              onClick={() => {
-                setEditingCorrection(null);
-                setCorrectionDialogOpen(true);
-              }}
-            >
-              {t("recordChange", printLanguage)}
-            </button>
-            {row.plantCorrections && row.plantCorrections.length > 0 ? (
-              <ul className="plant-correction-list">
-                {row.plantCorrections.map((entry) => (
-                  <li key={entry.id}>
-                    <time>{shortDate(entry.date)}</time>
-                    <span>{plantCorrectionReasonTitle(entry.reason, printLanguage)}{entry.note ? ` · ${entry.note}` : ""}</span>
-                    <strong>{signedNumber(entry.amount)}</strong>
-                    <span className="button-row">
-                      <button
-                        className="secondary-action secondary-action--small"
-                        type="button"
-                        onClick={() => {
-                          setEditingCorrection(entry);
-                          setCorrectionDialogOpen(true);
-                        }}
-                      >
-                        {t("edit", printLanguage)}
-                      </button>
-                      <button className="danger-action danger-action--small" type="button" onClick={() => deletePlantCorrection(entry)}>
-                        {t("delete", printLanguage)}
-                      </button>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="empty-state">{t("noCorrections", printLanguage)}</p>
-            )}
           </section>
           <section className="hus-journal-box">
             <div className="hus-info-heading">
               <div>
-                <p className="eyebrow">{t("husJournal", printLanguage)}</p>
+                <p className="eyebrow">{t("husEvents", printLanguage)}</p>
                 <h3>{printLanguage === "lv" ? "Notikumi" : "Events"}</h3>
               </div>
               <button
@@ -1830,21 +1760,23 @@ function WorksheetView({
                         </span>
                       ) : null}
                       {typeof entry.plantChange === "number" && entry.plantChange !== 0 ? (
-                        <em>{formatPlants(entry.plantChange, printLanguage)}</em>
+                        <em>{signedNumber(entry.plantChange)} {printLanguage === "lv" ? "stādi" : "plants"}</em>
                       ) : null}
                       {entry.note ? <p>{entry.note}</p> : null}
                     </div>
                     <span className="button-row">
-                      <button
-                        className="secondary-action secondary-action--small"
-                        type="button"
-                        onClick={() => {
-                          setEditingEvent(entry);
-                          setEventDialogOpen(true);
-                        }}
-                      >
-                        {t("edit", printLanguage)}
-                      </button>
+                      {isEditableHusEvent(entry) ? (
+                        <button
+                          className="secondary-action secondary-action--small"
+                          type="button"
+                          onClick={() => {
+                            setEditingEvent(entry);
+                            setEventDialogOpen(true);
+                          }}
+                        >
+                          {t("edit", printLanguage)}
+                        </button>
+                      ) : null}
                       <button className="danger-action danger-action--small" type="button" onClick={() => deleteHusEvent(entry)}>
                         {t("delete", printLanguage)}
                       </button>
@@ -1876,16 +1808,6 @@ function WorksheetView({
               </article>
             ))}
           </div>
-          {correctionDialogOpen ? (
-            <PlantCorrectionDialog
-              entry={editingCorrection}
-              onCancel={closeCorrectionDialog}
-              onSave={(entry) => {
-                savePlantCorrection(entry);
-                closeCorrectionDialog();
-              }}
-            />
-          ) : null}
           {eventDialogOpen ? (
             <HusEventDialog
               entry={editingEvent}
@@ -2152,102 +2074,12 @@ function SowingTablesPicker({
   );
 }
 
-function PlantCorrectionDialog({
-  entry,
-  onCancel,
-  onSave,
-}: {
-  entry: PlantCorrectionEntry | null;
-  onCancel: () => void;
-  onSave: (entry: PlantCorrectionEntry) => void;
-}) {
-  const language = useAppLanguage();
-  const [direction, setDirection] = useState<"loss" | "addition">(() => (entry && entry.amount > 0 ? "addition" : "loss"));
-  const [amount, setAmount] = useState(() => (entry ? String(Math.abs(entry.amount)) : ""));
-  const [date, setDate] = useState(() => entry?.date ?? new Date().toISOString().slice(0, 10));
-  const [reason, setReason] = useState<PlantCorrectionReason>(entry?.reason ?? "thinning");
-  const [note, setNote] = useState(entry?.note ?? "");
-  const parsedAmount = Number(amount);
-  const canSave = Number.isFinite(parsedAmount) && parsedAmount > 0 && Boolean(date) && (reason !== "other" || note.trim().length > 0);
+function isEditableHusEvent(entry: HusEventEntry): boolean {
+  return entry.eventType === "move" || entry.eventType === "brownRoots" || entry.eventType === "other";
+}
 
-  return (
-    <div className="dialog-backdrop" role="presentation">
-      <section aria-modal="true" aria-label={language === "lv" ? "Reģistrēt stādu skaita izmaiņu" : "Register plant count change"} className="sowing-tables-dialog" role="dialog">
-        <div>
-          <p className="eyebrow">{t("plantCorrections", language)}</p>
-          <h3>{entry ? (language === "lv" ? "Rediģēt izmaiņu" : "Edit change") : (language === "lv" ? "Reģistrēt izmaiņu" : "Register change")}</h3>
-        </div>
-        <div className="segmented segmented--compact" aria-label={language === "lv" ? "Korekcijas veids" : "Correction type"}>
-          <button
-            className={direction === "loss" ? "is-active" : ""}
-            onClick={() => setDirection("loss")}
-            type="button"
-          >
-            − {language === "lv" ? "Zudums" : "Loss"}
-          </button>
-          <button
-            className={direction === "addition" ? "is-active" : ""}
-            onClick={() => setDirection("addition")}
-            type="button"
-          >
-            + {language === "lv" ? "Papildinājums" : "Addition"}
-          </button>
-        </div>
-        <label>
-          {t("amount", language)}
-          <input
-            autoFocus
-            inputMode="numeric"
-            min="1"
-            placeholder="100"
-            type="number"
-            value={amount}
-            onChange={(event) => setAmount(event.target.value)}
-          />
-        </label>
-        <label>
-          {t("date", language)}
-          <input type="date" value={date} onChange={(event) => setDate(event.target.value)} />
-        </label>
-        <label>
-          {language === "lv" ? "Iemesls" : "Reason"}
-          <select value={reason} onChange={(event) => setReason(event.target.value as PlantCorrectionReason)}>
-            <option value="thinning">{plantCorrectionReasonTitle("thinning", language)}</option>
-            <option value="brownRoots">{plantCorrectionReasonTitle("brownRoots", language)}</option>
-            <option value="damaged">{plantCorrectionReasonTitle("damaged", language)}</option>
-            <option value="other">{plantCorrectionReasonTitle("other", language)}</option>
-          </select>
-        </label>
-        {reason === "other" ? (
-          <label>
-            {t("notes", language)}
-            <input maxLength={80} value={note} onChange={(event) => setNote(event.target.value)} />
-          </label>
-        ) : null}
-        <div className="button-row">
-          <button className="secondary-action" type="button" onClick={onCancel}>
-            {t("cancel", language)}
-          </button>
-          <button
-            className="primary-action"
-            disabled={!canSave}
-            type="button"
-            onClick={() =>
-              onSave({
-                id: entry?.id ?? crypto.randomUUID(),
-                amount: signedPlantCorrectionAmount(direction, parsedAmount),
-                date,
-                note: note.trim() || undefined,
-                reason,
-              })
-            }
-          >
-            {t("save", language)}
-          </button>
-        </div>
-      </section>
-    </div>
-  );
+function editableHusEventType(type: HusEventType | undefined): "move" | "brownRoots" | "other" {
+  return type === "move" || type === "brownRoots" || type === "other" ? type : "other";
 }
 
 function HusEventDialog({
@@ -2262,106 +2094,121 @@ function HusEventDialog({
   row: SowingPlanRow;
 }) {
   const language = useAppLanguage();
-  type PlantChangeMode = "none" | "loss" | "addition";
-  const initialPlantChangeMode: PlantChangeMode =
-    typeof entry?.plantChange !== "number" || entry.plantChange === 0
-      ? "none"
-      : entry.plantChange < 0
-        ? "loss"
-        : "addition";
-  const [eventDate, setEventDate] = useState(() => entry?.eventDate ?? row.sowingDate);
-  const [eventType, setEventType] = useState<HusEventType>(entry?.eventType ?? "observation");
+  const [eventDate, setEventDate] = useState(() => defaultHusEventDate(entry));
+  const [eventType, setEventType] = useState<HusEventType>(() => editableHusEventType(entry?.eventType));
   const [location, setLocation] = useState(entry?.location ?? "");
   const [destinationLocation, setDestinationLocation] = useState(entry?.destinationLocation ?? "");
-  const [plantChangeMode, setPlantChangeMode] = useState<PlantChangeMode>(initialPlantChangeMode);
   const [plantChangeAmount, setPlantChangeAmount] = useState(() =>
     typeof entry?.plantChange === "number" && entry.plantChange !== 0 ? String(Math.abs(entry.plantChange)) : "",
   );
   const [note, setNote] = useState(entry?.note ?? "");
-  const parsedPlantChangeAmount = plantChangeAmount.trim() === "" ? undefined : Number(plantChangeAmount);
+  const parsedLossAmount = plantChangeAmount.trim() === "" ? undefined : Number(plantChangeAmount);
+  const cycleDay = eventDate ? getCycleDay(row, eventDate) : 0;
+  const maxCycleDay = getBiologicalCycleDays(row);
+  const dateOutsideCycle = Boolean(eventDate) && (cycleDay < 1 || cycleDay > maxCycleDay);
+  const needsDestination = eventType === "move";
+  const needsLocation = eventType === "move" || eventType === "brownRoots";
+  const needsLossAmount = eventType === "move" || eventType === "brownRoots";
+  const needsNote = eventType === "other";
+  const hasValidLossAmount =
+    !needsLossAmount ||
+    (plantChangeAmount.trim().length > 0 &&
+      Number.isFinite(parsedLossAmount) &&
+      parsedLossAmount !== undefined &&
+      Number.isInteger(parsedLossAmount) &&
+      parsedLossAmount >= 0);
   const plantChange =
-    plantChangeMode === "none" || parsedPlantChangeAmount === undefined
-      ? undefined
-      : signedPlantCorrectionAmount(plantChangeMode === "loss" ? "loss" : "addition", parsedPlantChangeAmount);
+    needsLossAmount && Number.isFinite(parsedLossAmount) && parsedLossAmount !== undefined && parsedLossAmount > 0
+      ? -Math.trunc(parsedLossAmount)
+      : undefined;
   const canSave =
     Boolean(eventDate) &&
-    Boolean(eventType) &&
-    (plantChangeMode === "none" ||
-      (Number.isFinite(parsedPlantChangeAmount) && parsedPlantChangeAmount !== undefined && parsedPlantChangeAmount > 0));
+    !dateOutsideCycle &&
+    (!needsLocation || location.trim().length > 0) &&
+    (!needsDestination || destinationLocation.trim().length > 0) &&
+    (!needsNote || note.trim().length > 0) &&
+    hasValidLossAmount;
 
   return (
     <div className="dialog-backdrop" role="presentation">
-      <section aria-modal="true" aria-label={language === "lv" ? "HUS žurnāla ieraksts" : "HUS journal entry"} className="sowing-tables-dialog" role="dialog">
+      <section aria-modal="true" aria-label={t("husEvents", language)} className="sowing-tables-dialog" role="dialog">
         <div>
-          <p className="eyebrow">{t("husJournal", language)}</p>
+          <p className="eyebrow">{t("husEvents", language)}</p>
           <h3>{entry ? t("editEntry", language) : t("addEntry", language)}</h3>
           <span className="dialog-hint">
             {eventDate ? `${shortDate(eventDate)} · ${formatCycleDay(getCycleDay(row, eventDate), language)}` : t("chooseDate", language)}
           </span>
+          {dateOutsideCycle ? (
+            <span className="dialog-error">
+              {language === "lv"
+                ? `Datums ir ārpus HUS cikla (${formatCycleDay(1, language)}–${formatCycleDay(maxCycleDay, language)}).`
+                : `Date is outside the Hus cycle (${formatCycleDay(1, language)}-${formatCycleDay(maxCycleDay, language)}).`}
+            </span>
+          ) : null}
         </div>
         <label>
           {t("date", language)}
           <input autoFocus type="date" value={eventDate} onChange={(event) => setEventDate(event.target.value)} />
         </label>
-        <label>
-          {language === "lv" ? "Notikums" : "Event"}
-          <select value={eventType} onChange={(event) => setEventType(event.target.value as HusEventType)}>
-            {husEventTypes.map((type) => (
-              <option key={type.value} value={type.value}>
-                {husEventTypeTitle(type.value, language)}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          {language === "lv" ? "Vieta / No" : "Location / From"}
-          <input maxLength={80} placeholder="A7, C5, C1-C10" value={location} onChange={(event) => setLocation(event.target.value)} />
-        </label>
-        <label>
-          {language === "lv" ? "Uz" : "To"}
-          <input
-            maxLength={80}
-            placeholder="C1-C10"
-            value={destinationLocation}
-            onChange={(event) => setDestinationLocation(event.target.value)}
-          />
-        </label>
-        <div className="plant-change-field">
-          {t("plantChange", language)}
-          <div className="segmented segmented--compact plant-change-mode" aria-label={language === "lv" ? "Stādu izmaiņas veids" : "Plant change type"}>
+        <div className="segmented segmented--compact hus-event-type-picker" aria-label={language === "lv" ? "Notikuma veids" : "Event type"}>
+          {(["move", "brownRoots", "other"] as const).map((type) => (
             <button
-              className={plantChangeMode === "none" ? "is-active" : ""}
-              onClick={() => setPlantChangeMode("none")}
+              className={eventType === type ? "is-active" : ""}
+              key={type}
+              onClick={() => {
+                setEventType(type);
+                if (type !== "move") {
+                  setDestinationLocation("");
+                }
+                if (type === "other") {
+                  setPlantChangeAmount("");
+                }
+              }}
               type="button"
             >
-              {language === "lv" ? "Nav" : "None"}
+              {husEventTypeTitle(type, language)}
             </button>
-            <button
-              className={plantChangeMode === "loss" ? "is-active" : ""}
-              onClick={() => setPlantChangeMode("loss")}
-              type="button"
-            >
-              − {language === "lv" ? "Zudums" : "Loss"}
-            </button>
-            <button
-              className={plantChangeMode === "addition" ? "is-active" : ""}
-              onClick={() => setPlantChangeMode("addition")}
-              type="button"
-            >
-              + {language === "lv" ? "Papildinājums" : "Addition"}
-            </button>
-          </div>
+          ))}
         </div>
-        {plantChangeMode !== "none" ? (
+        {eventType === "move" ? (
+          <>
+            <label>
+              {language === "lv" ? "No galdiem" : "From tables"}
+              <input maxLength={80} placeholder="A7-A9" value={location} onChange={(event) => setLocation(event.target.value)} />
+            </label>
+            <label>
+              {language === "lv" ? "Uz galdiem" : "To tables"}
+              <input
+                maxLength={80}
+                placeholder="D1-D10"
+                value={destinationLocation}
+                onChange={(event) => setDestinationLocation(event.target.value)}
+              />
+            </label>
+          </>
+        ) : null}
+        {eventType === "brownRoots" ? (
           <label>
-            {t("amount", language)}
+            {language === "lv" ? "Galds / vieta" : "Table / location"}
+            <input maxLength={80} placeholder="C7" value={location} onChange={(event) => setLocation(event.target.value)} />
+          </label>
+        ) : null}
+        {eventType === "other" ? (
+          <label>
+            {language === "lv" ? "Galds / vieta" : "Table / location"}
+            <input maxLength={80} placeholder="C6" value={location} onChange={(event) => setLocation(event.target.value)} />
+          </label>
+        ) : null}
+        {needsLossAmount ? (
+          <label>
+            {eventType === "move" ? t("takenPlants", language) : language === "lv" ? "Bojātie stādi" : "Damaged plants"}
             <input
               inputMode="numeric"
-              min="1"
-              placeholder="32"
-              type="number"
+              pattern="[0-9]*"
+              placeholder="0"
+              type="text"
               value={plantChangeAmount}
-              onChange={(event) => setPlantChangeAmount(event.target.value)}
+              onChange={(event) => setPlantChangeAmount(event.target.value.replace(/\D/g, ""))}
             />
           </label>
         ) : null}

@@ -55,6 +55,7 @@ type TextKey =
   | "greenhouseRequired"
   | "husData"
   | "husInfo"
+  | "husEvents"
   | "husJournal"
   | "husName"
   | "importDetectedPlan"
@@ -113,6 +114,7 @@ type TextKey =
   | "selectTables"
   | "seasonBase"
   | "status"
+  | "takenPlants"
   | "stillRequired"
   | "tables"
   | "today"
@@ -171,6 +173,7 @@ const text: Record<AppLanguage, Record<TextKey, string>> = {
     greenhouseRequired: "Siltumnīcai nepieciešams",
     husData: "Hus dati",
     husInfo: "HUS info",
+    husEvents: "HUS notikumi",
     husJournal: "HUS žurnāls",
     husName: "Hus nosaukums",
     importDetectedPlan: "Pārbaudīt atpazīto plānu",
@@ -229,6 +232,7 @@ const text: Record<AppLanguage, Record<TextKey, string>> = {
     selectTables: "Izvēlies A1-A13",
     seasonBase: "Sezonas pamats",
     status: "Statuss",
+    takenPlants: "Izņemtie stādi",
     stillRequired: "Nepieciešams",
     tables: "Galdi",
     today: "Šodien",
@@ -286,6 +290,7 @@ const text: Record<AppLanguage, Record<TextKey, string>> = {
     greenhouseRequired: "Greenhouse required",
     husData: "Hus data",
     husInfo: "HUS info",
+    husEvents: "HUS events",
     husJournal: "HUS journal",
     husName: "Hus name",
     importDetectedPlan: "Review extracted plan",
@@ -344,6 +349,7 @@ const text: Record<AppLanguage, Record<TextKey, string>> = {
     selectTables: "Choose A1-A13",
     seasonBase: "Season base",
     status: "Status",
+    takenPlants: "Removed plants",
     stillRequired: "Required",
     tables: "Tables",
     today: "Today",
@@ -413,9 +419,9 @@ const husEventTypeLabels: Record<AppLanguage, Record<HusEventType, string>> = {
   lv: {
     brownRoots: "Brūnās saknes",
     extraWatering: "Extra laistīšana",
-    move: "Pārvietošana",
-    observation: "Novērojums",
-    other: "Cits",
+    move: "Moving",
+    observation: "Cits / Novērojums",
+    other: "Cits / Novērojums",
     thinning: "Retināšana",
     treatment: "Apstrāde",
     watering: "Laistīšana",
@@ -423,9 +429,9 @@ const husEventTypeLabels: Record<AppLanguage, Record<HusEventType, string>> = {
   en: {
     brownRoots: "Brown roots",
     extraWatering: "Extra watering",
-    move: "Move",
-    observation: "Observation",
-    other: "Other",
+    move: "Moving",
+    observation: "Other / Observation",
+    other: "Other / Observation",
     thinning: "Moving",
     treatment: "Treatment",
     watering: "Watering",

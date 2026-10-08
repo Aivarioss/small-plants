@@ -1376,6 +1376,14 @@ textarea {
   font-size: 0.9rem;
 }
 
+.dialog-error {
+  display: block;
+  margin-top: 6px;
+  color: #9f1d1d;
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
 .plant-change-field {
   display: grid;
   gap: 7px;

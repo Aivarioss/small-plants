@@ -167,6 +167,18 @@ export type PlanImportResult = {
   candidates: PlanImportCandidate[];
 };
 
+export type SowingPlanDocument = {
+  id: string;
+  originalFileName: string;
+  contentType: "image/jpeg" | "image/png" | "application/pdf";
+  fileSizeBytes: number;
+  storageBucket: string;
+  storagePath: string;
+  isCurrent: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 export type PlannerConfig = {
   defaultPlantsPerBox: number;
 };

@@ -19,6 +19,18 @@ export type SowingPlanRowRecord = {
   updated_at?: string;
 };
 
+export type SowingPlanDocumentRecord = {
+  id: string;
+  storage_bucket: string;
+  storage_path: string;
+  original_file_name: string;
+  content_type: "image/jpeg" | "image/png" | "application/pdf";
+  file_size_bytes: number;
+  is_current: boolean;
+  created_at?: string;
+  updated_at?: string;
+};
+
 export type WorkAdjustmentRecord = {
   id: string;
   sowing_plan_row_id: string;

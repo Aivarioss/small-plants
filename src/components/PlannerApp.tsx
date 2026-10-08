@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { createContext, FormEvent, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { plannerConfig } from "@/lib/demo-data";
 import {
@@ -83,6 +84,7 @@ import type {
   PlanImportCandidate,
   PlanImportResult,
   SectorType,
+  SowingPlanDocument,
   SowingPlanDraft,
   SowingPlanRow,
   ViewMode,
@@ -157,6 +159,10 @@ export function PlannerApp() {
   const [importBusy, setImportBusy] = useState(false);
   const [importMessage, setImportMessage] = useState("");
   const [importPreviewUrl, setImportPreviewUrl] = useState("");
+  const [planDocument, setPlanDocument] = useState<SowingPlanDocument | null>(null);
+  const [planDocumentBusy, setPlanDocumentBusy] = useState(false);
+  const [planDocumentMessage, setPlanDocumentMessage] = useState("");
+  const [planDocumentViewerOpen, setPlanDocumentViewerOpen] = useState(false);
   const [balancePreview, setBalancePreview] = useState<WorkloadBalanceProposal[] | null>(null);
   const rowSaveChainsRef = useRef(new Map<string, Promise<SowingPlanRow>>());
 
@@ -223,6 +229,29 @@ export function PlannerApp() {
     }
 
     void loadRows();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadDocument() {
+      try {
+        const document = await fetchSowingPlanDocument();
+        if (!cancelled) {
+          setPlanDocument(document);
+          setPlanDocumentMessage("");
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setPlanDocumentMessage(error instanceof Error ? error.message : "Neizdevās ielādēt sēšanas plāna failu.");
+        }
+      }
+    }
+
+    void loadDocument();
     return () => {
       cancelled = true;
     };
@@ -555,6 +584,32 @@ export function PlannerApp() {
     }
   }
 
+  async function uploadSowingPlanDocument(file: File) {
+    setPlanDocumentBusy(true);
+    setPlanDocumentMessage("");
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const response = await fetch("/api/sowing-plan-document", {
+        body: formData,
+        method: "POST",
+      });
+      const result = (await response.json().catch(() => null)) as { document?: SowingPlanDocument; error?: string } | null;
+
+      if (!response.ok || !result?.document) {
+        throw new Error(result?.error ?? "Neizdevās saglabāt sēšanas plāna failu.");
+      }
+
+      setPlanDocument(result.document);
+      setPlanDocumentMessage(printLanguage === "lv" ? "Sēšanas plāns saglabāts." : "Seeding plan saved.");
+    } catch (error) {
+      setPlanDocumentMessage(error instanceof Error ? error.message : "Neizdevās saglabāt sēšanas plāna failu.");
+    } finally {
+      setPlanDocumentBusy(false);
+    }
+  }
+
   function updateImportCandidate(id: string, field: ImportFieldKey, value: string) {
     setImportResult((current) => {
       if (!current) {
@@ -848,12 +903,28 @@ export function PlannerApp() {
               setSelectedRowId(id);
               setActiveView("worksheet");
             }}
+            onPlanDocumentView={() => {
+              if (!planDocument) {
+                return;
+              }
+
+              if (planDocument.contentType === "application/pdf") {
+                window.open(planDocumentFileUrl(planDocument), "_blank", "noopener,noreferrer");
+                return;
+              }
+
+              setPlanDocumentViewerOpen(true);
+            }}
+            onPlanDocumentUpload={uploadSowingPlanDocument}
             onUpdateDate={updateDateField}
             onUpdateRow={updatePlanRow}
             importBusy={importBusy}
             importMessage={importMessage}
             importPreviewUrl={importPreviewUrl}
             importResult={importResult}
+            planDocument={planDocument}
+            planDocumentBusy={planDocumentBusy}
+            planDocumentMessage={planDocumentMessage}
             rows={planRows}
           />
         </section>
@@ -980,6 +1051,10 @@ export function PlannerApp() {
           </div>
         </section>
       ) : null}
+
+      {planDocumentViewerOpen && planDocument ? (
+        <SowingPlanDocumentViewer document={planDocument} onClose={() => setPlanDocumentViewerOpen(false)} />
+      ) : null}
     </main>
     </LanguageContext.Provider>
   );
@@ -1002,8 +1077,13 @@ function SowingPlanPanel({
   onImportFile,
   onImportSelectionChange,
   onOpenRow,
+  onPlanDocumentUpload,
+  onPlanDocumentView,
   onUpdateDate,
   onUpdateRow,
+  planDocument,
+  planDocumentBusy,
+  planDocumentMessage,
   rows,
 }: {
   draft: SowingPlanDraft;
@@ -1022,8 +1102,13 @@ function SowingPlanPanel({
   onImportFile: (file: File) => void;
   onImportSelectionChange: (id: string, selected: boolean) => void;
   onOpenRow: (id: string) => void;
+  onPlanDocumentUpload: (file: File) => void;
+  onPlanDocumentView: () => void;
   onUpdateDate: (row: SowingPlanRow, field: "sowingDate" | "harvestDate", value: string) => void;
   onUpdateRow: (id: string, patch: Partial<SowingPlanRow>) => void;
+  planDocument: SowingPlanDocument | null;
+  planDocumentBusy: boolean;
+  planDocumentMessage: string;
   rows: SowingPlanRow[];
 }) {
   const language = useAppLanguage();
@@ -1058,6 +1143,14 @@ function SowingPlanPanel({
           ) : null}
         </div>
       </div>
+
+      <SowingPlanDocumentPanel
+        busy={planDocumentBusy}
+        document={planDocument}
+        message={planDocumentMessage}
+        onUpload={onPlanDocumentUpload}
+        onView={onPlanDocumentView}
+      />
 
       {importPreviewUrl ? (
         <div className="import-preview">
@@ -1296,6 +1389,106 @@ function SowingPlanPanel({
         })}
       </div>
     </section>
+  );
+}
+
+function SowingPlanDocumentPanel({
+  busy,
+  document,
+  message,
+  onUpload,
+  onView,
+}: {
+  busy: boolean;
+  document: SowingPlanDocument | null;
+  message: string;
+  onUpload: (file: File) => void;
+  onView: () => void;
+}) {
+  const language = useAppLanguage();
+  const isImage = document?.contentType === "image/jpeg" || document?.contentType === "image/png";
+
+  return (
+    <section className="seeding-plan-document">
+      <div className="seeding-plan-document__header">
+        <div>
+          <p className="eyebrow">{t("seedingPlanDocument", language)}</p>
+          <h3>{t("seedingPlanDocument", language)}</h3>
+        </div>
+        <div className="button-row">
+          {document ? (
+            <button className="secondary-action" type="button" onClick={onView}>
+              {t("view", language)}
+            </button>
+          ) : null}
+          <label className="file-action">
+            {document ? t("replace", language) : t("addPlanDocument", language)}
+            <input
+              accept="image/jpeg,image/png,application/pdf"
+              disabled={busy}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) {
+                  onUpload(file);
+                  event.target.value = "";
+                }
+              }}
+              type="file"
+            />
+          </label>
+        </div>
+      </div>
+
+      {document ? (
+        <div className="seeding-plan-document__body">
+          {isImage ? (
+            <button className="seeding-plan-document__preview" type="button" onClick={onView}>
+              <Image alt={document.originalFileName} height={84} src={planDocumentFileUrl(document)} unoptimized width={112} />
+            </button>
+          ) : (
+            <button className="seeding-plan-document__pdf" type="button" onClick={onView}>
+              PDF
+            </button>
+          )}
+          <div>
+            <strong>{document.originalFileName}</strong>
+            <span>
+              {formatFileSize(document.fileSizeBytes)} · {document.contentType === "application/pdf" ? "PDF" : "JPG/PNG"}
+            </span>
+          </div>
+        </div>
+      ) : (
+        <p className="import-note">
+          {language === "lv"
+            ? "Saglabā agronoma sēšanas plāna foto vai PDF, lai tas būtu pieejams no telefona un datora."
+            : "Save the agronomist seeding plan photo or PDF so it is available from phone and desktop."}
+        </p>
+      )}
+
+      {busy ? <p className="import-note">{language === "lv" ? "Saglabā sēšanas plānu..." : "Saving seeding plan..."}</p> : null}
+      {message ? <p className="import-note">{message}</p> : null}
+    </section>
+  );
+}
+
+function SowingPlanDocumentViewer({ document, onClose }: { document: SowingPlanDocument; onClose: () => void }) {
+  const language = useAppLanguage();
+
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <section aria-modal="true" aria-label={t("seedingPlanDocument", language)} className="plan-document-viewer" role="dialog">
+        <div className="panel-header">
+          <div>
+            <p className="eyebrow">{t("seedingPlanDocument", language)}</p>
+            <h3>{document.originalFileName}</h3>
+          </div>
+          <button className="secondary-action" type="button" onClick={onClose}>
+            {language === "lv" ? "Aizvērt" : "Close"}
+          </button>
+        </div>
+        <Image alt={document.originalFileName} height={900} src={planDocumentFileUrl(document)} unoptimized width={1200} />
+      </section>
+    </div>
   );
 }
 
@@ -3196,6 +3389,30 @@ function shortDate(date: string): string {
     day: "2-digit",
     month: "2-digit",
   }).format(new Date(`${date}T12:00:00`));
+}
+
+async function fetchSowingPlanDocument(): Promise<SowingPlanDocument | null> {
+  const response = await fetch("/api/sowing-plan-document");
+  const result = (await response.json().catch(() => null)) as { document?: SowingPlanDocument | null; error?: string } | null;
+
+  if (!response.ok) {
+    throw new Error(result?.error ?? "Neizdevās ielādēt sēšanas plāna failu.");
+  }
+
+  return result?.document ?? null;
+}
+
+function planDocumentFileUrl(document: SowingPlanDocument): string {
+  const version = encodeURIComponent(document.updatedAt ?? document.createdAt ?? document.id);
+  return `/api/sowing-plan-document/file?v=${version}`;
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
 function weekdayName(date: string, language: AppLanguage = "lv"): string {

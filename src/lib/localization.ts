@@ -14,6 +14,7 @@ export const languageStorageKey = "small-plants:language";
 type TextKey =
   | "addEntry"
   | "addHus"
+  | "addPlanDocument"
   | "agronomistSowing"
   | "allHus"
   | "amount"
@@ -97,6 +98,7 @@ type TextKey =
   | "quantity"
   | "recalculatePlan"
   | "recordChange"
+  | "replace"
   | "reserveShortageUnavailable"
   | "save"
   | "scheduleWillSaveAfterConfirm"
@@ -105,6 +107,7 @@ type TextKey =
   | "sowing"
   | "seeding"
   | "seedingDate"
+  | "seedingPlanDocument"
   | "seedingTables"
   | "sowingTables"
   | "selectTables"
@@ -116,6 +119,7 @@ type TextKey =
   | "total"
   | "totalSow"
   | "variety"
+  | "view"
   | "weekNumber"
   | "work"
   | "workCycle"
@@ -126,6 +130,7 @@ const text: Record<AppLanguage, Record<TextKey, string>> = {
   lv: {
     addEntry: "+ Pievienot ierakstu",
     addHus: "Pievienot Hus",
+    addPlanDocument: "Pievienot plānu",
     agronomistSowing: "Agronoma sējamais",
     allHus: "Hus",
     amount: "Daudzums",
@@ -209,6 +214,7 @@ const text: Record<AppLanguage, Record<TextKey, string>> = {
     quantity: "Daudzums",
     recalculatePlan: "Pārrēķināt plānu",
     recordChange: "+ Reģistrēt izmaiņu",
+    replace: "Nomainīt",
     reserveShortageUnavailable: "Rezerve/trūkums: Nav aprēķināms",
     save: "Saglabāt",
     scheduleWillSaveAfterConfirm: "Izmaiņas tiks saglabātas tikai pēc apstiprināšanas.",
@@ -217,6 +223,7 @@ const text: Record<AppLanguage, Record<TextKey, string>> = {
     sowing: "Sēšana",
     seeding: "Sēšana",
     seedingDate: "Sēšanas datums",
+    seedingPlanDocument: "Sēšanas plāns",
     seedingTables: "Sēšanas galdi",
     sowingTables: "Sēšanas galdi",
     selectTables: "Izvēlies A1-A13",
@@ -228,6 +235,7 @@ const text: Record<AppLanguage, Record<TextKey, string>> = {
     total: "Kopā",
     totalSow: "Kopā sējams",
     variety: "Šķirne",
+    view: "Apskatīt",
     weekNumber: "Nedēļa",
     work: "Darbs",
     workCycle: "Pilns darba cikls",
@@ -237,6 +245,7 @@ const text: Record<AppLanguage, Record<TextKey, string>> = {
   en: {
     addEntry: "+ Add entry",
     addHus: "Add Hus",
+    addPlanDocument: "Add plan",
     agronomistSowing: "Agronomist sowing",
     allHus: "Hus",
     amount: "Amount",
@@ -320,6 +329,7 @@ const text: Record<AppLanguage, Record<TextKey, string>> = {
     quantity: "Quantity",
     recalculatePlan: "Recalculate plan",
     recordChange: "+ Register change",
+    replace: "Replace",
     reserveShortageUnavailable: "Reserve/shortage: Cannot calculate",
     save: "Save",
     scheduleWillSaveAfterConfirm: "Changes will be saved only after confirmation.",
@@ -328,6 +338,7 @@ const text: Record<AppLanguage, Record<TextKey, string>> = {
     sowing: "Seeding",
     seeding: "Seeding",
     seedingDate: "Seeding date",
+    seedingPlanDocument: "Seeding plan",
     seedingTables: "Seeding tables",
     sowingTables: "Seeding tables",
     selectTables: "Choose A1-A13",
@@ -339,6 +350,7 @@ const text: Record<AppLanguage, Record<TextKey, string>> = {
     total: "Total",
     totalSow: "Total to seed",
     variety: "Variety",
+    view: "View",
     weekNumber: "Week",
     work: "Work",
     workCycle: "Full work cycle",

@@ -3,6 +3,8 @@ import {
   addDays,
   applyHusEventDelete,
   applyHusEventSave,
+  activeSowingPlanRows,
+  archivedSowingPlanRows,
   calculateAvailability,
   calculateBoxPlan,
   calculateBoxesNeeded,
@@ -14,6 +16,7 @@ import {
   calculateThinningPlan,
   calculateWorkMaterialSummary,
   balanceWorkload,
+  buildArchiveSnapshot,
   countMainWork,
   createPlacementPlan,
   continuousWorkPlanPrintRows,
@@ -818,6 +821,49 @@ describe("planning calculations", () => {
     ).map((item) => `${item.type}:${item.date}`);
 
     expect(after).toEqual(before);
+  });
+
+  it("builds an immutable archive snapshot with work, events, corrections and balance", () => {
+    const archivedAt = "2026-10-20T12:00:00.000Z";
+    const archiveRow: SowingPlanRow = {
+      ...row,
+      greenhouseRequiredPlants: 3300,
+      plantCorrections: [{ id: "loss-1", amount: -100, date: "2026-10-08", reason: "thinning" }],
+      husEvents: [
+        {
+          id: "move-1",
+          eventDate: "2026-10-08",
+          eventType: "move",
+          location: "A7",
+          destinationLocation: "C1-C10",
+          plantChange: -100,
+          plantCorrectionId: "loss-1",
+        },
+      ],
+      adjustments: { sideShoots: "2026-10-12" },
+    };
+    const snapshot = buildArchiveSnapshot(archiveRow, [archiveRow], { defaultPlantsPerBox: 30 }, archivedAt, "Pabeigts");
+
+    expect(snapshot.version).toBe(1);
+    expect(snapshot.archivedAt).toBe(archivedAt);
+    expect(snapshot.hus.id).toBe(row.id);
+    expect(snapshot.events).toEqual(archiveRow.husEvents);
+    expect(snapshot.plantCorrections).toEqual(archiveRow.plantCorrections);
+    expect(snapshot.plantBalance.actualPlants).toBe(getActualPlantCount(archiveRow));
+    expect(snapshot.workAdjustments).toEqual({ sideShoots: "2026-10-12" });
+    expect(snapshot.workItems.some((item) => item.type === "sideShoots" && item.date === "2026-10-12")).toBe(true);
+    expect(snapshot.worksheetDays).toHaveLength(row.cycleLength);
+  });
+
+  it("separates active and archived rows before scheduler generation", () => {
+    const activeRow = { ...row, id: "active", sectorName: "Hus active" };
+    const archivedRow = { ...row, id: "archived", sectorName: "Hus archived", archivedAt: "2026-10-20T12:00:00.000Z" };
+    const rows = [activeRow, archivedRow];
+    const activeRows = activeSowingPlanRows(rows);
+
+    expect(activeRows).toEqual([activeRow]);
+    expect(archivedSowingPlanRows(rows)).toEqual([archivedRow]);
+    expect(generateWorkItemsForRows(activeRows, { defaultPlantsPerBox: 30 }).map((item) => item.planRowId)).not.toContain("archived");
   });
 
   it("keeps 3500 and 4200 plant batches in one 26 table row", () => {

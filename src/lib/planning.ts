@@ -1,5 +1,6 @@
 import type {
   AvailabilityStatus,
+  ArchiveSnapshot,
   BoxPlan,
   CapacityConflict,
   GreenhouseRow,
@@ -207,6 +208,60 @@ function splitEventLocationLines(value: string | undefined): string[] {
 
 export function getBiologicalCycleDays(row: Pick<SowingPlanRow, "sowingDate" | "harvestDate">): number {
   return daysBetween(row.sowingDate, row.harvestDate);
+}
+
+export function isArchivedRow(row: Pick<SowingPlanRow, "archivedAt">): boolean {
+  return Boolean(row.archivedAt);
+}
+
+export function activeSowingPlanRows(rows: SowingPlanRow[]): SowingPlanRow[] {
+  return rows.filter((row) => !isArchivedRow(row));
+}
+
+export function archivedSowingPlanRows(rows: SowingPlanRow[]): SowingPlanRow[] {
+  return rows.filter(isArchivedRow);
+}
+
+export function buildArchiveSnapshot(
+  row: SowingPlanRow,
+  activeRows: SowingPlanRow[],
+  config: PlannerConfig,
+  archivedAt: string,
+  archivedNote?: string,
+): ArchiveSnapshot {
+  const workItems = generateWorkItemsForRows(activeRows, config).filter((item) => item.planRowId === row.id);
+  const worksheetDays = generateWorksheetDaysFromWorkItems(row, workItems);
+  const plantBalance = calculatePlantBalance(row);
+  const materials = calculateWorkMaterialSummary(row);
+
+  return {
+    version: 1,
+    archivedAt,
+    archivedNote: archivedNote || undefined,
+    hus: {
+      id: row.id,
+      sectorName: row.sectorName,
+      greenhouseRequiredPlants: row.greenhouseRequiredPlants,
+      requiredPlants: row.requiredPlants,
+      extraPlants: row.extraPlants,
+      variety: row.variety,
+      weekNumber: row.weekNumber,
+      sowingTables: row.sowingTables,
+      sowingDate: row.sowingDate,
+      harvestDate: row.harvestDate,
+      cycleLength: row.cycleLength,
+      sectorType: row.sectorType,
+      status: row.status,
+    },
+    workItems,
+    worksheetDays,
+    events: row.husEvents ?? [],
+    plantCorrections: row.plantCorrections ?? [],
+    tablePlacement: row.placement,
+    workAdjustments: row.adjustments,
+    plantBalance,
+    materials,
+  };
 }
 
 function isThursday(date: string): boolean {

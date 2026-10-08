@@ -1,4 +1,6 @@
 import "server-only";
+import { plannerConfig } from "@/lib/demo-data";
+import { buildArchiveSnapshot } from "@/lib/planning";
 import type { SowingPlanRow } from "@/lib/types";
 import type {
   ChangeHistoryRecord,
@@ -34,6 +36,13 @@ export class SowingPlanNotFoundError extends Error {
   }
 }
 
+export class SowingPlanArchivedError extends Error {
+  constructor(message = "This Hus is archived and can only be viewed or restored.") {
+    super(message);
+    this.name = "SowingPlanArchivedError";
+  }
+}
+
 export class SupabasePersistenceError extends Error {
   code?: string;
   details?: string;
@@ -55,9 +64,12 @@ export class SupabasePersistenceError extends Error {
 
 export function createSupabaseSowingPlanRepository(): RemoteSowingPlanRepository {
   return {
+    archive: archiveRowInSupabase,
     create: createRowInSupabase,
     delete: deleteRowFromSupabase,
     load: loadRowsFromSupabase,
+    loadArchived: loadArchivedRowsFromSupabase,
+    restore: restoreRowInSupabase,
     update: updateRowInSupabase,
   };
 }
@@ -68,13 +80,47 @@ async function loadRowsFromSupabase(): Promise<SowingPlanRow[]> {
   const { data, error } = await client
     .from("sowing_plan_rows")
     .select("*, work_adjustments(*), table_placements(*), change_history(*), plant_corrections(*), hus_events(*)")
+    .is("archived_at", null)
     .order("sowing_date", { ascending: true });
 
   if (error && isOptionalRelationError(error)) {
     const fallbackSelect = isHusEventsRelationError(error)
       ? "*, work_adjustments(*), table_placements(*), change_history(*), plant_corrections(*)"
       : "*, work_adjustments(*), table_placements(*), change_history(*)";
-    const fallback = await client.from("sowing_plan_rows").select(fallbackSelect).order("sowing_date", { ascending: true });
+    const fallback = await client.from("sowing_plan_rows").select(fallbackSelect).is("archived_at", null).order("sowing_date", { ascending: true });
+
+    if (fallback.error) {
+      throw fallback.error;
+    }
+
+    return ((fallback.data ?? []) as unknown as SowingPlanRowWithRelations[]).map(recordToSowingPlanRow);
+  }
+
+  if (error) {
+    throw error;
+  }
+
+  return ((data ?? []) as SowingPlanRowWithRelations[]).map(recordToSowingPlanRow);
+}
+
+async function loadArchivedRowsFromSupabase(): Promise<SowingPlanRow[]> {
+  const client = createSupabaseServerClient();
+
+  const { data, error } = await client
+    .from("sowing_plan_rows")
+    .select("*, work_adjustments(*), table_placements(*), change_history(*), plant_corrections(*), hus_events(*)")
+    .not("archived_at", "is", null)
+    .order("archived_at", { ascending: false });
+
+  if (error && isOptionalRelationError(error)) {
+    const fallbackSelect = isHusEventsRelationError(error)
+      ? "*, work_adjustments(*), table_placements(*), change_history(*), plant_corrections(*)"
+      : "*, work_adjustments(*), table_placements(*), change_history(*)";
+    const fallback = await client
+      .from("sowing_plan_rows")
+      .select(fallbackSelect)
+      .not("archived_at", "is", null)
+      .order("archived_at", { ascending: false });
 
     if (fallback.error) {
       throw fallback.error;
@@ -123,7 +169,7 @@ async function updateRowInSupabase(row: SowingPlanRow, expectedUpdatedAt?: strin
   const currentUpdatedAt = await assertCurrentVersion(row.id, expectedUpdatedAt);
 
   const patch = rowRecordUpdatePatch(record);
-  let query = client.from("sowing_plan_rows").update(patch).eq("id", row.id);
+  let query = client.from("sowing_plan_rows").update(patch).eq("id", row.id).is("archived_at", null);
   if (currentUpdatedAt) {
     query = query.eq("updated_at", currentUpdatedAt);
   }
@@ -151,7 +197,7 @@ async function deleteRowFromSupabase(id: string, expectedUpdatedAt?: string): Pr
 
   const currentUpdatedAt = await assertCurrentVersion(id, expectedUpdatedAt);
 
-  let query = client.from("sowing_plan_rows").delete().eq("id", id);
+  let query = client.from("sowing_plan_rows").delete().eq("id", id).is("archived_at", null);
   if (currentUpdatedAt) {
     query = query.eq("updated_at", currentUpdatedAt);
   }
@@ -164,6 +210,75 @@ async function deleteRowFromSupabase(id: string, expectedUpdatedAt?: string): Pr
   if (!data) {
     throw new SowingPlanConflictError();
   }
+}
+
+async function archiveRowInSupabase(id: string, note?: string): Promise<SowingPlanRow> {
+  const client = createSupabaseServerClient();
+  const row = await loadRowById(id);
+
+  if (row.archivedAt) {
+    throw new SowingPlanArchivedError("This Hus is already archived.");
+  }
+
+  const activeRows = await loadRowsFromSupabase();
+  const archivedAt = new Date().toISOString();
+  const snapshot = buildArchiveSnapshot(row, activeRows, plannerConfig, archivedAt, note?.trim() || undefined);
+
+  let query = client
+    .from("sowing_plan_rows")
+    .update({
+      archived_at: archivedAt,
+      archived_note: note?.trim() || null,
+      archive_snapshot: snapshot,
+    })
+    .eq("id", id)
+    .is("archived_at", null);
+
+  if (row.updatedAt) {
+    query = query.eq("updated_at", row.updatedAt);
+  }
+
+  const { data, error } = await query.select("id").maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
+    throw new SowingPlanConflictError("This Hus changed while it was being archived. Reload and archive again.");
+  }
+
+  return loadRowById(id);
+}
+
+async function restoreRowInSupabase(id: string): Promise<SowingPlanRow> {
+  const client = createSupabaseServerClient();
+  const row = await loadRowById(id);
+
+  if (!row.archivedAt) {
+    return row;
+  }
+
+  const { data, error } = await client
+    .from("sowing_plan_rows")
+    .update({
+      archived_at: null,
+      archived_note: null,
+    })
+    .eq("id", id)
+    .not("archived_at", "is", null)
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
+    throw new SowingPlanConflictError("This Hus was restored elsewhere. Reload and review before trying again.");
+  }
+
+  return loadRowById(id);
 }
 
 async function loadRowById(id: string): Promise<SowingPlanRow> {

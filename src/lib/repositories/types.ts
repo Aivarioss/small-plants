@@ -9,7 +9,10 @@ export type SowingPlanRepository = {
 
 export type RemoteSowingPlanRepository = {
   load: () => Promise<SowingPlanRow[]>;
+  loadArchived: () => Promise<SowingPlanRow[]>;
   create: (row: SowingPlanRow) => Promise<SowingPlanRow>;
   update: (row: SowingPlanRow, expectedUpdatedAt?: string) => Promise<SowingPlanRow>;
   delete: (id: string, expectedUpdatedAt?: string) => Promise<void>;
+  archive: (id: string, note?: string) => Promise<SowingPlanRow>;
+  restore: (id: string) => Promise<SowingPlanRow>;
 };

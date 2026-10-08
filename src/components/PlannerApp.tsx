@@ -71,7 +71,12 @@ import {
   writeStoredLanguage,
   type AppLanguage,
 } from "@/lib/localization";
-import { SowingPlanApiConflictError } from "@/lib/repositories/api-sowing-plan-repository";
+import {
+  archiveRow,
+  loadArchivedRows,
+  restoreArchivedRow,
+  SowingPlanApiConflictError,
+} from "@/lib/repositories/api-sowing-plan-repository";
 import { sowingPlanRepository } from "@/lib/repositories/sowing-plan-repository";
 import type {
   ChangeHistoryEntry,
@@ -143,9 +148,11 @@ function calendarItemLabel(item: WorkItem, language: AppLanguage) {
 
 export function PlannerApp() {
   const [planRows, setPlanRows] = useState<SowingPlanRow[]>([]);
+  const [archivedRows, setArchivedRows] = useState<SowingPlanRow[]>([]);
   const [repositoryMessage, setRepositoryMessage] = useState("Ielādē Supabase");
   const [repositoryError, setRepositoryError] = useState("");
   const [activeView, setActiveView] = useState<MainView>("sowingPlan");
+  const [husListMode, setHusListMode] = useState<"active" | "archive">("active");
   const [viewMode, setViewMode] = useState<ViewMode>("month");
   const [printLanguage, setPrintLanguage] = useState<AppLanguage>(() => readStoredLanguage());
   const [anchorDate, setAnchorDate] = useState("2026-09-25");
@@ -197,7 +204,8 @@ export function PlannerApp() {
       }),
     [planRows],
   );
-  const selectedRow = planRows.find((row) => row.id === selectedRowId) ?? planRows[0];
+  const selectedArchivedRow = archivedRows.find((row) => row.id === selectedRowId);
+  const selectedRow = planRows.find((row) => row.id === selectedRowId) ?? selectedArchivedRow ?? planRows[0];
   const hasDemoRows = planRows.some((row) => row.source === "demo");
   const selectedDayItems = workItems
     .filter((item) => item.date === selectedDate)
@@ -227,6 +235,28 @@ export function PlannerApp() {
     }
 
     void loadRows();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadArchive() {
+      try {
+        const loadedRows = await loadArchivedRows();
+        if (!cancelled) {
+          setArchivedRows(loadedRows);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setRepositoryError(error instanceof Error ? error.message : "Neizdevās ielādēt HUS arhīvu");
+        }
+      }
+    }
+
+    void loadArchive();
     return () => {
       cancelled = true;
     };
@@ -374,6 +404,43 @@ export function PlannerApp() {
 
     rowSaveChainsRef.current.set(previous.id, operation);
     return operation;
+  }
+
+  async function archivePlanRow(row: SowingPlanRow, note?: string) {
+    setRepositoryMessage("Arhivē Hus");
+    setRepositoryError("");
+    try {
+      await rowSaveChainsRef.current.get(row.id);
+      const archived = await archiveRow(row.id, note);
+      setPlanRows((current) => current.filter((candidate) => candidate.id !== row.id));
+      setArchivedRows((current) => [archived, ...current.filter((candidate) => candidate.id !== archived.id)]);
+      setSelectedRowId((current) => (current === row.id ? "" : current));
+      setActiveView("hus");
+      setHusListMode("archive");
+      setRepositoryMessage("Hus arhivēts");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Neizdevās arhivēt Hus";
+      setRepositoryMessage(message);
+      setRepositoryError(message);
+    }
+  }
+
+  async function restorePlanRow(row: SowingPlanRow) {
+    setRepositoryMessage("Atjauno Hus");
+    setRepositoryError("");
+    try {
+      const restored = await restoreArchivedRow(row.id);
+      setArchivedRows((current) => current.filter((candidate) => candidate.id !== restored.id));
+      setPlanRows((current) => [...current.filter((candidate) => candidate.id !== restored.id), restored]);
+      setSelectedRowId(restored.id);
+      setActiveView("worksheet");
+      setHusListMode("active");
+      setRepositoryMessage("Hus atjaunots");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Neizdevās atjaunot Hus";
+      setRepositoryMessage(message);
+      setRepositoryError(message);
+    }
   }
 
   function updateDateField(row: SowingPlanRow, field: "sowingDate" | "harvestDate", value: string) {
@@ -980,7 +1047,9 @@ export function PlannerApp() {
             setSelectedRowId(id);
             setActiveView("worksheet");
           }}
-          rows={planRows}
+          mode={husListMode}
+          onModeChange={setHusListMode}
+          rows={husListMode === "archive" ? archivedRows : planRows}
         />
       ) : null}
 
@@ -995,10 +1064,17 @@ export function PlannerApp() {
       {activeView === "worksheet" && selectedRow ? (
         <WorksheetView
           onEdit={() => setActiveView("batch")}
+          onArchive={archivePlanRow}
           onUpdateRow={updatePlanRow}
+          onRestore={restorePlanRow}
           printLanguage={printLanguage}
+          readOnly={Boolean(selectedRow.archivedAt)}
           row={selectedRow}
-          workItems={workItems.filter((item) => item.planRowId === selectedRow.id)}
+          workItems={
+            selectedRow.archivedAt
+              ? selectedRow.archiveSnapshot?.workItems ?? []
+              : workItems.filter((item) => item.planRowId === selectedRow.id)
+          }
         />
       ) : null}
 
@@ -1621,15 +1697,21 @@ function CapacityAlerts({ items, onOpen }: { items: WorkItem[]; onOpen: (date: s
 }
 
 function WorksheetView({
+  onArchive,
   onEdit,
+  onRestore,
   onUpdateRow,
   printLanguage,
+  readOnly = false,
   row,
   workItems,
 }: {
+  onArchive: (row: SowingPlanRow, note?: string) => void;
   onEdit: () => void;
+  onRestore: (row: SowingPlanRow) => void;
   onUpdateRow: (id: string, patch: Partial<SowingPlanRow>) => void;
   printLanguage: AppLanguage;
+  readOnly?: boolean;
   row: SowingPlanRow;
   workItems: WorkItem[];
 }) {
@@ -1638,8 +1720,10 @@ function WorksheetView({
   const [editingEvent, setEditingEvent] = useState<HusEventEntry | null>(null);
   const totalSow = getTotalSow(row);
   const materials = printMaterialSummary(row, printLanguage);
-  const balance = calculatePlantBalance(row);
-  const worksheetDays = generateWorksheetDaysFromWorkItems(row, workItems);
+  const archiveSnapshot = readOnly ? row.archiveSnapshot : undefined;
+  const balance = archiveSnapshot?.plantBalance ?? calculatePlantBalance(row);
+  const worksheetDays = archiveSnapshot?.worksheetDays ?? generateWorksheetDaysFromWorkItems(row, workItems);
+  const displayedHusEvents = archiveSnapshot?.events ?? row.husEvents ?? [];
   const chronologicalWorkItems = [...workItems].sort(
     (left, right) => left.date.localeCompare(right.date) || left.title.localeCompare(right.title, "lv"),
   );
@@ -1654,6 +1738,9 @@ function WorksheetView({
   }
 
   function deleteHusEvent(entry: HusEventEntry) {
+    if (readOnly) {
+      return;
+    }
     const linkedMessage = entry.plantCorrectionId
       ? printLanguage === "lv"
         ? " Saistītā stādu korekcija arī tiks dzēsta."
@@ -1678,9 +1765,51 @@ function WorksheetView({
           <h2>{row.sectorName}</h2>
         </div>
         <div className="button-row">
-          <button className="secondary-action" type="button" onClick={onEdit}>
-            {t("edit", printLanguage)}
-          </button>
+          {!readOnly ? (
+            <button className="secondary-action" type="button" onClick={onEdit}>
+              {t("edit", printLanguage)}
+            </button>
+          ) : null}
+          {!readOnly ? (
+            <button
+              className="secondary-action"
+              type="button"
+              onClick={() => {
+                const note = window.prompt(
+                  printLanguage === "lv"
+                    ? `Arhivēt ${row.sectorName}? Piezīme (neobligāta):`
+                    : `Archive ${row.sectorName}? Note (optional):`,
+                  "",
+                );
+                if (note === null) {
+                  return;
+                }
+                if (
+                  window.confirm(
+                    printLanguage === "lv"
+                      ? `${row.sectorName} tiks pārvietots uz arhīvu un vairs nebūs aktīvajā kalendārā. Turpināt?`
+                      : `${row.sectorName} will move to the archive and no longer appear in the active calendar. Continue?`,
+                  )
+                ) {
+                  onArchive(row, note);
+                }
+              }}
+            >
+              {printLanguage === "lv" ? "Arhivēt" : "Archive"}
+            </button>
+          ) : (
+            <button
+              className="secondary-action"
+              type="button"
+              onClick={() => {
+                if (window.confirm(printLanguage === "lv" ? `Atjaunot ${row.sectorName} aktīvajā plānā?` : `Restore ${row.sectorName} to the active plan?`)) {
+                  onRestore(row);
+                }
+              }}
+            >
+              {printLanguage === "lv" ? "Atjaunot" : "Restore"}
+            </button>
+          )}
           <button className="primary-action" type="button" onClick={() => window.print()}>
             {t("print", printLanguage)}
           </button>
@@ -1726,6 +1855,8 @@ function WorksheetView({
               <span>{printLanguage === "lv" ? "Zudumi/korekcijas" : "Losses/corrections"}: {signedNumber(balance.correctionTotal)}</span>
               <span>{t("currentActual", printLanguage)}: {balance.actualPlants.toLocaleString("lv-LV")}</span>
               <span>{formatReserveShortage(balance.difference, printLanguage)}</span>
+              {row.archivedAt ? <span>{printLanguage === "lv" ? "Arhivēts" : "Archived"}: {dateLabel(row.archivedAt.slice(0, 10))}</span> : null}
+              {row.archivedNote ? <span>{printLanguage === "lv" ? "Arhīva piezīme" : "Archive note"}: {row.archivedNote}</span> : null}
             </div>
           </section>
           <section className="hus-journal-box">
@@ -1734,20 +1865,22 @@ function WorksheetView({
                 <p className="eyebrow">{t("husEvents", printLanguage)}</p>
                 <h3>{printLanguage === "lv" ? "Notikumi" : "Events"}</h3>
               </div>
-              <button
-                className="secondary-action"
-                type="button"
-                onClick={() => {
-                  setEditingEvent(null);
-                  setEventDialogOpen(true);
-                }}
-              >
-                {t("addEntry", printLanguage)}
-              </button>
+              {!readOnly ? (
+                <button
+                  className="secondary-action"
+                  type="button"
+                  onClick={() => {
+                    setEditingEvent(null);
+                    setEventDialogOpen(true);
+                  }}
+                >
+                  {t("addEntry", printLanguage)}
+                </button>
+              ) : null}
             </div>
-            {row.husEvents && row.husEvents.length > 0 ? (
+            {displayedHusEvents.length > 0 ? (
               <ul className="hus-journal-list">
-                {row.husEvents.map((entry) => (
+                {displayedHusEvents.map((entry) => (
                   <li key={entry.id}>
                     <div className="hus-journal-list__date">
                       <time>{shortDate(entry.eventDate)}</time>
@@ -1775,7 +1908,7 @@ function WorksheetView({
                       {entry.note ? <p>{entry.note}</p> : null}
                     </div>
                     <span className="button-row">
-                      {isEditableHusEvent(entry) ? (
+                      {isEditableHusEvent(entry) && !readOnly ? (
                         <button
                           className="secondary-action secondary-action--small"
                           type="button"
@@ -1787,9 +1920,11 @@ function WorksheetView({
                           {t("edit", printLanguage)}
                         </button>
                       ) : null}
-                      <button className="danger-action danger-action--small" type="button" onClick={() => deleteHusEvent(entry)}>
-                        {t("delete", printLanguage)}
-                      </button>
+                      {!readOnly ? (
+                        <button className="danger-action danger-action--small" type="button" onClick={() => deleteHusEvent(entry)}>
+                          {t("delete", printLanguage)}
+                        </button>
+                      ) : null}
                     </span>
                   </li>
                 ))}
@@ -2887,7 +3022,17 @@ function flexibleItemDates(item: WorkItem): string[] {
   return [item.date];
 }
 
-function HusList({ onOpen, rows }: { onOpen: (id: string) => void; rows: SowingPlanRow[] }) {
+function HusList({
+  mode,
+  onModeChange,
+  onOpen,
+  rows,
+}: {
+  mode: "active" | "archive";
+  onModeChange: (mode: "active" | "archive") => void;
+  onOpen: (id: string) => void;
+  rows: SowingPlanRow[];
+}) {
   const language = useAppLanguage();
   const groupedRows = Array.from(
     rows.reduce((groups, row) => {
@@ -2899,9 +3044,18 @@ function HusList({ onOpen, rows }: { onOpen: (id: string) => void; rows: SowingP
   )
     .map(([sectorName, group]) => ({
       sectorName,
-      cycles: group.slice().sort((a, b) => b.sowingDate.localeCompare(a.sowingDate)),
+      cycles: group.slice().sort((a, b) =>
+        mode === "archive"
+          ? (b.archivedAt ?? "").localeCompare(a.archivedAt ?? "")
+          : b.sowingDate.localeCompare(a.sowingDate),
+      ),
     }))
-    .sort((a, b) => compareSowingRowsByDate(a.cycles[0], b.cycles[0]));
+    .sort((a, b) =>
+      mode === "archive"
+        ? (b.cycles[0].archivedAt ?? "").localeCompare(a.cycles[0].archivedAt ?? "") ||
+          a.sectorName.localeCompare(b.sectorName, "lv", { numeric: true })
+        : compareSowingRowsByDate(a.cycles[0], b.cycles[0]),
+    );
 
   return (
     <section className="panel">
@@ -2910,12 +3064,27 @@ function HusList({ onOpen, rows }: { onOpen: (id: string) => void; rows: SowingP
           <p className="eyebrow">Hus</p>
           <h2>{t("worksheet", language)}</h2>
         </div>
+        <div className="segmented segmented--compact">
+          <button className={mode === "active" ? "is-active" : ""} type="button" onClick={() => onModeChange("active")}>
+            {language === "lv" ? "Aktīvie" : "Active"}
+          </button>
+          <button className={mode === "archive" ? "is-active" : ""} type="button" onClick={() => onModeChange("archive")}>
+            {language === "lv" ? "Arhīvs" : "Archive"}
+          </button>
+        </div>
       </div>
       <div className="batch-list">
-        {rows.length === 0 ? <p className="empty-state">{language === "lv" ? "Hus ierakstu vēl nav." : "No Hus records yet."}</p> : null}
+        {rows.length === 0 ? (
+          <p className="empty-state">
+            {mode === "archive"
+              ? language === "lv" ? "Arhīvā vēl nav HUS ciklu." : "No archived HUS cycles yet."
+              : language === "lv" ? "Hus ierakstu vēl nav." : "No Hus records yet."}
+          </p>
+        ) : null}
         {groupedRows.map(({ cycles, sectorName }) => {
           const row = cycles[0];
           const totalSow = getTotalSow(row);
+          const balance = calculatePlantBalance(row);
 
           return (
             <article className="hus-card" key={sectorName}>
@@ -2928,6 +3097,12 @@ function HusList({ onOpen, rows }: { onOpen: (id: string) => void; rows: SowingP
                 </span>
                 <span>{formatPlants(totalSow, language)}</span>
                 <span>{formatCycleDays(row.cycleLength, language)}</span>
+                {mode === "archive" ? (
+                  <span>
+                    {language === "lv" ? "Arhivēts" : "Archived"} {row.archivedAt ? shortDate(row.archivedAt.slice(0, 10)) : "—"} ·{" "}
+                    {language === "lv" ? "Faktiski" : "Actual"} {formatPlants(balance.actualPlants, language)}
+                  </span>
+                ) : null}
                 <span>{t("openWorksheet", language)}</span>
               </button>
               {cycles.length > 1 ? (

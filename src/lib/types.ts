@@ -74,9 +74,54 @@ export type HusEventEntry = {
   updatedAt?: string;
 };
 
+export type ArchiveSnapshot = {
+  version: 1;
+  archivedAt: string;
+  archivedNote?: string;
+  hus: {
+    id: string;
+    sectorName: string;
+    greenhouseRequiredPlants?: number;
+    requiredPlants: number;
+    extraPlants: number;
+    variety: string;
+    weekNumber?: number;
+    sowingTables?: string;
+    sowingDate: string;
+    harvestDate: string;
+    cycleLength: CycleLength;
+    sectorType: SectorType;
+    status?: SowingPlanRow["status"];
+  };
+  workItems: WorkItem[];
+  worksheetDays: WorksheetDay[];
+  events: HusEventEntry[];
+  plantCorrections: PlantCorrectionEntry[];
+  tablePlacement?: TablePlacement;
+  workAdjustments?: WorkAdjustments;
+  plantBalance: {
+    requiredPlants: number | null;
+    initialPlants: number;
+    correctionTotal: number;
+    actualPlants: number;
+    difference: number | null;
+    label: string;
+    tone: "ok" | "short" | "unknown";
+  };
+  materials: {
+    sowing: string;
+    sowingTables: string;
+    thinning: string;
+    harvest: string;
+  };
+};
+
 export type SowingPlanRow = {
   id: string;
   updatedAt?: string;
+  archivedAt?: string;
+  archivedNote?: string;
+  archiveSnapshot?: ArchiveSnapshot;
   sectorName: string;
   greenhouseRequiredPlants?: number;
   requiredPlants: number;

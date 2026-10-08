@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { hasValidSession } from "@/lib/auth/session";
 import {
   createSupabaseSowingPlanRepository,
+  SowingPlanArchivedError,
   SowingPlanConflictError,
   SowingPlanNotFoundError,
 } from "@/lib/repositories/supabase-sowing-plan-repository";
@@ -161,6 +162,10 @@ function errorResponse(error: unknown): NextResponse {
 
   if (error instanceof SowingPlanNotFoundError) {
     return NextResponse.json({ error: error.message }, { status: 404 });
+  }
+
+  if (error instanceof SowingPlanArchivedError) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
   }
 
   return NextResponse.json({ error: safeErrorMessage(error) }, { status: 500 });

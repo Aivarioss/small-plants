@@ -15,6 +15,53 @@ export const apiSowingPlanRepository: SowingPlanRepository = {
   update: updateRow,
 };
 
+export async function loadArchivedRows(): Promise<SowingPlanRow[]> {
+  const response = await fetch("/api/hus-archive", {
+    cache: "no-store",
+  });
+  const result = (await response.json().catch(() => null)) as { rows?: SowingPlanRow[]; error?: string } | null;
+
+  if (!response.ok || !result?.rows) {
+    throw new Error(result?.error ?? "Neizdevās ielādēt HUS arhīvu.");
+  }
+
+  return result.rows;
+}
+
+export async function archiveRow(id: string, note?: string): Promise<SowingPlanRow> {
+  const response = await fetch("/api/hus-archive", {
+    body: JSON.stringify({ id, note }),
+    headers: {
+      "Content-Type": "application/json",
+    },
+    method: "POST",
+  });
+  const result = await parseWriteResponse(response);
+
+  if (!result.row) {
+    throw new Error("Serveris neatgrieza arhivēto Hus rindu.");
+  }
+
+  return result.row;
+}
+
+export async function restoreArchivedRow(id: string): Promise<SowingPlanRow> {
+  const response = await fetch("/api/hus-archive", {
+    body: JSON.stringify({ id }),
+    headers: {
+      "Content-Type": "application/json",
+    },
+    method: "PATCH",
+  });
+  const result = await parseWriteResponse(response);
+
+  if (!result.row) {
+    throw new Error("Serveris neatgrieza atjaunoto Hus rindu.");
+  }
+
+  return result.row;
+}
+
 async function loadRows(): Promise<SowingPlanRow[]> {
   const response = await fetch("/api/sowing-plan", {
     cache: "no-store",

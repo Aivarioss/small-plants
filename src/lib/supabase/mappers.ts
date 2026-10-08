@@ -1,5 +1,5 @@
 import { plannerConfig } from "@/lib/demo-data";
-import type { ChangeHistoryEntry, HusEventEntry, HusEventType, PlantCorrectionEntry, SowingPlanRow, WorkAdjustments } from "@/lib/types";
+import type { ArchiveSnapshot, ChangeHistoryEntry, HusEventEntry, HusEventType, PlantCorrectionEntry, SowingPlanRow, WorkAdjustments } from "@/lib/types";
 import type {
   ChangeHistoryRecord,
   HusEventRecord,
@@ -16,6 +16,9 @@ export function recordToSowingPlanRow(record: SowingPlanRowWithRelations): Sowin
   return {
     id: record.id,
     updatedAt: record.updated_at,
+    archivedAt: record.archived_at ?? undefined,
+    archivedNote: record.archived_note ?? undefined,
+    archiveSnapshot: parseArchiveSnapshot(record.archive_snapshot),
     sectorName: record.hus,
     greenhouseRequiredPlants: record.greenhouse_required_plants ?? undefined,
     requiredPlants: record.required_plants,
@@ -81,7 +84,18 @@ export function sowingPlanRowToRecord(row: SowingPlanRow): SowingPlanRowRecord |
     correction: row.correction,
     status: row.status ?? "planned",
     source: row.source === "import" ? "import" : "user",
+    archived_at: row.archivedAt ?? null,
+    archived_note: row.archivedNote ?? null,
+    archive_snapshot: row.archiveSnapshot ?? null,
   };
+}
+
+function parseArchiveSnapshot(value: unknown): ArchiveSnapshot | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  return value as ArchiveSnapshot;
 }
 
 export function rowAdjustmentsToRecords(row: SowingPlanRow, source: WorkAdjustmentRecord["source"]): WorkAdjustmentRecord[] {

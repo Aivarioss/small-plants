@@ -24,10 +24,14 @@ create table sowing_plan_rows (
   correction integer not null default 0,
   status plan_row_status not null default 'planned',
   source plan_row_source not null default 'user',
+  archived_at timestamptz,
+  archived_note text,
+  archive_snapshot jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint sowing_plan_total_positive check (required_plants + extra_plants > 0),
-  constraint sowing_plan_dates_order check (move_out_date >= sowing_date)
+  constraint sowing_plan_dates_order check (move_out_date >= sowing_date),
+  constraint sowing_plan_archive_snapshot_required check (archived_at is null or archive_snapshot is not null)
 );
 
 create table work_adjustments (
@@ -92,6 +96,8 @@ create table hus_events (
 create index sowing_plan_rows_sowing_date_idx on sowing_plan_rows (sowing_date);
 create index sowing_plan_rows_move_out_date_idx on sowing_plan_rows (move_out_date);
 create index sowing_plan_rows_hus_idx on sowing_plan_rows (hus);
+create index sowing_plan_rows_active_sowing_date_idx on sowing_plan_rows (sowing_date) where archived_at is null;
+create index sowing_plan_rows_archived_at_idx on sowing_plan_rows (archived_at desc) where archived_at is not null;
 create index work_adjustments_plan_row_idx on work_adjustments (sowing_plan_row_id);
 create index table_placements_plan_row_idx on table_placements (sowing_plan_row_id);
 create index change_history_plan_row_created_idx on change_history (sowing_plan_row_id, created_at desc);

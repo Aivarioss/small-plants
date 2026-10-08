@@ -15,6 +15,9 @@ export type SowingPlanRowRecord = {
   correction: number;
   status: "planned" | "imported" | "active" | "done";
   source: "user" | "import";
+  archived_at?: string | null;
+  archived_note?: string | null;
+  archive_snapshot?: unknown;
   created_at?: string;
   updated_at?: string;
 };

@@ -93,6 +93,31 @@ create table hus_events (
   updated_at timestamptz not null default now()
 );
 
+create table hus_notes (
+  id uuid primary key default gen_random_uuid(),
+  sowing_plan_row_id uuid not null references sowing_plan_rows (id) on delete cascade,
+  observation_date date,
+  note text,
+  author text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table hus_photos (
+  id uuid primary key default gen_random_uuid(),
+  sowing_plan_row_id uuid not null references sowing_plan_rows (id) on delete cascade,
+  hus_event_id uuid references hus_events (id) on delete cascade,
+  hus_note_id uuid references hus_notes (id) on delete cascade,
+  storage_bucket text not null default 'small-plants-hus-photos',
+  storage_path text not null,
+  original_file_name text not null,
+  content_type text not null check (content_type in ('image/jpeg', 'image/png')),
+  file_size_bytes integer not null check (file_size_bytes > 0 and file_size_bytes <= 10485760),
+  created_at timestamptz not null default now(),
+  constraint hus_photos_one_target check (num_nonnulls(hus_event_id, hus_note_id) = 1),
+  constraint hus_photos_storage_path_unique unique (storage_bucket, storage_path)
+);
+
 create table sowing_plan_documents (
   id uuid primary key default gen_random_uuid(),
   storage_bucket text not null default 'small-plants-plan-documents',
@@ -120,6 +145,10 @@ create index change_history_plan_row_created_idx on change_history (sowing_plan_
 create index plant_corrections_plan_row_date_idx on plant_corrections (sowing_plan_row_id, correction_date);
 create index hus_events_plan_row_date_idx on hus_events (sowing_plan_row_id, event_date);
 create index hus_events_plant_correction_idx on hus_events (plant_correction_id);
+create index hus_notes_plan_row_created_idx on hus_notes (sowing_plan_row_id, created_at desc);
+create index hus_photos_plan_row_created_idx on hus_photos (sowing_plan_row_id, created_at desc);
+create index hus_photos_event_idx on hus_photos (hus_event_id);
+create index hus_photos_note_idx on hus_photos (hus_note_id);
 create unique index sowing_plan_documents_one_current_idx
 on sowing_plan_documents (is_current)
 where is_current;
@@ -130,6 +159,41 @@ language plpgsql
 as $$
 begin
   new.updated_at = now();
+  return new;
+end;
+$$;
+
+create or replace function validate_hus_photo_target()
+returns trigger
+language plpgsql
+as $$
+declare
+  target_row_id uuid;
+begin
+  if new.hus_event_id is not null then
+    select sowing_plan_row_id
+    into target_row_id
+    from hus_events
+    where id = new.hus_event_id;
+
+    if target_row_id is null or target_row_id <> new.sowing_plan_row_id then
+      raise exception 'hus_photos.sowing_plan_row_id must match hus_events.sowing_plan_row_id'
+        using errcode = '23514';
+    end if;
+  end if;
+
+  if new.hus_note_id is not null then
+    select sowing_plan_row_id
+    into target_row_id
+    from hus_notes
+    where id = new.hus_note_id;
+
+    if target_row_id is null or target_row_id <> new.sowing_plan_row_id then
+      raise exception 'hus_photos.sowing_plan_row_id must match hus_notes.sowing_plan_row_id'
+        using errcode = '23514';
+    end if;
+  end if;
+
   return new;
 end;
 $$;
@@ -154,6 +218,14 @@ create trigger hus_events_set_updated_at
 before update on hus_events
 for each row execute function set_updated_at();
 
+create trigger hus_notes_set_updated_at
+before update on hus_notes
+for each row execute function set_updated_at();
+
+create trigger hus_photos_validate_target
+before insert or update of sowing_plan_row_id, hus_event_id, hus_note_id on hus_photos
+for each row execute function validate_hus_photo_target();
+
 create trigger sowing_plan_documents_set_updated_at
 before update on sowing_plan_documents
 for each row execute function set_updated_at();
@@ -164,6 +236,8 @@ alter table table_placements enable row level security;
 alter table change_history enable row level security;
 alter table plant_corrections enable row level security;
 alter table hus_events enable row level security;
+alter table hus_notes enable row level security;
+alter table hus_photos enable row level security;
 alter table sowing_plan_documents enable row level security;
 
 do $$
@@ -187,6 +261,31 @@ begin
       public = false,
       file_size_limit = 10485760,
       allowed_mime_types = array['image/jpeg', 'image/png', 'application/pdf'];
+  end if;
+end
+$$;
+
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.tables
+    where table_schema = 'storage'
+      and table_name = 'buckets'
+  ) then
+    insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+    values (
+      'small-plants-hus-photos',
+      'small-plants-hus-photos',
+      false,
+      10485760,
+      array['image/jpeg', 'image/png']
+    )
+    on conflict (id) do update
+    set
+      public = false,
+      file_size_limit = 10485760,
+      allowed_mime_types = array['image/jpeg', 'image/png'];
   end if;
 end
 $$;

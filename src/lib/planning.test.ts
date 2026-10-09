@@ -842,6 +842,26 @@ describe("planning calculations", () => {
           plantCorrectionId: "loss-1",
         },
       ],
+      husNotes: [
+        {
+          id: "note-1",
+          note: "Pārbaudītas saknes",
+          observationDate: "2026-10-09",
+          sowingPlanRowId: row.id,
+        },
+      ],
+      husPhotos: [
+        {
+          id: "photo-1",
+          contentType: "image/jpeg",
+          fileSizeBytes: 1200,
+          husEventId: "move-1",
+          originalFileName: "saknes.jpg",
+          sowingPlanRowId: row.id,
+          storageBucket: "small-plants-hus-photos",
+          storagePath: "hus/row/saknes.jpg",
+        },
+      ],
       adjustments: { sideShoots: "2026-10-12" },
       adjustmentSources: { sideShoots: "manual" },
     };
@@ -851,12 +871,31 @@ describe("planning calculations", () => {
     expect(snapshot.archivedAt).toBe(archivedAt);
     expect(snapshot.hus.id).toBe(row.id);
     expect(snapshot.events).toEqual(archiveRow.husEvents);
+    expect(snapshot.notes).toEqual(archiveRow.husNotes);
+    expect(snapshot.photos).toEqual(archiveRow.husPhotos);
     expect(snapshot.plantCorrections).toEqual(archiveRow.plantCorrections);
     expect(snapshot.plantBalance.actualPlants).toBe(getActualPlantCount(archiveRow));
     expect(snapshot.workAdjustments).toEqual({ sideShoots: "2026-10-12" });
     expect(snapshot.workAdjustmentSources).toEqual({ sideShoots: "manual" });
     expect(snapshot.workItems.some((item) => item.type === "sideShoots" && item.date === "2026-10-12")).toBe(true);
     expect(snapshot.worksheetDays).toHaveLength(row.cycleLength);
+
+    archiveRow.husNotes?.push({
+      id: "note-after-archive",
+      note: "Pievienots pēc arhīva",
+      sowingPlanRowId: row.id,
+    });
+    archiveRow.husPhotos?.push({
+      id: "photo-after-archive",
+      contentType: "image/png",
+      fileSizeBytes: 900,
+      originalFileName: "pec-arhiva.png",
+      sowingPlanRowId: row.id,
+      storageBucket: "small-plants-hus-photos",
+      storagePath: "hus/row/pec-arhiva.png",
+    });
+    expect(snapshot.notes).toHaveLength(1);
+    expect(snapshot.photos).toHaveLength(1);
   });
 
   it("freezes remaining active Hus dates before one Hus is archived", () => {

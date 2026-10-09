@@ -84,6 +84,8 @@ import type {
   ArchiveSnapshot,
   HusEventEntry,
   HusEventType,
+  HusNoteEntry,
+  HusPhotoEntry,
   ImportFieldKey,
   MainView,
   PlanImportCandidate,
@@ -170,6 +172,7 @@ export function PlannerApp() {
   const [planDocumentBusy, setPlanDocumentBusy] = useState(false);
   const [planDocumentMessage, setPlanDocumentMessage] = useState("");
   const [planDocumentViewerOpen, setPlanDocumentViewerOpen] = useState(false);
+  const [husPhotoViewer, setHusPhotoViewer] = useState<HusPhotoEntry | null>(null);
   const [balancePreview, setBalancePreview] = useState<WorkloadBalanceProposal[] | null>(null);
   const rowSaveChainsRef = useRef(new Map<string, Promise<SowingPlanRow>>());
 
@@ -686,6 +689,51 @@ export function PlannerApp() {
     }
   }
 
+  async function uploadHusMedia(
+    rowId: string,
+    input: { eventId?: string; files: File[]; note?: string; observationDate?: string },
+  ) {
+    setRepositoryMessage(printLanguage === "lv" ? "Saglabā HUS fotogrāfijas" : "Saving HUS photos");
+    setRepositoryError("");
+
+    try {
+      const formData = new FormData();
+      formData.append("rowId", rowId);
+      if (input.eventId) {
+        formData.append("eventId", input.eventId);
+      }
+      if (input.note?.trim()) {
+        formData.append("note", input.note.trim());
+      }
+      if (input.observationDate) {
+        formData.append("observationDate", input.observationDate);
+      }
+      input.files.forEach((file) => formData.append("photos", file));
+
+      const response = await fetch("/api/hus-media", {
+        body: formData,
+        method: "POST",
+      });
+      const result = (await response.json().catch(() => null)) as { note?: HusNoteEntry; photos?: HusPhotoEntry[]; error?: string } | null;
+
+      if (!response.ok || !result) {
+        throw new Error(result?.error ?? (printLanguage === "lv" ? "Neizdevās saglabāt HUS ierakstu." : "Could not save HUS entry."));
+      }
+
+      const update = (candidate: SowingPlanRow) =>
+        candidate.id === rowId ? mergeHusMedia(candidate, result.note, result.photos ?? []) : candidate;
+      setPlanRows((current) => current.map(update));
+      setArchivedRows((current) => current.map(update));
+      setRepositoryMessage(printLanguage === "lv" ? "HUS ieraksts saglabāts" : "HUS entry saved");
+      setRepositoryError("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : printLanguage === "lv" ? "Neizdevās saglabāt HUS ierakstu." : "Could not save HUS entry.";
+      setRepositoryMessage(message);
+      setRepositoryError(message);
+      throw error;
+    }
+  }
+
   function updateImportCandidate(id: string, field: ImportFieldKey, value: string) {
     setImportResult((current) => {
       if (!current) {
@@ -1081,6 +1129,8 @@ export function PlannerApp() {
           onArchive={archivePlanRow}
           onUpdateRow={updatePlanRow}
           onRestore={restorePlanRow}
+          onUploadHusMedia={uploadHusMedia}
+          onViewPhoto={setHusPhotoViewer}
           printLanguage={printLanguage}
           readOnly={Boolean(selectedRow.archivedAt)}
           row={selectedRow}
@@ -1140,6 +1190,7 @@ export function PlannerApp() {
       {planDocumentViewerOpen && planDocument ? (
         <SowingPlanDocumentViewer document={planDocument} onClose={() => setPlanDocumentViewerOpen(false)} />
       ) : null}
+      {husPhotoViewer ? <HusPhotoViewer photo={husPhotoViewer} onClose={() => setHusPhotoViewer(null)} /> : null}
     </main>
     </LanguageContext.Provider>
   );
@@ -1577,6 +1628,43 @@ function SowingPlanDocumentViewer({ document, onClose }: { document: SowingPlanD
   );
 }
 
+function HusPhotoStrip({ onView, photos }: { onView: (photo: HusPhotoEntry) => void; photos: HusPhotoEntry[] }) {
+  if (photos.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="hus-photo-strip">
+      {photos.map((photo) => (
+        <button className="hus-photo-thumb" key={photo.id} type="button" onClick={() => onView(photo)}>
+          <Image alt={photo.originalFileName} height={72} src={husPhotoFileUrl(photo)} unoptimized width={72} />
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function HusPhotoViewer({ onClose, photo }: { onClose: () => void; photo: HusPhotoEntry }) {
+  const language = useAppLanguage();
+
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <section aria-modal="true" aria-label={photo.originalFileName} className="plan-document-viewer hus-photo-viewer" role="dialog">
+        <div className="panel-header">
+          <div>
+            <p className="eyebrow">{language === "lv" ? "HUS fotogrāfija" : "HUS photo"}</p>
+            <h3>{photo.originalFileName}</h3>
+          </div>
+          <button className="secondary-action" type="button" onClick={onClose}>
+            {language === "lv" ? "Aizvērt" : "Close"}
+          </button>
+        </div>
+        <Image alt={photo.originalFileName} height={900} src={husPhotoFileUrl(photo)} unoptimized width={1200} />
+      </section>
+    </div>
+  );
+}
+
 function ImportReviewPanel({
   importResult,
   onChange,
@@ -1715,6 +1803,8 @@ function WorksheetView({
   onEdit,
   onRestore,
   onUpdateRow,
+  onUploadHusMedia,
+  onViewPhoto,
   printLanguage,
   readOnly = false,
   row,
@@ -1724,6 +1814,11 @@ function WorksheetView({
   onEdit: () => void;
   onRestore: (row: SowingPlanRow) => void;
   onUpdateRow: (id: string, patch: Partial<SowingPlanRow>) => void;
+  onUploadHusMedia: (
+    rowId: string,
+    input: { eventId?: string; files: File[]; note?: string; observationDate?: string },
+  ) => Promise<void>;
+  onViewPhoto: (photo: HusPhotoEntry) => void;
   printLanguage: AppLanguage;
   readOnly?: boolean;
   row: SowingPlanRow;
@@ -1732,8 +1827,17 @@ function WorksheetView({
   const [activeWorksheetTab, setActiveWorksheetTab] = useState<"works" | "worksheet">("works");
   const [eventDialogOpen, setEventDialogOpen] = useState(false);
   const [editingEvent, setEditingEvent] = useState<HusEventEntry | null>(null);
+  const [noteText, setNoteText] = useState("");
+  const [noteObservationDate, setNoteObservationDate] = useState("");
+  const [noteFiles, setNoteFiles] = useState<File[]>([]);
+  const [mediaBusy, setMediaBusy] = useState(false);
+  const [mediaError, setMediaError] = useState("");
   const archiveSnapshot = readOnly ? row.archiveSnapshot : undefined;
   const viewRow = archiveSnapshot ? rowFromArchiveSnapshot(row, archiveSnapshot) : row;
+  const husNotes = [...(viewRow.husNotes ?? [])].sort(
+    (left, right) => (right.createdAt ?? "").localeCompare(left.createdAt ?? "") || (right.observationDate ?? "").localeCompare(left.observationDate ?? ""),
+  );
+  const husPhotos = viewRow.husPhotos ?? [];
   const totalSow = getTotalSow(viewRow);
   const materials = archiveSnapshot?.materials ?? printMaterialSummary(viewRow, printLanguage);
   const balance = archiveSnapshot?.plantBalance ?? calculatePlantBalance(viewRow);
@@ -1771,6 +1875,46 @@ function WorksheetView({
   function closeEventDialog() {
     setEventDialogOpen(false);
     setEditingEvent(null);
+  }
+
+  async function saveHusNote() {
+    if (!noteText.trim() && noteFiles.length === 0) {
+      setMediaError(printLanguage === "lv" ? "Pievieno piezīmi vai fotogrāfiju." : "Add a note or photo.");
+      return;
+    }
+
+    setMediaBusy(true);
+    setMediaError("");
+    try {
+      await onUploadHusMedia(row.id, {
+        files: noteFiles,
+        note: noteText,
+        observationDate: noteObservationDate || undefined,
+      });
+      setNoteText("");
+      setNoteObservationDate("");
+      setNoteFiles([]);
+    } catch (error) {
+      setMediaError(error instanceof Error ? error.message : printLanguage === "lv" ? "Neizdevās saglabāt." : "Could not save.");
+    } finally {
+      setMediaBusy(false);
+    }
+  }
+
+  async function saveEventPhotos(entry: HusEventEntry, files: File[]) {
+    if (files.length === 0) {
+      return;
+    }
+
+    setMediaBusy(true);
+    setMediaError("");
+    try {
+      await onUploadHusMedia(row.id, { eventId: entry.id, files });
+    } catch (error) {
+      setMediaError(error instanceof Error ? error.message : printLanguage === "lv" ? "Neizdevās saglabāt foto." : "Could not save photo.");
+    } finally {
+      setMediaBusy(false);
+    }
   }
 
   return (
@@ -1921,6 +2065,24 @@ function WorksheetView({
                         <em>{signedNumber(entry.plantChange)} {printLanguage === "lv" ? "stādi" : "plants"}</em>
                       ) : null}
                       {entry.note ? <p>{entry.note}</p> : null}
+                      <HusPhotoStrip
+                        onView={onViewPhoto}
+                        photos={husPhotos.filter((photo) => photo.husEventId === entry.id)}
+                      />
+                      <label className="file-action file-action--small">
+                        {printLanguage === "lv" ? "Pievienot foto" : "Add photo"}
+                        <input
+                          accept="image/jpeg,image/png"
+                          disabled={mediaBusy}
+                          multiple
+                          onChange={(event) => {
+                            const files = Array.from(event.target.files ?? []);
+                            event.target.value = "";
+                            void saveEventPhotos(entry, files);
+                          }}
+                          type="file"
+                        />
+                      </label>
                     </div>
                     <span className="button-row">
                       {isEditableHusEvent(entry) && !readOnly ? (
@@ -1946,6 +2108,69 @@ function WorksheetView({
               </ul>
             ) : (
               <p className="empty-state">{t("noJournal", printLanguage)}</p>
+            )}
+          </section>
+          <section className="hus-journal-box hus-media-box">
+            <div className="hus-info-heading">
+              <div>
+                <p className="eyebrow">{printLanguage === "lv" ? "Piezīmes un fotogrāfijas" : "Notes and photos"}</p>
+                <h3>{printLanguage === "lv" ? "Novērojumi" : "Observations"}</h3>
+              </div>
+            </div>
+            <div className="hus-note-form">
+              <label>
+                {printLanguage === "lv" ? "Faktiskais datums" : "Observation date"}
+                <input
+                  type="date"
+                  value={noteObservationDate}
+                  onChange={(event) => setNoteObservationDate(event.target.value)}
+                />
+              </label>
+              <label>
+                {printLanguage === "lv" ? "Piezīme" : "Note"}
+                <textarea
+                  placeholder={printLanguage === "lv" ? "Brīva piezīme par šo Hus..." : "Free note for this Hus..."}
+                  value={noteText}
+                  onChange={(event) => setNoteText(event.target.value)}
+                />
+              </label>
+              <label className="file-action">
+                {printLanguage === "lv" ? "Pievienot fotogrāfijas" : "Add photos"}
+                <input
+                  accept="image/jpeg,image/png"
+                  disabled={mediaBusy}
+                  multiple
+                  onChange={(event) => setNoteFiles(Array.from(event.target.files ?? []))}
+                  type="file"
+                />
+              </label>
+              {noteFiles.length > 0 ? (
+                <span className="import-note">
+                  {noteFiles.length} {printLanguage === "lv" ? "foto izvēlēti" : "photos selected"}
+                </span>
+              ) : null}
+              <div className="button-row">
+                <button className="primary-action" disabled={mediaBusy} type="button" onClick={() => void saveHusNote()}>
+                  {t("save", printLanguage)}
+                </button>
+              </div>
+              {mediaError ? <p className="dialog-error">{mediaError}</p> : null}
+            </div>
+            {husNotes.length > 0 ? (
+              <ul className="hus-note-list">
+                {husNotes.map((note) => (
+                  <li key={note.id}>
+                    <div>
+                      <time>{note.observationDate ? shortDate(note.observationDate) : note.createdAt ? formatDateTime(note.createdAt) : "—"}</time>
+                      {note.author ? <span>{note.author}</span> : null}
+                    </div>
+                    {note.note ? <p>{note.note}</p> : null}
+                    <HusPhotoStrip onView={onViewPhoto} photos={note.photos ?? []} />
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="empty-state">{printLanguage === "lv" ? "Piezīmju vai fotogrāfiju vēl nav." : "No notes or photos yet."}</p>
             )}
           </section>
           <div className="work-list">
@@ -2031,6 +2256,8 @@ function WorksheetView({
 }
 
 function rowFromArchiveSnapshot(row: SowingPlanRow, snapshot: ArchiveSnapshot): SowingPlanRow {
+  const media = mergeSnapshotMedia(snapshot, row);
+
   return {
     ...row,
     adjustments: snapshot.workAdjustments,
@@ -2043,6 +2270,8 @@ function rowFromArchiveSnapshot(row: SowingPlanRow, snapshot: ArchiveSnapshot): 
     greenhouseRequiredPlants: snapshot.hus.greenhouseRequiredPlants,
     harvestDate: snapshot.hus.harvestDate,
     husEvents: snapshot.events,
+    husNotes: media.husNotes,
+    husPhotos: media.husPhotos,
     id: snapshot.hus.id,
     placement: snapshot.tablePlacement,
     plantCorrections: snapshot.plantCorrections,
@@ -3657,6 +3886,53 @@ async function fetchSowingPlanDocument(): Promise<SowingPlanDocument | null> {
 function planDocumentFileUrl(document: SowingPlanDocument): string {
   const version = encodeURIComponent(document.updatedAt ?? document.createdAt ?? document.id);
   return `/api/sowing-plan-document/file?v=${version}`;
+}
+
+function husPhotoFileUrl(photo: HusPhotoEntry): string {
+  const version = encodeURIComponent(photo.createdAt ?? photo.id);
+  return `/api/hus-media/photo/${photo.id}?v=${version}`;
+}
+
+function mergeHusMedia(row: SowingPlanRow, note: HusNoteEntry | undefined, photos: HusPhotoEntry[]): SowingPlanRow {
+  const nextPhotos = upsertById([...(row.husPhotos ?? []), ...photos]);
+  const nextNotes = note ? upsertById([...(row.husNotes ?? []), { ...note, photos: photos.filter((photo) => photo.husNoteId === note.id) }]) : row.husNotes;
+
+  return {
+    ...row,
+    husNotes: nextNotes,
+    husPhotos: nextPhotos,
+  };
+}
+
+function upsertById<T extends { id: string }>(items: T[]): T[] {
+  return Array.from(new Map(items.map((item) => [item.id, item])).values());
+}
+
+function mergeSnapshotMedia(snapshot: ArchiveSnapshot, row: SowingPlanRow): Pick<SowingPlanRow, "husNotes" | "husPhotos"> {
+  const photos = upsertById([...(snapshot.photos ?? []), ...(row.husPhotos ?? [])]);
+  const photosByNote = new Map<string, HusPhotoEntry[]>();
+  photos.forEach((photo) => {
+    if (photo.husNoteId) {
+      photosByNote.set(photo.husNoteId, [...(photosByNote.get(photo.husNoteId) ?? []), photo]);
+    }
+  });
+
+  return {
+    husPhotos: photos,
+    husNotes: upsertById([...(snapshot.notes ?? []), ...(row.husNotes ?? [])]).map((note) => ({
+      ...note,
+      photos: photosByNote.get(note.id) ?? note.photos ?? [],
+    })),
+  };
+}
+
+function formatDateTime(timestamp: string): string {
+  return new Intl.DateTimeFormat("lv-LV", {
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "2-digit",
+  }).format(new Date(timestamp));
 }
 
 function formatFileSize(bytes: number): string {

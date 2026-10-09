@@ -1,8 +1,10 @@
 import { plannerConfig } from "@/lib/demo-data";
-import type { ArchiveSnapshot, ChangeHistoryEntry, HusEventEntry, HusEventType, PlantCorrectionEntry, SowingPlanRow, WorkAdjustmentSources, WorkAdjustments } from "@/lib/types";
+import type { ArchiveSnapshot, ChangeHistoryEntry, HusEventEntry, HusEventType, HusNoteEntry, HusPhotoEntry, PlantCorrectionEntry, SowingPlanRow, WorkAdjustmentSources, WorkAdjustments } from "@/lib/types";
 import type {
   ChangeHistoryRecord,
   HusEventRecord,
+  HusNoteRecord,
+  HusPhotoRecord,
   PlantCorrectionRecord,
   SowingPlanRowRecord,
   SowingPlanRowWithRelations,
@@ -12,6 +14,9 @@ import type {
 
 export function recordToSowingPlanRow(record: SowingPlanRowWithRelations): SowingPlanRow {
   const placement = relationOne(record.table_placements);
+  const photos = (record.hus_photos ?? [])
+    .map(recordToHusPhoto)
+    .sort((left, right) => (left.createdAt ?? "").localeCompare(right.createdAt ?? "") || left.id.localeCompare(right.id));
 
   return {
     id: record.id,
@@ -45,6 +50,10 @@ export function recordToSowingPlanRow(record: SowingPlanRowWithRelations): Sowin
         }
       : undefined,
     changeHistory: (record.change_history ?? []).map(recordToChangeHistory),
+    husPhotos: photos,
+    husNotes: (record.hus_notes ?? [])
+      .map((note) => recordToHusNote(note, photos))
+      .sort((left, right) => (left.createdAt ?? "").localeCompare(right.createdAt ?? "") || left.id.localeCompare(right.id)),
     plantCorrections: (record.plant_corrections ?? [])
       .map(recordToPlantCorrection)
       .sort((left, right) => left.date.localeCompare(right.date) || left.id.localeCompare(right.id)),
@@ -215,5 +224,33 @@ function recordToHusEvent(record: HusEventRecord): HusEventEntry {
     note: record.note ?? undefined,
     createdAt: record.created_at,
     updatedAt: record.updated_at,
+  };
+}
+
+function recordToHusNote(record: HusNoteRecord, photos: HusPhotoEntry[]): HusNoteEntry {
+  return {
+    id: record.id,
+    author: record.author ?? undefined,
+    createdAt: record.created_at,
+    note: record.note ?? undefined,
+    observationDate: record.observation_date ?? undefined,
+    photos: photos.filter((photo) => photo.husNoteId === record.id),
+    sowingPlanRowId: record.sowing_plan_row_id,
+    updatedAt: record.updated_at,
+  };
+}
+
+function recordToHusPhoto(record: HusPhotoRecord): HusPhotoEntry {
+  return {
+    id: record.id,
+    contentType: record.content_type,
+    createdAt: record.created_at,
+    fileSizeBytes: record.file_size_bytes,
+    husEventId: record.hus_event_id ?? undefined,
+    husNoteId: record.hus_note_id ?? undefined,
+    originalFileName: record.original_file_name,
+    sowingPlanRowId: record.sowing_plan_row_id,
+    storageBucket: record.storage_bucket,
+    storagePath: record.storage_path,
   };
 }

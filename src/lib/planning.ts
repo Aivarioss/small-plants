@@ -254,16 +254,22 @@ export function buildArchiveSnapshot(
       sectorType: row.sectorType,
       status: row.status,
     },
-    workItems,
-    worksheetDays,
-    events: row.husEvents ?? [],
-    plantCorrections: row.plantCorrections ?? [],
-    tablePlacement: row.placement,
-    workAdjustments: row.adjustments,
-    workAdjustmentSources: row.adjustmentSources,
+    workItems: cloneArchiveValue(workItems),
+    worksheetDays: cloneArchiveValue(worksheetDays),
+    events: cloneArchiveValue(row.husEvents ?? []),
+    notes: cloneArchiveValue(row.husNotes ?? []),
+    photos: cloneArchiveValue(row.husPhotos ?? []),
+    plantCorrections: cloneArchiveValue(row.plantCorrections ?? []),
+    tablePlacement: cloneArchiveValue(row.placement),
+    workAdjustments: cloneArchiveValue(row.adjustments),
+    workAdjustmentSources: cloneArchiveValue(row.adjustmentSources),
     plantBalance,
     materials,
   };
+}
+
+function cloneArchiveValue<T>(value: T): T {
+  return value === undefined ? value : JSON.parse(JSON.stringify(value));
 }
 
 function isThursday(date: string): boolean {

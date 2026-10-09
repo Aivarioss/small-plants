@@ -90,10 +90,35 @@ export type HusEventRecord = {
   updated_at?: string;
 };
 
+export type HusNoteRecord = {
+  id: string;
+  sowing_plan_row_id: string;
+  observation_date: string | null;
+  note: string | null;
+  author: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type HusPhotoRecord = {
+  id: string;
+  sowing_plan_row_id: string;
+  hus_event_id: string | null;
+  hus_note_id: string | null;
+  storage_bucket: string;
+  storage_path: string;
+  original_file_name: string;
+  content_type: "image/jpeg" | "image/png";
+  file_size_bytes: number;
+  created_at?: string;
+};
+
 export type SowingPlanRowWithRelations = SowingPlanRowRecord & {
   work_adjustments?: WorkAdjustmentRecord[];
   table_placements?: TablePlacementRecord[] | TablePlacementRecord;
   change_history?: ChangeHistoryRecord[];
   plant_corrections?: PlantCorrectionRecord[];
   hus_events?: HusEventRecord[];
+  hus_notes?: HusNoteRecord[];
+  hus_photos?: HusPhotoRecord[];
 };

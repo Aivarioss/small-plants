@@ -75,6 +75,30 @@ export type HusEventEntry = {
   updatedAt?: string;
 };
 
+export type HusPhotoEntry = {
+  id: string;
+  sowingPlanRowId: string;
+  husEventId?: string;
+  husNoteId?: string;
+  storageBucket: string;
+  storagePath: string;
+  originalFileName: string;
+  contentType: "image/jpeg" | "image/png";
+  fileSizeBytes: number;
+  createdAt?: string;
+};
+
+export type HusNoteEntry = {
+  id: string;
+  sowingPlanRowId: string;
+  observationDate?: string;
+  note?: string;
+  author?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  photos?: HusPhotoEntry[];
+};
+
 export type ArchiveSnapshot = {
   version: 1;
   archivedAt: string;
@@ -97,6 +121,8 @@ export type ArchiveSnapshot = {
   workItems: WorkItem[];
   worksheetDays: WorksheetDay[];
   events: HusEventEntry[];
+  notes?: HusNoteEntry[];
+  photos?: HusPhotoEntry[];
   plantCorrections: PlantCorrectionEntry[];
   tablePlacement?: TablePlacement;
   workAdjustments?: WorkAdjustments;
@@ -140,6 +166,8 @@ export type SowingPlanRow = {
   correction: number;
   status?: "planned" | "imported" | "active" | "done";
   changeHistory?: ChangeHistoryEntry[];
+  husNotes?: HusNoteEntry[];
+  husPhotos?: HusPhotoEntry[];
   plantCorrections?: PlantCorrectionEntry[];
   husEvents?: HusEventEntry[];
   placement?: TablePlacement;

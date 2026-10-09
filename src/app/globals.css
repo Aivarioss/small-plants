@@ -1369,6 +1369,83 @@ textarea {
   font-weight: 800;
 }
 
+.hus-media-box {
+  background: #ffffff;
+}
+
+.hus-note-form {
+  display: grid;
+  gap: 10px;
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 10px;
+}
+
+.hus-note-form textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+
+.hus-note-list {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.hus-note-list li {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 10px;
+}
+
+.hus-note-list time {
+  color: var(--green-dark);
+  font-weight: 800;
+}
+
+.hus-note-list span,
+.hus-note-list p {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.hus-photo-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.hus-photo-thumb {
+  display: block;
+  width: 64px;
+  height: 64px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 0;
+}
+
+.hus-photo-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.file-action--small {
+  width: fit-content;
+  min-height: 34px;
+  margin-top: 4px;
+  padding: 6px 10px;
+  font-size: 0.82rem;
+}
+
 .movement-lines,
 .event-lines {
   display: grid;

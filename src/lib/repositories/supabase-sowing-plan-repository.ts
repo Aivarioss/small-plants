@@ -20,6 +20,9 @@ import {
   sowingPlanRowToRecord,
 } from "@/lib/supabase/mappers";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+
+const SOWING_PLAN_SELECT =
+  "*, work_adjustments(*), table_placements(*), change_history(*), plant_corrections(*), hus_events(*), hus_notes(*), hus_photos(*)";
 import type { RemoteSowingPlanRepository } from "./types";
 
 export class SowingPlanConflictError extends Error {
@@ -79,7 +82,7 @@ async function loadRowsFromSupabase(): Promise<SowingPlanRow[]> {
 
   const { data, error } = await client
     .from("sowing_plan_rows")
-    .select("*, work_adjustments(*), table_placements(*), change_history(*), plant_corrections(*), hus_events(*)")
+    .select(SOWING_PLAN_SELECT)
     .is("archived_at", null)
     .order("sowing_date", { ascending: true });
 
@@ -108,7 +111,7 @@ async function loadArchivedRowsFromSupabase(): Promise<SowingPlanRow[]> {
 
   const { data, error } = await client
     .from("sowing_plan_rows")
-    .select("*, work_adjustments(*), table_placements(*), change_history(*), plant_corrections(*), hus_events(*)")
+    .select(SOWING_PLAN_SELECT)
     .not("archived_at", "is", null)
     .order("archived_at", { ascending: false });
 
@@ -400,7 +403,7 @@ async function loadRowById(id: string): Promise<SowingPlanRow> {
   const client = createSupabaseServerClient();
   const { data, error } = await client
     .from("sowing_plan_rows")
-    .select("*, work_adjustments(*), table_placements(*), change_history(*), plant_corrections(*), hus_events(*)")
+    .select(SOWING_PLAN_SELECT)
     .eq("id", id)
     .single();
 
@@ -611,7 +614,12 @@ function isHusEventsRelationError(error: unknown): boolean {
 }
 
 function isOptionalRelationError(error: unknown): boolean {
-  return isPlantCorrectionsRelationError(error) || isHusEventsRelationError(error);
+  return (
+    isPlantCorrectionsRelationError(error) ||
+    isHusEventsRelationError(error) ||
+    isMissingRelationError(error, "hus_notes") ||
+    isMissingRelationError(error, "hus_photos")
+  );
 }
 
 function isMissingRelationError(error: unknown, relation: string): boolean {

@@ -25,6 +25,7 @@ export type WorkScheduleKind = "fixed" | "window" | "flexible";
 export type WorkSource = "automatic" | "manual" | "optimizer";
 export type WorkAdjustmentValue = string | string[];
 export type WorkAdjustments = Partial<Record<"thinning" | "sideShoots" | "sticks", WorkAdjustmentValue>>;
+export type WorkAdjustmentSources = Partial<Record<keyof WorkAdjustments, Exclude<WorkSource, "automatic">>>;
 
 export type TablePlacement = {
   primaryRow?: GreenhouseRowId;
@@ -99,6 +100,7 @@ export type ArchiveSnapshot = {
   plantCorrections: PlantCorrectionEntry[];
   tablePlacement?: TablePlacement;
   workAdjustments?: WorkAdjustments;
+  workAdjustmentSources?: WorkAdjustmentSources;
   plantBalance: {
     requiredPlants: number | null;
     initialPlants: number;
@@ -142,6 +144,7 @@ export type SowingPlanRow = {
   husEvents?: HusEventEntry[];
   placement?: TablePlacement;
   adjustments?: WorkAdjustments;
+  adjustmentSources?: WorkAdjustmentSources;
   source?: "demo" | "user" | "import";
 };
 

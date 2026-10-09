@@ -1,7 +1,7 @@
 import "server-only";
 import { plannerConfig } from "@/lib/demo-data";
-import { buildArchiveSnapshot } from "@/lib/planning";
-import type { SowingPlanRow } from "@/lib/types";
+import { buildArchiveSnapshot, freezeWorkAdjustmentsForStableActiveSchedule } from "@/lib/planning";
+import type { SowingPlanRow, WorkAdjustments } from "@/lib/types";
 import type {
   ChangeHistoryRecord,
   HusEventRecord,
@@ -221,6 +221,7 @@ async function archiveRowInSupabase(id: string, note?: string): Promise<SowingPl
   }
 
   const activeRows = await loadRowsFromSupabase();
+  await freezeActiveRowsForArchive(client, activeRows, id);
   const archivedAt = new Date().toISOString();
   const snapshot = buildArchiveSnapshot(row, activeRows, plannerConfig, archivedAt, note?.trim() || undefined);
 
@@ -259,6 +260,10 @@ async function restoreRowInSupabase(id: string): Promise<SowingPlanRow> {
     return row;
   }
 
+  await assertNoActiveDuplicateForRestore(row);
+  const activeRows = await loadRowsFromSupabase();
+  await freezeActiveRowsForArchive(client, activeRows, id);
+
   const { data, error } = await client
     .from("sowing_plan_rows")
     .update({
@@ -279,6 +284,116 @@ async function restoreRowInSupabase(id: string): Promise<SowingPlanRow> {
   }
 
   return loadRowById(id);
+}
+
+async function assertNoActiveDuplicateForRestore(row: SowingPlanRow): Promise<void> {
+  const client = createSupabaseServerClient();
+  const { data, error } = await client
+    .from("sowing_plan_rows")
+    .select("id, hus, sowing_date, move_out_date")
+    .eq("sowing_date", row.sowingDate)
+    .eq("move_out_date", row.harvestDate)
+    .is("archived_at", null);
+
+  if (error) {
+    throw error;
+  }
+
+  const duplicate = ((data ?? []) as Array<{ id: string; hus: string; sowing_date: string; move_out_date: string }>).find(
+    (candidate) =>
+      candidate.id !== row.id &&
+      normalizeHusIdentity(candidate.hus) === normalizeHusIdentity(row.sectorName) &&
+      candidate.sowing_date === row.sowingDate &&
+      candidate.move_out_date === row.harvestDate,
+  );
+
+  if (duplicate) {
+    throw new SowingPlanConflictError("Aktīvajā plānā jau ir identisks HUS cikls. Restore blocked because an identical active cycle already exists.");
+  }
+}
+
+async function freezeActiveRowsForArchive(
+  client: ReturnType<typeof createSupabaseServerClient>,
+  activeRows: SowingPlanRow[],
+  archivedRowId: string,
+): Promise<void> {
+  const frozenRows = freezeWorkAdjustmentsForStableActiveSchedule(activeRows, archivedRowId, plannerConfig);
+  const originalById = new Map(activeRows.map((row) => [row.id, row]));
+
+  for (const frozenRow of frozenRows) {
+    const originalRow = originalById.get(frozenRow.id);
+    if (!originalRow || originalRow.id === archivedRowId) {
+      continue;
+    }
+
+    const records = optimizerAdjustmentRecordsAddedByFreeze(originalRow, frozenRow);
+    if (records.length === 0) {
+      continue;
+    }
+
+    let touchQuery = client
+      .from("sowing_plan_rows")
+      .update({ status: originalRow.status ?? "planned" })
+      .eq("id", originalRow.id)
+      .is("archived_at", null);
+
+    if (originalRow.updatedAt) {
+      touchQuery = touchQuery.eq("updated_at", originalRow.updatedAt);
+    }
+
+    const { data, error } = await touchQuery.select("id").maybeSingle();
+    if (error) {
+      throw error;
+    }
+
+    if (!data) {
+      throw new SowingPlanConflictError("Aktīvais plāns mainījās arhivēšanas laikā. Pārlādē un mēģini vēlreiz.");
+    }
+
+    const { error: upsertError } = await client
+      .from("work_adjustments")
+      .upsert(records as WorkAdjustmentRecord[], { onConflict: "sowing_plan_row_id,work_type" });
+
+    if (upsertError) {
+      throw upsertError;
+    }
+  }
+}
+
+function optimizerAdjustmentRecordsAddedByFreeze(
+  originalRow: SowingPlanRow,
+  frozenRow: SowingPlanRow,
+): WorkAdjustmentRecord[] {
+  return (["thinning", "sideShoots", "sticks"] as Array<keyof WorkAdjustments>).flatMap((workType) => {
+    const existing = originalRow.adjustments?.[workType];
+    const frozen = frozenRow.adjustments?.[workType];
+    const frozenDates = adjustmentDatesForRecord(frozen);
+
+    if (adjustmentDatesForRecord(existing).length > 0 || frozenDates.length === 0) {
+      return [];
+    }
+
+    return [{
+      id: crypto.randomUUID(),
+      sowing_plan_row_id: originalRow.id,
+      work_type: workType,
+      dates: frozenDates,
+      source: "optimizer",
+      locked: true,
+    }];
+  });
+}
+
+function adjustmentDatesForRecord(value: WorkAdjustments[keyof WorkAdjustments] | undefined): string[] {
+  if (Array.isArray(value)) {
+    return value.filter(Boolean);
+  }
+
+  return value ? [value] : [];
+}
+
+function normalizeHusIdentity(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLocaleLowerCase("lv-LV");
 }
 
 async function loadRowById(id: string): Promise<SowingPlanRow> {

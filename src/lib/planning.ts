@@ -16,6 +16,7 @@ import type {
   SowingPlanRow,
   ThinningPlan,
   WorkItem,
+  WorkAdjustments,
   WorksheetDay,
   WorkloadBalanceProposal,
   WorkScheduleKind,
@@ -259,6 +260,7 @@ export function buildArchiveSnapshot(
     plantCorrections: row.plantCorrections ?? [],
     tablePlacement: row.placement,
     workAdjustments: row.adjustments,
+    workAdjustmentSources: row.adjustmentSources,
     plantBalance,
     materials,
   };
@@ -882,6 +884,85 @@ export function generateWorkItemsForRows(rows: SowingPlanRow[], config: PlannerC
   return generateBaseWorkItemsForRows(balancedRows, config);
 }
 
+const adjustableWorkTypes = ["thinning", "sideShoots", "sticks"] as const;
+
+export function freezeWorkAdjustmentsForStableActiveSchedule(
+  rows: SowingPlanRow[],
+  excludedRowId: string,
+  config: PlannerConfig,
+): SowingPlanRow[] {
+  const finalItems = generateWorkItemsForRows(rows, config);
+
+  return rows.map((row) => {
+    if (row.id === excludedRowId || row.archivedAt) {
+      return row;
+    }
+
+    const adjustments = { ...row.adjustments };
+    const adjustmentSources = { ...row.adjustmentSources };
+    let changed = false;
+
+    adjustableWorkTypes.forEach((type) => {
+      if (hasAdjustment(adjustments[type])) {
+        return;
+      }
+
+      const dates = finalItems
+        .filter((item) => item.planRowId === row.id && item.type === type)
+        .map((item) => item.date)
+        .sort();
+
+      if (dates.length === 0) {
+        return;
+      }
+
+      adjustments[type] = dates.length === 1 ? dates[0] : dates;
+      adjustmentSources[type] = "optimizer";
+      changed = true;
+    });
+
+    if (!changed) {
+      return row;
+    }
+
+    return {
+      ...row,
+      adjustments: normalizeAdjustments(adjustments),
+      adjustmentSources: normalizeAdjustmentSources(adjustments, adjustmentSources),
+    };
+  });
+}
+
+export function clearOptimizerWorkAdjustments(row: SowingPlanRow): SowingPlanRow {
+  if (!row.adjustments || !row.adjustmentSources) {
+    return row;
+  }
+
+  const adjustments = { ...row.adjustments };
+  const adjustmentSources = { ...row.adjustmentSources };
+  let changed = false;
+
+  adjustableWorkTypes.forEach((type) => {
+    if (adjustmentSources[type] !== "optimizer") {
+      return;
+    }
+
+    delete adjustments[type];
+    delete adjustmentSources[type];
+    changed = true;
+  });
+
+  if (!changed) {
+    return row;
+  }
+
+  return {
+    ...row,
+    adjustments: normalizeAdjustments(adjustments),
+    adjustmentSources: normalizeAdjustmentSources(adjustments, adjustmentSources),
+  };
+}
+
 export function applyWorkloadBalanceProposals(
   rows: SowingPlanRow[],
   proposals: WorkloadBalanceProposal[],
@@ -900,6 +981,10 @@ export function applyWorkloadBalanceProposals(
     return {
       ...row,
       adjustments: normalizeAdjustments(adjustments),
+      adjustmentSources: normalizeAdjustmentSources(adjustments, {
+        ...row.adjustmentSources,
+        ...Object.fromEntries(rowProposals.map((proposal) => [proposal.type, "optimizer"])),
+      }),
     };
   });
 }
@@ -1899,6 +1984,16 @@ function hasAdjustment(value: string | string[] | undefined): boolean {
 function normalizeAdjustments(adjustments: SowingPlanRow["adjustments"]): SowingPlanRow["adjustments"] {
   const entries = Object.entries(adjustments ?? {}).filter(([, value]) => hasAdjustment(value));
   return entries.length > 0 ? (Object.fromEntries(entries) as SowingPlanRow["adjustments"]) : undefined;
+}
+
+function normalizeAdjustmentSources(
+  adjustments: SowingPlanRow["adjustments"],
+  sources: SowingPlanRow["adjustmentSources"],
+): SowingPlanRow["adjustmentSources"] {
+  const entries = Object.entries(sources ?? {}).filter(([key]) =>
+    hasAdjustment(adjustments?.[key as keyof WorkAdjustments]),
+  );
+  return entries.length > 0 ? (Object.fromEntries(entries) as SowingPlanRow["adjustmentSources"]) : undefined;
 }
 
 function firstAdjustmentDate(value: string | string[] | undefined): string | undefined {

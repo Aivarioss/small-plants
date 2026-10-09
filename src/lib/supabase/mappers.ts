@@ -1,5 +1,5 @@
 import { plannerConfig } from "@/lib/demo-data";
-import type { ArchiveSnapshot, ChangeHistoryEntry, HusEventEntry, HusEventType, PlantCorrectionEntry, SowingPlanRow, WorkAdjustments } from "@/lib/types";
+import type { ArchiveSnapshot, ChangeHistoryEntry, HusEventEntry, HusEventType, PlantCorrectionEntry, SowingPlanRow, WorkAdjustmentSources, WorkAdjustments } from "@/lib/types";
 import type {
   ChangeHistoryRecord,
   HusEventRecord,
@@ -36,6 +36,7 @@ export function recordToSowingPlanRow(record: SowingPlanRowWithRelations): Sowin
     status: record.status,
     source: record.source,
     adjustments: recordsToAdjustments(record.work_adjustments ?? []),
+    adjustmentSources: recordsToAdjustmentSources(record.work_adjustments ?? []),
     placement: placement
       ? {
           primaryRow: placement.primary_row ?? undefined,
@@ -104,7 +105,7 @@ export function rowAdjustmentsToRecords(row: SowingPlanRow, source: WorkAdjustme
     sowing_plan_row_id: row.id,
     work_type: workType as WorkAdjustmentRecord["work_type"],
     dates: Array.isArray(value) ? value : [value],
-    source,
+    source: row.adjustmentSources?.[workType as keyof WorkAdjustments] ?? source,
     locked: true,
   }));
 }
@@ -171,6 +172,14 @@ function recordsToAdjustments(records: WorkAdjustmentRecord[]): WorkAdjustments 
   ) as WorkAdjustments;
 
   return Object.keys(adjustments).length > 0 ? adjustments : undefined;
+}
+
+function recordsToAdjustmentSources(records: WorkAdjustmentRecord[]): WorkAdjustmentSources | undefined {
+  const sources = Object.fromEntries(
+    records.map((record) => [record.work_type, record.source]),
+  ) as WorkAdjustmentSources;
+
+  return Object.keys(sources).length > 0 ? sources : undefined;
 }
 
 function recordToChangeHistory(record: ChangeHistoryRecord): ChangeHistoryEntry {

@@ -38,6 +38,8 @@ import {
   groupMonthlyPrintRowsByDate,
   groupMonthlyPrintRowsIntoDateGroups,
   formatSowingTableSelection,
+  clearOptimizerWorkAdjustments,
+  freezeWorkAdjustmentsForStableActiveSchedule,
   isAllowedMove,
   parseSowingTableSelection,
   parseHusEventMovementRows,
@@ -841,6 +843,7 @@ describe("planning calculations", () => {
         },
       ],
       adjustments: { sideShoots: "2026-10-12" },
+      adjustmentSources: { sideShoots: "manual" },
     };
     const snapshot = buildArchiveSnapshot(archiveRow, [archiveRow], { defaultPlantsPerBox: 30 }, archivedAt, "Pabeigts");
 
@@ -851,8 +854,47 @@ describe("planning calculations", () => {
     expect(snapshot.plantCorrections).toEqual(archiveRow.plantCorrections);
     expect(snapshot.plantBalance.actualPlants).toBe(getActualPlantCount(archiveRow));
     expect(snapshot.workAdjustments).toEqual({ sideShoots: "2026-10-12" });
+    expect(snapshot.workAdjustmentSources).toEqual({ sideShoots: "manual" });
     expect(snapshot.workItems.some((item) => item.type === "sideShoots" && item.date === "2026-10-12")).toBe(true);
     expect(snapshot.worksheetDays).toHaveLength(row.cycleLength);
+  });
+
+  it("freezes remaining active Hus dates before one Hus is archived", () => {
+    const rows = realisticPlanRows();
+    const targetId = "flow-h4";
+    const config = { defaultPlantsPerBox: 30 };
+    const before = workDates(generateWorkItemsForRows(rows, config)).filter((entry) => !entry.startsWith(`${targetId}:`));
+    const frozenRows = freezeWorkAdjustmentsForStableActiveSchedule(rows, targetId, config);
+    const after = workDates(generateWorkItemsForRows(frozenRows.filter((planRow) => planRow.id !== targetId), config));
+
+    expect(after).toEqual(before);
+    expect(frozenRows.find((planRow) => planRow.id !== targetId)?.adjustmentSources).toMatchObject({
+      thinning: "optimizer",
+      sideShoots: "optimizer",
+      sticks: "optimizer",
+    });
+    expect(freezeWorkAdjustmentsForStableActiveSchedule(frozenRows, targetId, config)).toEqual(frozenRows);
+  });
+
+  it("releases optimizer date freezes without deleting manual work moves", () => {
+    const adjustedRow: SowingPlanRow = {
+      ...row,
+      adjustments: {
+        sideShoots: "2026-10-12",
+        sticks: "2026-10-13",
+        thinning: "2026-10-03",
+      },
+      adjustmentSources: {
+        sideShoots: "optimizer",
+        sticks: "optimizer",
+        thinning: "manual",
+      },
+    };
+
+    expect(clearOptimizerWorkAdjustments(adjustedRow)).toMatchObject({
+      adjustments: { thinning: "2026-10-03" },
+      adjustmentSources: { thinning: "manual" },
+    });
   });
 
   it("separates active and archived rows before scheduler generation", () => {
@@ -1917,7 +1959,7 @@ describe("planning calculations", () => {
     expect(second).toEqual(first);
   });
 
-  it("recalculation clears scheduling adjustments without changing plan rows and matches clean generation", () => {
+  it("recalculation clears optimizer adjustments without changing plan rows or manual moves", () => {
     const cleanRows = realisticPlanRows();
     const adjustedRows = cleanRows.map((planRow) =>
       planRow.id === "flow-h6"
@@ -1928,14 +1970,28 @@ describe("planning calculations", () => {
               sideShoots: "2026-10-16",
               sticks: "2026-10-17",
             },
-          }
+            adjustmentSources: {
+              thinning: "manual",
+              sideShoots: "optimizer",
+              sticks: "optimizer",
+            },
+          } satisfies SowingPlanRow
         : planRow,
     );
-    const recalculatedRows = clearAdjustments(adjustedRows);
+    const recalculatedRows = adjustedRows.map(clearOptimizerWorkAdjustments);
+    const expectedRows = cleanRows.map((planRow) =>
+      planRow.id === "flow-h6"
+        ? {
+            ...planRow,
+            adjustments: { thinning: "2026-10-07" },
+            adjustmentSources: { thinning: "manual" },
+          } satisfies SowingPlanRow
+        : planRow,
+    );
 
-    expect(recalculatedRows.map(planRowData)).toEqual(cleanRows.map(planRowData));
-    expect(workDates(generateWorkItemsForRows(recalculatedRows, { defaultPlantsPerBox: 30 }))).toEqual(
-      workDates(generateWorkItemsForRows(cleanRows, { defaultPlantsPerBox: 30 })),
+    expect(recalculatedRows.map(planRowData)).toEqual(expectedRows.map(planRowData));
+    expect(workDatesForRow(generateWorkItemsForRows(recalculatedRows, { defaultPlantsPerBox: 30 }), "flow-h6")).toContain(
+      "2026-10-07:flow-h6:thinning:1",
     );
   });
 
@@ -2158,14 +2214,6 @@ function mandatoryWorkCounts(items: WorkItem[]): string[] {
 
 function mandatoryWorkTypes(items: WorkItem[]): WorkType[] {
   return [...new Set(items.filter((item) => item.type !== "previcure").map((item) => item.type))].sort();
-}
-
-function clearAdjustments(rows: SowingPlanRow[]): SowingPlanRow[] {
-  return rows.map((planRow) => {
-    const data = { ...planRow };
-    delete data.adjustments;
-    return data;
-  });
 }
 
 function planRowData(planRow: SowingPlanRow): Omit<SowingPlanRow, "adjustments"> {

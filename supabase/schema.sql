@@ -93,17 +93,36 @@ create table hus_events (
   updated_at timestamptz not null default now()
 );
 
+create table sowing_plan_documents (
+  id uuid primary key default gen_random_uuid(),
+  storage_bucket text not null default 'small-plants-plan-documents',
+  storage_path text not null,
+  original_file_name text not null,
+  content_type text not null check (content_type in ('image/jpeg', 'image/png', 'application/pdf')),
+  file_size_bytes integer not null check (file_size_bytes > 0 and file_size_bytes <= 10485760),
+  is_current boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint sowing_plan_documents_storage_path_unique unique (storage_bucket, storage_path)
+);
+
 create index sowing_plan_rows_sowing_date_idx on sowing_plan_rows (sowing_date);
 create index sowing_plan_rows_move_out_date_idx on sowing_plan_rows (move_out_date);
 create index sowing_plan_rows_hus_idx on sowing_plan_rows (hus);
 create index sowing_plan_rows_active_sowing_date_idx on sowing_plan_rows (sowing_date) where archived_at is null;
 create index sowing_plan_rows_archived_at_idx on sowing_plan_rows (archived_at desc) where archived_at is not null;
+create unique index sowing_plan_rows_active_cycle_identity_idx
+on sowing_plan_rows (lower(btrim(hus)), sowing_date, move_out_date)
+where archived_at is null;
 create index work_adjustments_plan_row_idx on work_adjustments (sowing_plan_row_id);
 create index table_placements_plan_row_idx on table_placements (sowing_plan_row_id);
 create index change_history_plan_row_created_idx on change_history (sowing_plan_row_id, created_at desc);
 create index plant_corrections_plan_row_date_idx on plant_corrections (sowing_plan_row_id, correction_date);
 create index hus_events_plan_row_date_idx on hus_events (sowing_plan_row_id, event_date);
 create index hus_events_plant_correction_idx on hus_events (plant_correction_id);
+create unique index sowing_plan_documents_one_current_idx
+on sowing_plan_documents (is_current)
+where is_current;
 
 create or replace function set_updated_at()
 returns trigger
@@ -135,12 +154,42 @@ create trigger hus_events_set_updated_at
 before update on hus_events
 for each row execute function set_updated_at();
 
+create trigger sowing_plan_documents_set_updated_at
+before update on sowing_plan_documents
+for each row execute function set_updated_at();
+
 alter table sowing_plan_rows enable row level security;
 alter table work_adjustments enable row level security;
 alter table table_placements enable row level security;
 alter table change_history enable row level security;
 alter table plant_corrections enable row level security;
 alter table hus_events enable row level security;
+alter table sowing_plan_documents enable row level security;
+
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.tables
+    where table_schema = 'storage'
+      and table_name = 'buckets'
+  ) then
+    insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+    values (
+      'small-plants-plan-documents',
+      'small-plants-plan-documents',
+      false,
+      10485760,
+      array['image/jpeg', 'image/png', 'application/pdf']
+    )
+    on conflict (id) do update
+    set
+      public = false,
+      file_size_limit = 10485760,
+      allowed_mime_types = array['image/jpeg', 'image/png', 'application/pdf'];
+  end if;
+end
+$$;
 
 -- Shared-password app model:
 -- The browser must not receive Supabase credentials and should have no direct table access.

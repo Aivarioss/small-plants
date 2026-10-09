@@ -15,6 +15,7 @@ import {
   countMainWork,
   calculateSowingPlan,
   calculateThinningPlan,
+  clearOptimizerWorkAdjustments,
   compareSowingRowsByDate,
   createPlacementPlan,
   dateLabel,
@@ -80,6 +81,7 @@ import {
 import { sowingPlanRepository } from "@/lib/repositories/sowing-plan-repository";
 import type {
   ChangeHistoryEntry,
+  ArchiveSnapshot,
   HusEventEntry,
   HusEventType,
   ImportFieldKey,
@@ -360,6 +362,7 @@ export function PlannerApp() {
     const persistedRow = {
       ...next,
       adjustments: options?.resetSchedule ? undefined : sanitizeAdjustments(next),
+      adjustmentSources: options?.resetSchedule ? undefined : sanitizeAdjustmentSources(next),
       changeHistory: appendChangeHistory(previous, next, patch, options?.resetSchedule),
     };
 
@@ -412,7 +415,7 @@ export function PlannerApp() {
     try {
       await rowSaveChainsRef.current.get(row.id);
       const archived = await archiveRow(row.id, note);
-      setPlanRows((current) => current.filter((candidate) => candidate.id !== row.id));
+      await reloadRows("Hus arhivēts");
       setArchivedRows((current) => [archived, ...current.filter((candidate) => candidate.id !== archived.id)]);
       setSelectedRowId((current) => (current === row.id ? "" : current));
       setActiveView("hus");
@@ -565,6 +568,10 @@ export function PlannerApp() {
         ...row.adjustments,
         [adjustmentKey]: date,
       },
+      adjustmentSources: {
+        ...row.adjustmentSources,
+        [adjustmentKey]: "manual",
+      },
     });
     setMoveErrors((current) => ({ ...current, [item.id]: "" }));
   }
@@ -589,6 +596,10 @@ export function PlannerApp() {
       adjustments: {
         ...row.adjustments,
         [adjustmentKey]: dates.length === 1 ? dates[0] : dates,
+      },
+      adjustmentSources: {
+        ...row.adjustmentSources,
+        [adjustmentKey]: "manual",
       },
     });
     setMoveErrors((current) => ({ ...current, [item.id]: "" }));
@@ -833,6 +844,10 @@ export function PlannerApp() {
       return {
         ...row,
         adjustments,
+        adjustmentSources: {
+          ...row.adjustmentSources,
+          ...Object.fromEntries(proposals.map((proposal) => [proposal.type, "optimizer"])),
+        },
         changeHistory: [
           ...(row.changeHistory ?? []),
           ...proposals.map((proposal) =>
@@ -853,46 +868,45 @@ export function PlannerApp() {
   }
 
   function recalculateAutomaticPlan() {
-    const rowsWithAdjustments = planRows.filter((row) => hasManualWorkMoves(row));
+    const nextRows = planRows.map((row) => {
+      const next = clearOptimizerWorkAdjustments(row);
+      if (next === row) {
+        return row;
+      }
 
-    if (rowsWithAdjustments.length === 0) {
+      return {
+        ...next,
+        changeHistory: [
+          ...(next.changeHistory ?? []),
+          historyEntry(
+            "Darbu plāns pārrēķināts",
+            formatAdjustmentSummary(row.adjustments),
+            formatAdjustmentSummary(next.adjustments),
+            "Notīrīti algoritma iesaldētie darba datumi",
+          ),
+        ],
+      };
+    });
+    const changedRows = nextRows.filter((row, index) => rowsDiffer(planRows[index], row));
+
+    if (changedRows.length === 0) {
       setRepositoryMessage("Plāns jau tiek rēķināts automātiski");
       return;
     }
 
     const confirmed = window.confirm(
       `Pārrēķināt darbu plānu no ${planRows.length} esošajām Hus rindām ar jauno scheduler algoritmu?\n\n` +
-        "Tas nedzēsīs Hus/sēšanas datus. Tiks notīrīti saglabātie darba datumu pārcēlumi, lai kalendārs atkal tiktu ģenerēts automātiski.",
+        "Tas nedzēsīs Hus/sēšanas datus vai manuāli pārceltos datumus. Tiks notīrīti tikai algoritma iesaldētie datumi.",
     );
 
     if (!confirmed) {
       return;
     }
 
-    const nextRows = planRows.map((row) => {
-      if (!hasManualWorkMoves(row)) {
-        return row;
-      }
-
-      return {
-        ...row,
-        adjustments: undefined,
-        changeHistory: [
-          ...(row.changeHistory ?? []),
-          historyEntry(
-            "Darbu plāns pārrēķināts",
-            formatAdjustmentSummary(row.adjustments),
-            "Automātisks scheduler",
-            "Notīrīti saglabātie darba datumu pārcēlumi",
-          ),
-        ],
-      };
-    });
-
     setBalancePreview(null);
     setPlanRows(nextRows);
     void persistRowDiff(planRows, nextRows);
-    setRepositoryMessage(`Pārrēķina ${rowsWithAdjustments.length} Hus darbu datumus`);
+    setRepositoryMessage(`Pārrēķina ${changedRows.length} Hus algoritma iesaldētos darba datumus`);
   }
 
   return (
@@ -1718,12 +1732,13 @@ function WorksheetView({
   const [activeWorksheetTab, setActiveWorksheetTab] = useState<"works" | "worksheet">("works");
   const [eventDialogOpen, setEventDialogOpen] = useState(false);
   const [editingEvent, setEditingEvent] = useState<HusEventEntry | null>(null);
-  const totalSow = getTotalSow(row);
-  const materials = printMaterialSummary(row, printLanguage);
   const archiveSnapshot = readOnly ? row.archiveSnapshot : undefined;
-  const balance = archiveSnapshot?.plantBalance ?? calculatePlantBalance(row);
-  const worksheetDays = archiveSnapshot?.worksheetDays ?? generateWorksheetDaysFromWorkItems(row, workItems);
-  const displayedHusEvents = archiveSnapshot?.events ?? row.husEvents ?? [];
+  const viewRow = archiveSnapshot ? rowFromArchiveSnapshot(row, archiveSnapshot) : row;
+  const totalSow = getTotalSow(viewRow);
+  const materials = archiveSnapshot?.materials ?? printMaterialSummary(viewRow, printLanguage);
+  const balance = archiveSnapshot?.plantBalance ?? calculatePlantBalance(viewRow);
+  const worksheetDays = archiveSnapshot?.worksheetDays ?? generateWorksheetDaysFromWorkItems(viewRow, workItems);
+  const displayedHusEvents = archiveSnapshot?.events ?? viewRow.husEvents ?? [];
   const chronologicalWorkItems = [...workItems].sort(
     (left, right) => left.date.localeCompare(right.date) || left.title.localeCompare(right.title, "lv"),
   );
@@ -1787,8 +1802,8 @@ function WorksheetView({
                 if (
                   window.confirm(
                     printLanguage === "lv"
-                      ? `${row.sectorName} tiks pārvietots uz arhīvu un vairs nebūs aktīvajā kalendārā. Turpināt?`
-                      : `${row.sectorName} will move to the archive and no longer appear in the active calendar. Continue?`,
+                      ? `${viewRow.sectorName} tiks pārvietots uz arhīvu un vairs nebūs aktīvajā kalendārā. Turpināt?`
+                      : `${viewRow.sectorName} will move to the archive and no longer appear in the active calendar. Continue?`,
                   )
                 ) {
                   onArchive(row, note);
@@ -1839,8 +1854,8 @@ function WorksheetView({
             <div className="hus-info-heading">
               <div>
                 <p className="eyebrow">{t("husInfo", printLanguage)}</p>
-                <h3>{row.sectorName}</h3>
-                <span>{row.variety}</span>
+                <h3>{viewRow.sectorName}</h3>
+                <span>{viewRow.variety}</span>
               </div>
               <strong className={balance.tone === "short" ? "danger-text" : ""}>{balance.label}</strong>
             </div>
@@ -1849,8 +1864,8 @@ function WorksheetView({
                 {t("greenhouseRequired", printLanguage)}:{" "}
                 {balance.requiredPlants === null ? t("noTablesSet", printLanguage) : balance.requiredPlants.toLocaleString("lv-LV")}
               </span>
-              <span>{t("agronomistSowing", printLanguage)}: {row.requiredPlants.toLocaleString("lv-LV")}</span>
-              <span>{t("extra", printLanguage)}: {signedNumber(row.extraPlants)}</span>
+              <span>{t("agronomistSowing", printLanguage)}: {viewRow.requiredPlants.toLocaleString("lv-LV")}</span>
+              <span>{t("extra", printLanguage)}: {signedNumber(viewRow.extraPlants)}</span>
               <span>{t("seededInitial", printLanguage)}: {balance.initialPlants.toLocaleString("lv-LV")}</span>
               <span>{printLanguage === "lv" ? "Zudumi/korekcijas" : "Losses/corrections"}: {signedNumber(balance.correctionTotal)}</span>
               <span>{t("currentActual", printLanguage)}: {balance.actualPlants.toLocaleString("lv-LV")}</span>
@@ -1884,7 +1899,7 @@ function WorksheetView({
                   <li key={entry.id}>
                     <div className="hus-journal-list__date">
                       <time>{shortDate(entry.eventDate)}</time>
-                      <span>{formatCycleDay(getCycleDay(row, entry.eventDate), printLanguage)}</span>
+                      <span>{formatCycleDay(getCycleDay(viewRow, entry.eventDate), printLanguage)}</span>
                     </div>
                     <div className="hus-journal-list__body">
                       <strong>{husEventTypeTitle(entry.eventType, printLanguage)}</strong>
@@ -1942,9 +1957,9 @@ function WorksheetView({
                   <span>
                     {formatCycleDay(item.cycleDay, printLanguage)} · {item.source === "manual" ? t("manual", printLanguage) : t("automatic", printLanguage)}
                   </span>
-                  {localizedWorkDetails(item, row, printLanguage).length > 0 ? (
+                  {localizedWorkDetails(item, viewRow, printLanguage).length > 0 ? (
                     <ul>
-                      {localizedWorkDetails(item, row, printLanguage).map((detail) => (
+                      {localizedWorkDetails(item, viewRow, printLanguage).map((detail) => (
                         <li key={detail}>{detail}</li>
                       ))}
                     </ul>
@@ -1969,12 +1984,12 @@ function WorksheetView({
 
       <article className={`print-page worksheet-page ${activeWorksheetTab === "worksheet" ? "" : "screen-hidden"}`}>
         <header className="worksheet-header">
-          <h1 className="print-only-title">{row.sectorName} · {printLabel(printLanguage, "worksheet")}</h1>
+          <h1 className="print-only-title">{viewRow.sectorName} · {printLabel(printLanguage, "worksheet")}</h1>
           <div className="worksheet-meta">
-            <span><strong>{printLabel(printLanguage, "sowing")}:</strong> {shortDate(row.sowingDate)}</span>
+            <span><strong>{printLabel(printLanguage, "sowing")}:</strong> {shortDate(viewRow.sowingDate)}</span>
             <span><strong>{printLabel(printLanguage, "plants")}:</strong> {totalSow.toLocaleString("lv-LV")}</span>
-            <span><strong>{printLabel(printLanguage, "variety")}:</strong> {row.variety}</span>
-            <span><strong>{printLabel(printLanguage, "planting")}:</strong> {shortDate(row.harvestDate)}</span>
+            <span><strong>{printLabel(printLanguage, "variety")}:</strong> {viewRow.variety}</span>
+            <span><strong>{printLabel(printLanguage, "planting")}:</strong> {shortDate(viewRow.harvestDate)}</span>
             <span><strong>{printLabel(printLanguage, "sowingTables")}:</strong> {materials.sowingTables}</span>
           </div>
           <div className="worksheet-needed">
@@ -2013,6 +2028,33 @@ function WorksheetView({
       </article>
     </section>
   );
+}
+
+function rowFromArchiveSnapshot(row: SowingPlanRow, snapshot: ArchiveSnapshot): SowingPlanRow {
+  return {
+    ...row,
+    adjustments: snapshot.workAdjustments,
+    adjustmentSources: snapshot.workAdjustmentSources,
+    archiveSnapshot: snapshot,
+    archivedAt: row.archivedAt ?? snapshot.archivedAt,
+    archivedNote: row.archivedNote ?? snapshot.archivedNote,
+    cycleLength: snapshot.hus.cycleLength,
+    extraPlants: snapshot.hus.extraPlants,
+    greenhouseRequiredPlants: snapshot.hus.greenhouseRequiredPlants,
+    harvestDate: snapshot.hus.harvestDate,
+    husEvents: snapshot.events,
+    id: snapshot.hus.id,
+    placement: snapshot.tablePlacement,
+    plantCorrections: snapshot.plantCorrections,
+    requiredPlants: snapshot.hus.requiredPlants,
+    sectorName: snapshot.hus.sectorName,
+    sectorType: snapshot.hus.sectorType,
+    sowingDate: snapshot.hus.sowingDate,
+    sowingTables: snapshot.hus.sowingTables,
+    status: snapshot.hus.status,
+    variety: snapshot.hus.variety,
+    weekNumber: snapshot.hus.weekNumber,
+  };
 }
 
 function MonthlyPrintPlan({
@@ -3479,6 +3521,15 @@ function sanitizeAdjustments(row: SowingPlanRow): SowingPlanRow["adjustments"] {
     );
   });
   return Object.fromEntries(entries) as SowingPlanRow["adjustments"];
+}
+
+function sanitizeAdjustmentSources(row: SowingPlanRow): SowingPlanRow["adjustmentSources"] {
+  const entries = Object.entries(row.adjustmentSources ?? {}).filter(([key]) => {
+    const value = row.adjustments?.[key as keyof NonNullable<SowingPlanRow["adjustments"]>];
+    return Array.isArray(value) ? value.length > 0 : Boolean(value);
+  });
+
+  return entries.length > 0 ? (Object.fromEntries(entries) as SowingPlanRow["adjustmentSources"]) : undefined;
 }
 
 function rowsDiffer(previous: SowingPlanRow, next: SowingPlanRow): boolean {

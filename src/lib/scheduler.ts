@@ -333,7 +333,7 @@ function deadlineJobsForRow(row: SowingPlanRow, warnings: ScheduleWarning[]): De
       workload: workloadForDate(job.type, manualDates.length),
       splittable: false,
       preferredDates: [date],
-      source: "manual",
+      source: row.adjustmentSources?.[job.type] ?? "manual",
       locked: true,
     }));
   });

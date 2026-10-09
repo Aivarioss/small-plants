@@ -47,6 +47,7 @@ describe("HUS media API", () => {
       photos: [],
     });
     vi.mocked(createSupabaseHusMediaRepository).mockReturnValue({
+      deletePhoto: vi.fn(),
       downloadPhoto: vi.fn(),
       save,
     });

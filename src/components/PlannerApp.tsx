@@ -72,6 +72,7 @@ import {
   writeStoredLanguage,
   type AppLanguage,
 } from "@/lib/localization";
+import { compressHusPhotoForUpload } from "@/lib/image-compression";
 import {
   archiveRow,
   loadArchivedRows,
@@ -695,8 +696,10 @@ export function PlannerApp() {
   ) {
     setRepositoryMessage(printLanguage === "lv" ? "Saglabā HUS fotogrāfijas" : "Saving HUS photos");
     setRepositoryError("");
+    const beforeCount = countHusMediaTarget([...planRows, ...archivedRows], rowId, input.eventId);
 
     try {
+      const preparedFiles = await prepareHusPhotoFiles(input.files);
       const formData = new FormData();
       formData.append("rowId", rowId);
       if (input.eventId) {
@@ -708,7 +711,7 @@ export function PlannerApp() {
       if (input.observationDate) {
         formData.append("observationDate", input.observationDate);
       }
-      input.files.forEach((file) => formData.append("photos", file));
+      preparedFiles.forEach((file) => formData.append("photos", file));
 
       const response = await fetch("/api/hus-media", {
         body: formData,
@@ -727,10 +730,65 @@ export function PlannerApp() {
       setRepositoryMessage(printLanguage === "lv" ? "HUS ieraksts saglabāts" : "HUS entry saved");
       setRepositoryError("");
     } catch (error) {
+      if (isFetchFailure(error)) {
+        const recovered = await reconcileHusMediaAfterFetchFailure(rowId, input.eventId, beforeCount);
+        if (recovered) {
+          setRepositoryMessage(
+            printLanguage === "lv"
+              ? "Foto saglabājās, bet savienojums pārtrūka. Dati pārlādēti."
+              : "Photo was saved, but the connection dropped. Data reloaded.",
+          );
+          setRepositoryError("");
+          return;
+        }
+      }
       const message = error instanceof Error ? error.message : printLanguage === "lv" ? "Neizdevās saglabāt HUS ierakstu." : "Could not save HUS entry.";
       setRepositoryMessage(message);
       setRepositoryError(message);
       throw error;
+    }
+  }
+
+  async function reconcileHusMediaAfterFetchFailure(rowId: string, eventId: string | undefined, beforeCount: number): Promise<boolean> {
+    try {
+      const [activeRows, archiveRows] = await Promise.all([sowingPlanRepository.load(), loadArchivedRows()]);
+      setPlanRows(activeRows);
+      setArchivedRows(archiveRows);
+      const afterCount = countHusMediaTarget([...activeRows, ...archiveRows], rowId, eventId);
+      return afterCount > beforeCount;
+    } catch {
+      return false;
+    }
+  }
+
+  async function deleteHusPhoto(photo: HusPhotoEntry) {
+    setRepositoryMessage(printLanguage === "lv" ? "Dzēš HUS foto" : "Deleting HUS photo");
+    setRepositoryError("");
+
+    try {
+      const response = await fetch(`/api/hus-media/photo/${photo.id}`, { method: "DELETE" });
+      const result = (await response.json().catch(() => null)) as { error?: string; ok?: boolean; storageRemoved?: boolean } | null;
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.error ?? (printLanguage === "lv" ? "Neizdevās dzēst foto." : "Could not delete photo."));
+      }
+
+      const update = (candidate: SowingPlanRow) => removeHusPhoto(candidate, photo.id);
+      setPlanRows((current) => current.map(update));
+      setArchivedRows((current) => current.map(update));
+      setHusPhotoViewer(null);
+      setRepositoryMessage(
+        result.storageRemoved === false
+          ? printLanguage === "lv"
+            ? "Foto noņemts no HUS. Storage tīrīšana jāatkārto vēlāk."
+            : "Photo removed from HUS. Storage cleanup should be retried later."
+          : printLanguage === "lv"
+            ? "Foto dzēsts"
+            : "Photo deleted",
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : printLanguage === "lv" ? "Neizdevās dzēst foto." : "Could not delete photo.";
+      setRepositoryMessage(message);
+      setRepositoryError(message);
     }
   }
 
@@ -1190,7 +1248,13 @@ export function PlannerApp() {
       {planDocumentViewerOpen && planDocument ? (
         <SowingPlanDocumentViewer document={planDocument} onClose={() => setPlanDocumentViewerOpen(false)} />
       ) : null}
-      {husPhotoViewer ? <HusPhotoViewer photo={husPhotoViewer} onClose={() => setHusPhotoViewer(null)} /> : null}
+      {husPhotoViewer ? (
+        <HusPhotoViewer
+          photo={husPhotoViewer}
+          onClose={() => setHusPhotoViewer(null)}
+          onDelete={(photo) => void deleteHusPhoto(photo)}
+        />
+      ) : null}
     </main>
     </LanguageContext.Provider>
   );
@@ -1644,7 +1708,15 @@ function HusPhotoStrip({ onView, photos }: { onView: (photo: HusPhotoEntry) => v
   );
 }
 
-function HusPhotoViewer({ onClose, photo }: { onClose: () => void; photo: HusPhotoEntry }) {
+function HusPhotoViewer({
+  onClose,
+  onDelete,
+  photo,
+}: {
+  onClose: () => void;
+  onDelete: (photo: HusPhotoEntry) => void;
+  photo: HusPhotoEntry;
+}) {
   const language = useAppLanguage();
 
   return (
@@ -1657,6 +1729,17 @@ function HusPhotoViewer({ onClose, photo }: { onClose: () => void; photo: HusPho
           </div>
           <button className="secondary-action" type="button" onClick={onClose}>
             {language === "lv" ? "Aizvērt" : "Close"}
+          </button>
+          <button
+            className="danger-action"
+            type="button"
+            onClick={() => {
+              if (window.confirm(language === "lv" ? "Dzēst šo foto?" : "Delete this photo?")) {
+                onDelete(photo);
+              }
+            }}
+          >
+            {language === "lv" ? "Dzēst foto" : "Delete photo"}
           </button>
         </div>
         <Image alt={photo.originalFileName} height={900} src={husPhotoFileUrl(photo)} unoptimized width={1200} />
@@ -3893,6 +3976,14 @@ function husPhotoFileUrl(photo: HusPhotoEntry): string {
   return `/api/hus-media/photo/${photo.id}?v=${version}`;
 }
 
+async function prepareHusPhotoFiles(files: File[]): Promise<File[]> {
+  const compressed: File[] = [];
+  for (const file of files) {
+    compressed.push(await compressHusPhotoForUpload(file));
+  }
+  return compressed;
+}
+
 function mergeHusMedia(row: SowingPlanRow, note: HusNoteEntry | undefined, photos: HusPhotoEntry[]): SowingPlanRow {
   const nextPhotos = upsertById([...(row.husPhotos ?? []), ...photos]);
   const nextNotes = note ? upsertById([...(row.husNotes ?? []), { ...note, photos: photos.filter((photo) => photo.husNoteId === note.id) }]) : row.husNotes;
@@ -3904,12 +3995,28 @@ function mergeHusMedia(row: SowingPlanRow, note: HusNoteEntry | undefined, photo
   };
 }
 
+function removeHusPhoto(row: SowingPlanRow, photoId: string): SowingPlanRow {
+  const husPhotos = (row.husPhotos ?? []).filter((photo) => photo.id !== photoId);
+  const husNotes = (row.husNotes ?? [])
+    .map((note) => ({
+      ...note,
+      photos: (note.photos ?? []).filter((photo) => photo.id !== photoId),
+    }))
+    .filter((note) => Boolean(note.note?.trim()) || (note.photos ?? []).length > 0);
+
+  return {
+    ...row,
+    husNotes,
+    husPhotos,
+  };
+}
+
 function upsertById<T extends { id: string }>(items: T[]): T[] {
   return Array.from(new Map(items.map((item) => [item.id, item])).values());
 }
 
 function mergeSnapshotMedia(snapshot: ArchiveSnapshot, row: SowingPlanRow): Pick<SowingPlanRow, "husNotes" | "husPhotos"> {
-  const photos = upsertById([...(snapshot.photos ?? []), ...(row.husPhotos ?? [])]);
+  const photos = upsertById(row.husPhotos ?? []);
   const photosByNote = new Map<string, HusPhotoEntry[]>();
   photos.forEach((photo) => {
     if (photo.husNoteId) {
@@ -3919,11 +4026,28 @@ function mergeSnapshotMedia(snapshot: ArchiveSnapshot, row: SowingPlanRow): Pick
 
   return {
     husPhotos: photos,
-    husNotes: upsertById([...(snapshot.notes ?? []), ...(row.husNotes ?? [])]).map((note) => ({
+    husNotes: upsertById(row.husNotes ?? []).map((note) => ({
       ...note,
       photos: photosByNote.get(note.id) ?? note.photos ?? [],
     })),
   };
+}
+
+function countHusMediaTarget(rows: SowingPlanRow[], rowId: string, eventId: string | undefined): number {
+  const row = rows.find((candidate) => candidate.id === rowId);
+  if (!row) {
+    return 0;
+  }
+
+  if (eventId) {
+    return (row.husPhotos ?? []).filter((photo) => photo.husEventId === eventId).length;
+  }
+
+  return (row.husNotes ?? []).length + (row.husPhotos ?? []).filter((photo) => !photo.husEventId).length;
+}
+
+function isFetchFailure(error: unknown): boolean {
+  return error instanceof TypeError || (error instanceof Error && error.message.toLowerCase().includes("failed to fetch"));
 }
 
 function formatDateTime(timestamp: string): string {

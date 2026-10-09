@@ -3,7 +3,7 @@ import { NextRequest } from "next/server";
 import { hasValidSession } from "@/lib/auth/session";
 import { createSupabaseHusMediaRepository } from "@/lib/repositories/supabase-hus-media-repository";
 import { isSupabaseServerConfigured } from "@/lib/supabase/server";
-import { GET } from "./route";
+import { DELETE, GET } from "./route";
 
 vi.mock("@/lib/auth/session", () => ({
   hasValidSession: vi.fn(),
@@ -38,6 +38,7 @@ describe("HUS media photo API", () => {
 
   it("returns the private storage image inline", async () => {
     vi.mocked(createSupabaseHusMediaRepository).mockReturnValue({
+      deletePhoto: vi.fn(),
       downloadPhoto: vi.fn().mockResolvedValue({
         file: new Blob(["jpg"], { type: "image/jpeg" }),
         photo: {
@@ -59,6 +60,29 @@ describe("HUS media photo API", () => {
     expect(response.headers.get("Content-Type")).toBe("image/jpeg");
     expect(response.headers.get("Content-Disposition")).toContain("inline");
     await expect(response.text()).resolves.toBe("jpg");
+  });
+
+  it("deletes a private HUS photo through the protected API", async () => {
+    const deletePhoto = vi.fn().mockResolvedValue({ storageRemoved: true });
+    vi.mocked(createSupabaseHusMediaRepository).mockReturnValue({
+      deletePhoto,
+      downloadPhoto: vi.fn(),
+      save: vi.fn(),
+    });
+
+    const response = await DELETE(new NextRequest("http://localhost/api/hus-media/photo/photo-id"), params("photo-id"));
+
+    expect(response.status).toBe(200);
+    expect(deletePhoto).toHaveBeenCalledWith("photo-id");
+    await expect(response.json()).resolves.toEqual({ ok: true, storageRemoved: true });
+  });
+
+  it("requires authentication for deleting a photo", async () => {
+    vi.mocked(hasValidSession).mockResolvedValue(false);
+
+    const response = await DELETE(new NextRequest("http://localhost/api/hus-media/photo/photo-id"), params("photo-id"));
+
+    expect(response.status).toBe(401);
   });
 });
 

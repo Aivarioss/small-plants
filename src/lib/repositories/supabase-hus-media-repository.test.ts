@@ -199,6 +199,70 @@ describe("supabase HUS media repository", () => {
     expect(result.file).toBe(blob);
     expect(download).toHaveBeenCalledWith(photoRecord.storage_path);
   });
+
+  it("deletes photo metadata before removing storage to avoid broken references", async () => {
+    const remove = vi.fn().mockResolvedValue({ error: null });
+    const deleteEq = vi.fn().mockResolvedValue({ error: null });
+    const calls: string[] = [];
+    const client = {
+      storage: {
+        from: vi.fn().mockReturnValue({
+          remove: (...args: unknown[]) => {
+            calls.push("storage.remove");
+            return remove(...args);
+          },
+        }),
+      },
+      from: vi.fn((table: string) => {
+        if (table !== "hus_photos") {
+          throw new Error(`Unexpected table ${table}`);
+        }
+
+        return {
+          delete: vi.fn().mockReturnValue({
+            eq: (...args: unknown[]) => {
+              calls.push("db.delete");
+              return deleteEq(...args);
+            },
+          }),
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              single: vi.fn().mockResolvedValue({ data: photoRecord, error: null }),
+            }),
+          }),
+        };
+      }),
+    };
+    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
+
+    await expect(createSupabaseHusMediaRepository().deletePhoto(photoRecord.id)).resolves.toEqual({ storageRemoved: true });
+
+    expect(calls).toEqual(["db.delete", "storage.remove"]);
+    expect(remove).toHaveBeenCalledWith([photoRecord.storage_path]);
+  });
+
+  it("keeps HUS references clean when storage cleanup fails after metadata delete", async () => {
+    const client = {
+      storage: {
+        from: vi.fn().mockReturnValue({
+          remove: vi.fn().mockResolvedValue({ error: { message: "storage failed" } }),
+        }),
+      },
+      from: vi.fn().mockReturnValue({
+        delete: vi.fn().mockReturnValue({
+          eq: vi.fn().mockResolvedValue({ error: null }),
+        }),
+        select: vi.fn().mockReturnValue({
+          eq: vi.fn().mockReturnValue({
+            single: vi.fn().mockResolvedValue({ data: photoRecord, error: null }),
+          }),
+        }),
+      }),
+    };
+    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
+
+    await expect(createSupabaseHusMediaRepository().deletePhoto(photoRecord.id)).resolves.toEqual({ storageRemoved: false });
+  });
 });
 
 function clientMock(options: {

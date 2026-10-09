@@ -871,8 +871,8 @@ describe("planning calculations", () => {
     expect(snapshot.archivedAt).toBe(archivedAt);
     expect(snapshot.hus.id).toBe(row.id);
     expect(snapshot.events).toEqual(archiveRow.husEvents);
-    expect(snapshot.notes).toEqual(archiveRow.husNotes);
-    expect(snapshot.photos).toEqual(archiveRow.husPhotos);
+    expect(snapshot.notes).toBeUndefined();
+    expect(snapshot.photos).toBeUndefined();
     expect(snapshot.plantCorrections).toEqual(archiveRow.plantCorrections);
     expect(snapshot.plantBalance.actualPlants).toBe(getActualPlantCount(archiveRow));
     expect(snapshot.workAdjustments).toEqual({ sideShoots: "2026-10-12" });
@@ -894,8 +894,8 @@ describe("planning calculations", () => {
       storageBucket: "small-plants-hus-photos",
       storagePath: "hus/row/pec-arhiva.png",
     });
-    expect(snapshot.notes).toHaveLength(1);
-    expect(snapshot.photos).toHaveLength(1);
+    expect(snapshot.notes).toBeUndefined();
+    expect(snapshot.photos).toBeUndefined();
   });
 
   it("freezes remaining active Hus dates before one Hus is archived", () => {

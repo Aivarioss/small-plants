@@ -41,12 +41,14 @@ export type SavedHusMedia = {
 };
 
 export type HusMediaRepository = {
+  deletePhoto: (id: string) => Promise<{ storageRemoved: boolean }>;
   downloadPhoto: (id: string) => Promise<{ file: Blob; photo: HusPhotoEntry }>;
   save: (input: SaveHusMediaInput) => Promise<SavedHusMedia>;
 };
 
 export function createSupabaseHusMediaRepository(): HusMediaRepository {
   return {
+    deletePhoto,
     downloadPhoto,
     save,
   };
@@ -170,6 +172,31 @@ async function downloadPhoto(id: string): Promise<{ file: Blob; photo: HusPhotoE
   }
 
   return { file: download.data, photo };
+}
+
+async function deletePhoto(id: string): Promise<{ storageRemoved: boolean }> {
+  const client = createSupabaseServerClient();
+  const { data, error } = await client.from("hus_photos").select("*").eq("id", id).single();
+  if (error || !data) {
+    throw new HusMediaPersistenceError("Neizdevās ielādēt HUS fotogrāfijas metadatus", error);
+  }
+
+  const photo = recordToHusPhoto(data as HusPhotoRecord);
+  const deleted = await client.from("hus_photos").delete().eq("id", id);
+  if (deleted.error) {
+    throw new HusMediaPersistenceError("Neizdevās dzēst HUS fotogrāfijas metadatus", deleted.error);
+  }
+
+  const removed = await client.storage.from(photo.storageBucket).remove([photo.storagePath]);
+  if (removed.error) {
+    console.error("HUS photo storage cleanup failed", {
+      message: removed.error.message,
+      path: photo.storagePath,
+    });
+    return { storageRemoved: false };
+  }
+
+  return { storageRemoved: true };
 }
 
 export function validateHusPhotoFile(file: File): void {

@@ -257,8 +257,6 @@ export function buildArchiveSnapshot(
     workItems: cloneArchiveValue(workItems),
     worksheetDays: cloneArchiveValue(worksheetDays),
     events: cloneArchiveValue(row.husEvents ?? []),
-    notes: cloneArchiveValue(row.husNotes ?? []),
-    photos: cloneArchiveValue(row.husPhotos ?? []),
     plantCorrections: cloneArchiveValue(row.plantCorrections ?? []),
     tablePlacement: cloneArchiveValue(row.placement),
     workAdjustments: cloneArchiveValue(row.adjustments),

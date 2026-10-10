@@ -82,10 +82,10 @@ export type PlantBalanceSummary = {
 };
 
 export const greenhouseRows: GreenhouseRow[] = [
-  { id: "A", label: "Rinda A", capacity: 26, standard: true },
-  { id: "B", label: "Rinda B", capacity: 26, standard: true },
-  { id: "C", label: "Rinda C", capacity: 26, standard: true },
-  { id: "D", label: "Papildu D", capacity: 13, standard: false },
+  { id: "A", label: "A14–A26", capacity: 13, standard: false },
+  { id: "B", label: "B1–B26", capacity: 26, standard: true },
+  { id: "C", label: "C1–C26", capacity: 26, standard: true },
+  { id: "D", label: "D1–D26", capacity: 26, standard: true },
 ];
 
 export const workTypeMeta: Record<WorkType, { title: string; color: string }> = {
@@ -758,10 +758,10 @@ export function buildGreenhouseSnapshot(rows: SowingPlanRow[], date: string): Gr
   const placements = activeRows.map((row) => createPlacementPlan(row, rows));
   const rowSnapshots = greenhouseRows.map((greenhouseRow) => {
     const assignment = placements.find((placement) =>
-      greenhouseRow.id === "D" ? placement.extraTables > 0 : placement.primaryRow === greenhouseRow.id,
+      greenhouseRow.id === "A" ? placement.extraTables > 0 : placement.primaryRow === greenhouseRow.id,
     );
     const usedTables = assignment
-      ? greenhouseRow.id === "D"
+      ? greenhouseRow.id === "A"
         ? assignment.extraTables
         : assignment.standardTables
       : 0;
@@ -779,9 +779,9 @@ export function buildGreenhouseSnapshot(rows: SowingPlanRow[], date: string): Gr
     date,
     rows: rowSnapshots,
     standardUsed: rowSnapshots
-      .filter((row) => row.rowId !== "D")
+      .filter((row) => row.rowId !== "A")
       .reduce((sum, row) => sum + row.usedTables, 0),
-    extraUsed: rowSnapshots.find((row) => row.rowId === "D")?.usedTables ?? 0,
+    extraUsed: rowSnapshots.find((row) => row.rowId === "A")?.usedTables ?? 0,
     conflicts: getAllCapacityConflicts(rows, date),
   };
 }
@@ -869,14 +869,14 @@ function findAvailablePrimaryRow(
       .map((candidate) => candidate.placement?.primaryRow)
       .filter(Boolean),
   );
-  const preferredRows: GreenhouseRowId[] = ["A", "B", "C"];
+  const preferredRows: GreenhouseRowId[] = ["B", "C", "D"];
   const available = preferredRows.find((rowId) => !occupied.has(rowId));
 
   if (available) {
     return available;
   }
 
-  return tables <= 13 ? "D" : undefined;
+  return tables <= 13 ? "A" : undefined;
 }
 
 export function generateWorkItems(row: SowingPlanRow, config: PlannerConfig): WorkItem[] {

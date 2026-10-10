@@ -8,7 +8,6 @@ import {
   applyHusEventDelete,
   applyHusEventSave,
   balanceWorkload,
-  buildGreenhouseSnapshot,
   calculateBoxPlan,
   calculateAvailability,
   calculatePlantBalance,
@@ -74,6 +73,11 @@ import {
 } from "@/lib/localization";
 import { compressHusPhotoForUpload } from "@/lib/image-compression";
 import {
+  buildGreenhouseOccupancyDay,
+  simulateSowingDateChange,
+  type SowingDateSimulationResult,
+} from "@/lib/greenhouse-simulation";
+import {
   archiveRow,
   loadArchivedRows,
   restoreArchivedRow,
@@ -100,9 +104,10 @@ import type {
   WorkloadBalanceProposal,
 } from "@/lib/types";
 
-const navItems: Array<{ id: MainView; labelKey: "plan" | "calendar" | "allHus" }> = [
+const navItems: Array<{ id: MainView; labelKey: "plan" | "calendar" | "allHus" | "greenhouse" }> = [
   { id: "sowingPlan", labelKey: "plan" },
   { id: "calendar", labelKey: "calendar" },
+  { id: "greenhouse", labelKey: "greenhouse" },
   { id: "hus", labelKey: "allHus" },
 ];
 
@@ -3241,7 +3246,20 @@ function GreenhousePanel({
   rows: SowingPlanRow[];
 }) {
   const language = useAppLanguage();
-  const snapshot = buildGreenhouseSnapshot(rows, date);
+  const snapshot = buildGreenhouseOccupancyDay(rows, plannerConfig, date);
+  const [simulationRowId, setSimulationRowId] = useState(rows[0]?.id ?? "");
+  const selectedSimulationRow = rows.find((row) => row.id === simulationRowId) ?? rows[0];
+  const [simulationDate, setSimulationDate] = useState(selectedSimulationRow?.sowingDate ?? date);
+  const selectedSimulationDate = simulationDate || selectedSimulationRow?.sowingDate || date;
+  const [simulation, setSimulation] = useState<SowingDateSimulationResult | null>(null);
+
+  function runSimulation() {
+    if (!selectedSimulationRow || !selectedSimulationDate) {
+      return;
+    }
+
+    setSimulation(simulateSowingDateChange(rows, plannerConfig, selectedSimulationRow.id, selectedSimulationDate));
+  }
 
   return (
     <section className="panel greenhouse-panel">
@@ -3257,43 +3275,164 @@ function GreenhousePanel({
       </div>
 
       <div className="greenhouse-stats">
-        <strong>{language === "lv" ? "Standarta kapacitāte" : "Standard capacity"}: {snapshot.standardUsed}/78 {language === "lv" ? "galdi aizņemti" : "tables occupied"}</strong>
-        <strong>{language === "lv" ? "Papildu" : "Extra"}: {snapshot.extraUsed}/13</strong>
+        <strong>{language === "lv" ? "Sēšanas galdi" : "Seeding tables"}: {snapshot.seeding.usedTables}/13</strong>
+        <strong>{language === "lv" ? "Augšanas galdi" : "Growing tables"}: {snapshot.growing.usedTables}/91</strong>
+        <strong>{language === "lv" ? "Brīvi augšanai" : "Free for growing"}: {snapshot.growing.freeTables}</strong>
       </div>
 
       <div className="greenhouse-grid">
-        {snapshot.rows.map((row) => (
-          <article className="greenhouse-row" key={row.rowId}>
-            <div>
-              <strong>{row.label}</strong>
-              <span>{row.usedTables}/{row.capacity} {t("tables", language).toLowerCase()}</span>
-            </div>
-            {row.assignment ? (
-              <p>
-                {row.assignment.sectorName} — {language === "lv" ? "līdz" : "until"} {dateLabel(row.assignment.harvestDate)} —
-                {" "}
-                {row.assignment.averagePlantsPerGutter.toFixed(1)} {language === "lv" ? "stādi/renē" : "plants/trough"}
+        <article className="greenhouse-row">
+          <div>
+            <strong>A1-A13</strong>
+            <span>{snapshot.seeding.freeTables}/13 {language === "lv" ? "brīvi" : "free"}</span>
+          </div>
+          <p>
+            {language === "lv" ? "Aizņemti" : "Occupied"}:{" "}
+            {snapshot.seeding.occupiedTableIds.length > 0 ? snapshot.seeding.occupiedTableIds.join(", ") : "—"}
+          </p>
+          <p>
+            {language === "lv" ? "Brīvi" : "Free"}:{" "}
+            {snapshot.seeding.freeTableIds.length > 0 ? snapshot.seeding.freeTableIds.join(", ") : "—"}
+          </p>
+          {snapshot.seeding.rows.length > 0 ? (
+            snapshot.seeding.rows.map((row) => (
+              <p key={row.planRowId}>
+                {row.sectorName} — {row.tables.join(", ")} · {row.tableCount || "?"} {t("tables", language).toLowerCase()}
               </p>
-            ) : (
-              <p>{language === "lv" ? "Brīva" : "Free"}</p>
-            )}
+            ))
+          ) : (
+            <p>{language === "lv" ? "Nav sēšanas šajā datumā" : "No seeding on this date"}</p>
+          )}
+          {snapshot.seeding.unknownRows.length > 0 ? (
+            <p className="capacity-note">
+              {language === "lv" ? "Nepilnīgi dati" : "Incomplete data"}:{" "}
+              {snapshot.seeding.unknownRows.map((row) => row.sectorName).join(", ")}
+            </p>
+          ) : null}
+        </article>
+        {snapshot.growing.rows.map((row) => (
+          <article className="greenhouse-row" key={row.planRowId}>
+            <div>
+              <strong>{row.sectorName}</strong>
+              <span>{row.tables} {t("tables", language).toLowerCase()}</span>
+            </div>
+            <p>
+              {shortDate(row.dateRange.start)}–{shortDate(row.dateRange.end)} ·{" "}
+              {row.density ? `${row.density.toFixed(1)} ${language === "lv" ? "stādi/renē" : "plants/trough"}` : language === "lv" ? "blīvums nav zināms" : "density unknown"}
+            </p>
           </article>
         ))}
+        {snapshot.growing.rows.length === 0 ? (
+          <article className="greenhouse-row">
+            <div>
+              <strong>{language === "lv" ? "Augšanas zona" : "Growing area"}</strong>
+              <span>91/91 {language === "lv" ? "brīvi" : "free"}</span>
+            </div>
+            <p>{language === "lv" ? "Nav HUS augšanas galdos" : "No Hus in growing tables"}</p>
+          </article>
+        ) : null}
       </div>
 
-      {snapshot.conflicts.map((conflict) => (
-        <div className="capacity-warning" key={`${conflict.date}-${conflict.totalTables}`}>
-          <strong>⚠️ {language === "lv" ? `Šajā periodā vienlaikus stādu mājā būs ${conflict.overlapping.length} Hus cikli.` : `${conflict.overlapping.length} Hus cycles are in the greenhouse at the same time in this period.`}</strong>
-          <span>{language === "lv" ? `Kopā nepieciešami ${conflict.totalTables} galdi; standarta kapacitāte 78, kopā ar papildu rindu 91.` : `${conflict.totalTables} tables required; standard capacity is 78, or 91 with the extra row.`}</span>
-          <span>{conflict.extraCanCover ? (language === "lv" ? "13 papildu galdi var nosegt pārklāšanos." : "13 extra tables can cover the overlap.") : language === "lv" ? `Deficīts: ${conflict.deficit} galdi.` : `Deficit: ${conflict.deficit} tables.`}</span>
+      {snapshot.warnings.map((warning) => (
+        <div className="capacity-warning" key={warning}>
+          <strong>⚠️ {warning}</strong>
+        </div>
+      ))}
+
+      <section className="scenario-panel">
+        <div className="panel-header">
+          <div>
+            <p className="eyebrow">{language === "lv" ? "Izmēģināt izmaiņu" : "Try a change"}</p>
+            <h3>{language === "lv" ? "Pārcelt HUS sēšanas datumu" : "Move Hus seeding date"}</h3>
+          </div>
+        </div>
+        <div className="scenario-controls">
+          <label>
+            {t("chooseHus", language)}
+            <select
+              value={selectedSimulationRow?.id ?? ""}
+              onChange={(event) => {
+                const next = rows.find((row) => row.id === event.target.value);
+                setSimulationRowId(event.target.value);
+                setSimulationDate(next?.sowingDate ?? date);
+                setSimulation(null);
+              }}
+            >
+              {rows.map((row) => (
+                <option key={row.id} value={row.id}>
+                  {row.sectorName} · {shortDate(row.sowingDate)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            {language === "lv" ? "Jaunā sēšana" : "New seeding date"}
+            <input type="date" value={selectedSimulationDate} onChange={(event) => setSimulationDate(event.target.value)} />
+          </label>
+          <button className="primary-action" type="button" onClick={runSimulation} disabled={!selectedSimulationRow}>
+            {language === "lv" ? "Aprēķināt" : "Calculate"}
+          </button>
+        </div>
+        {simulation ? <SimulationResultView result={simulation} language={language} /> : null}
+      </section>
+    </section>
+  );
+}
+
+function SimulationResultView({ language, result }: { language: AppLanguage; result: SowingDateSimulationResult }) {
+  const statusLabel: Record<SowingDateSimulationResult["status"], string> = {
+    can: language === "lv" ? "Var" : "Can",
+    cannot: language === "lv" ? "Nevar" : "Cannot",
+    conditional: language === "lv" ? "Var ar nosacījumiem" : "Can with conditions",
+    insufficientData: language === "lv" ? "Nepietiek datu" : "Insufficient data",
+  };
+  const conflictDays = result.occupancy.filter((day) => day.warnings.length > 0);
+
+  return (
+    <div className={`simulation-result simulation-result--${result.status}`}>
+      <strong>{statusLabel[result.status]}</strong>
+      <p>{result.explanation}</p>
+      <dl>
+        <div>
+          <dt>{language === "lv" ? "Sēšana" : "Seeding"}</dt>
+          <dd>{shortDate(result.currentSowingDate)} → {shortDate(result.newSowingDate)}</dd>
+        </div>
+        <div>
+          <dt>{language === "lv" ? "Planting" : "Planting"}</dt>
+          <dd>{shortDate(result.currentMoveOutDate)} → {shortDate(result.newMoveOutDate)}</dd>
+        </div>
+      </dl>
+      {conflictDays.length > 0 ? (
+        <div>
+          <strong>{language === "lv" ? "Konfliktu / nepilnīgu datu dienas" : "Conflict / incomplete data days"}</strong>
           <ul>
-            {conflict.overlapping.map((item) => (
-              <li key={item.planRowId}>{item.sectorName}: {item.tables} {t("tables", language).toLowerCase()}</li>
+            {conflictDays.slice(0, 8).map((day) => (
+              <li key={day.date}>
+                {shortDate(day.date)} · {day.warnings.join(" · ")}
+              </li>
             ))}
           </ul>
         </div>
-      ))}
-    </section>
+      ) : null}
+      {result.changedOtherWork.length > 0 ? (
+        <div>
+          <strong>{language === "lv" ? "Citu HUS darbu izmaiņas" : "Other Hus work changes"}</strong>
+          <ul>
+            {result.changedOtherWork.slice(0, 8).map((change) => (
+              <li key={`${change.planRowId}-${change.type}`}>
+                {change.sectorName} · {printWorkTitle(change.type, language)}: {change.before.map(shortDate).join(", ") || "—"} →{" "}
+                {change.after.map(shortDate).join(", ") || "—"}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      <p className="capacity-note">
+        {language === "lv"
+          ? "Simulācija neko nesaglabā īstajā plānā."
+          : "The simulation does not save anything to the real plan."}
+      </p>
+    </div>
   );
 }
 

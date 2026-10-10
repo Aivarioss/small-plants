@@ -979,13 +979,13 @@ describe("planning calculations", () => {
   });
 
   it("detects a fourth overlapping batch capacity conflict", () => {
-    const rows = ["A", "B", "C"].map((primaryRow, index) => ({
+    const rows = ["B", "C", "D"].map((primaryRow, index) => ({
       ...row,
       id: `busy-${primaryRow}`,
       sectorName: `Hus ${index}`,
       sowingDate: "2026-09-20",
       harvestDate: "2026-10-20",
-      placement: { primaryRow: primaryRow as "A" | "B" | "C", tables: 26, manual: true },
+      placement: { primaryRow: primaryRow as "B" | "C" | "D", tables: 26, manual: true },
     }));
     const fourth = { ...row, id: "fourth", sectorName: "Hus 7" };
     const placement = createPlacementPlan(fourth, [...rows, fourth]);
@@ -995,12 +995,12 @@ describe("planning calculations", () => {
   });
 
   it("shows no conflict when 9th day is full but thinning is manually moved to day 10 after release", () => {
-    const busyRows = ["A", "B", "C"].map((primaryRow) => ({
+    const busyRows = ["B", "C", "D"].map((primaryRow) => ({
       ...row,
       id: `busy-${primaryRow}`,
       sowingDate: "2026-09-20",
       harvestDate: "2026-10-04",
-      placement: { primaryRow: primaryRow as "A" | "B" | "C", tables: 26, manual: true },
+      placement: { primaryRow: primaryRow as "B" | "C" | "D", tables: 26, manual: true },
     }));
     const moved = {
       ...row,
@@ -1689,14 +1689,14 @@ describe("planning calculations", () => {
       cycleLength: 21,
       placement: { tables: 26, manual: true },
     };
-    const busyRows: SowingPlanRow[] = ["A", "B", "C"].map((primaryRow, index) => ({
+    const busyRows: SowingPlanRow[] = ["B", "C", "D"].map((primaryRow, index) => ({
       ...row,
       id: `busy-thursday-${primaryRow}`,
       sectorName: `Hus Busy ${index}`,
       sowingDate: "2026-09-01",
       harvestDate: "2026-10-09",
       cycleLength: 39,
-      placement: { primaryRow: primaryRow as "A" | "B" | "C", tables: 26, manual: true },
+      placement: { primaryRow: primaryRow as "B" | "C" | "D", tables: 26, manual: true },
       adjustments: {
         thinning: "2026-10-01",
         sideShoots: "2026-09-20",

@@ -3427,6 +3427,54 @@ function SimulationResultView({ language, result }: { language: AppLanguage; res
           </ul>
         </div>
       ) : null}
+      {result.alternatives.length > 0 ? (
+        <div className="simulation-alternatives">
+          <strong>{language === "lv" ? "Iespējamie izvietojuma varianti" : "Possible placement options"}</strong>
+          {result.alternatives.map((alternative) => (
+            <article className={`simulation-option simulation-option--${alternative.tier}`} key={`${alternative.thinningDate}-${alternative.wateringZone}-${alternative.reservedTables}`}>
+              <div>
+                <strong>{simulationTierLabel(alternative.tier, language)}</strong>
+                <span>
+                  {shortDate(alternative.thinningDate)} · {formatCycleDay(alternative.cycleDay, language)}
+                </span>
+              </div>
+              <p>
+                {language === "lv" ? "Izvietojums" : "Placement"}:{" "}
+                {alternative.wateringZone
+                  ? alternative.wateringZone === "A"
+                    ? "A14-A26"
+                    : `${alternative.wateringZone}1-${alternative.wateringZone}26`
+                  : language === "lv" ? "nav atrasts" : "not found"}
+                {alternative.usesExtraBlock && alternative.wateringZone !== "A" ? " + A14-A26" : ""}
+              </p>
+              <p>
+                {language === "lv" ? "Galdi" : "Tables"}: {alternative.physicalTables} {language === "lv" ? "fiziski" : "physical"} ·{" "}
+                {alternative.reservedTables} {language === "lv" ? "rezervēti" : "reserved"} ·{" "}
+                {alternative.densityClass} · {alternative.explanation}
+              </p>
+              {alternative.sharedWith.length > 0 ? (
+                <p>
+                  {language === "lv" ? "Dalīta zona" : "Shared zone"}:{" "}
+                  {alternative.sharedWith.map((item) => `${item.sectorName} (${item.overlapDays} d.)`).join(", ")}
+                </p>
+              ) : null}
+              {alternative.risks.length > 0 ? (
+                <ul>
+                  {alternative.risks.map((risk) => (
+                    <li key={risk}>{risk}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="capacity-note">
+          {language === "lv"
+            ? "Nav atrasts drošs augšanas izvietojuma variants ar pašreizējiem datiem."
+            : "No safe growing placement option was found with the current data."}
+        </p>
+      )}
       <p className="capacity-note">
         {language === "lv"
           ? "Simulācija neko nesaglabā īstajā plānā."
@@ -3434,6 +3482,18 @@ function SimulationResultView({ language, result }: { language: AppLanguage; res
       </p>
     </div>
   );
+}
+
+function simulationTierLabel(tier: SowingDateSimulationResult["alternatives"][number]["tier"], language: AppLanguage): string {
+  if (tier === "preferred") {
+    return language === "lv" ? "Vēlamais" : "Preferred";
+  }
+
+  if (tier === "compromise") {
+    return language === "lv" ? "Kompromiss" : "Compromise";
+  }
+
+  return language === "lv" ? "Saspringts" : "Strained";
 }
 
 function WorkItemCard({

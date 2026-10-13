@@ -153,6 +153,157 @@ describe("greenhouse occupancy and sowing-date simulation", () => {
     expect(snapshot.growing.freeTables).toBe(13);
   });
 
+  it("reserves a full long row when a Hus physically needs 24 of 26 tables", () => {
+    const result = simulateSowingDateChange(
+      [row({ id: "twenty-four", placement: { tables: 24, manual: true } })],
+      plannerConfig,
+      "twenty-four",
+      "2026-10-13",
+    );
+    const preferred = result.alternatives[0];
+
+    expect(preferred?.tier).toBe("preferred");
+    expect(preferred?.physicalTables).toBe(24);
+    expect(preferred?.reservedTables).toBe(26);
+    expect(preferred?.wateringZone).toMatch(/[BCD]/);
+  });
+
+  it("reserves a long row and the A extra block for a 39-table Hus", () => {
+    const result = simulateSowingDateChange(
+      [
+        row({
+          extraPlants: 100,
+          id: "large",
+          requiredPlants: 6057,
+          sectorName: "Hus 7",
+          sectorType: 39,
+        }),
+      ],
+      plannerConfig,
+      "large",
+      "2026-10-13",
+    );
+    const large = result.alternatives[0];
+
+    expect(large?.usesExtraBlock).toBe(true);
+    expect(large?.reservedTables).toBe(39);
+    expect(large?.wateringZone).toMatch(/[BCD]/);
+  });
+
+  it("offers the A extra block as a compromise for a small Hus when long rows are full", () => {
+    const blockers = ["B", "C", "D"].map((primaryRow) =>
+      row({
+        adjustments: { thinning: "2026-10-01" },
+        harvestDate: "2026-11-20",
+        id: `busy-${primaryRow}`,
+        placement: { primaryRow: primaryRow as "B" | "C" | "D", tables: 26, manual: true },
+        requiredPlants: 3707,
+        sectorName: `Hus busy ${primaryRow}`,
+        sowingDate: "2026-09-20",
+      }),
+    );
+    const small = row({
+      extraPlants: 0,
+      id: "small-a",
+      requiredPlants: 900,
+      sectorName: "Hus small",
+      sowingDate: "2026-10-13",
+      harvestDate: "2026-11-04",
+    });
+    const result = simulateSowingDateChange([...blockers, small], plannerConfig, "small-a", "2026-10-13");
+
+    expect(result.alternatives[0]?.tier).toBe("compromise");
+    expect(result.alternatives[0]?.wateringZone).toBe("A");
+    expect(result.alternatives[0]?.usesExtraBlock).toBe(true);
+  });
+
+  it("only offers a shared long row as a strained watering-zone option when it physically fits", () => {
+    const blockers = ["B", "C", "D"].map((primaryRow) =>
+      row({
+        adjustments: { thinning: "2026-10-01" },
+        harvestDate: "2026-11-20",
+        id: `partial-${primaryRow}`,
+        placement: { primaryRow: primaryRow as "B" | "C" | "D", tables: 20, manual: true },
+        requiredPlants: 3000,
+        sectorName: `Hus partial ${primaryRow}`,
+        sowingDate: "2026-09-20",
+      }),
+    );
+    const aBlocker = row({
+      adjustments: { thinning: "2026-10-01" },
+      harvestDate: "2026-11-20",
+      id: "a-blocker",
+      placement: { primaryRow: "A", tables: 13, manual: true },
+      requiredPlants: 900,
+      sectorName: "Hus A busy",
+      sowingDate: "2026-09-20",
+    });
+    const tiny = row({
+      extraPlants: 0,
+      id: "tiny-share",
+      requiredPlants: 900,
+      sectorName: "Hus tiny",
+      sowingDate: "2026-10-13",
+      harvestDate: "2026-11-04",
+    });
+    const result = simulateSowingDateChange([...blockers, aBlocker, tiny], plannerConfig, "tiny-share", "2026-10-13");
+    const shared = result.alternatives.find((alternative) => alternative.tier === "strained" && alternative.sharedWith.length > 0);
+
+    expect(shared).toBeDefined();
+    expect(shared?.risks.join(" ")).toContain("laistīšanas zona");
+    expect(shared?.physicalTables).toBeLessThanOrEqual(6);
+  });
+
+  it("classifies day-11 thinning alternatives as strained emergency options", () => {
+    const blockers = [
+      row({
+        adjustments: { thinning: "2026-10-01" },
+        harvestDate: "2026-10-11",
+        id: "blocker-b",
+        placement: { primaryRow: "B", tables: 26, manual: true },
+        sectorName: "Hus blocker B",
+        sowingDate: "2026-09-20",
+      }),
+      row({
+        adjustments: { thinning: "2026-10-01" },
+        harvestDate: "2026-10-11",
+        id: "blocker-c",
+        placement: { primaryRow: "C", tables: 26, manual: true },
+        sectorName: "Hus blocker C",
+        sowingDate: "2026-09-20",
+      }),
+      row({
+        adjustments: { thinning: "2026-10-01" },
+        harvestDate: "2026-10-11",
+        id: "blocker-d",
+        placement: { primaryRow: "D", tables: 26, manual: true },
+        sectorName: "Hus blocker D",
+        sowingDate: "2026-09-20",
+      }),
+    ];
+    const target = row({
+      id: "day-eleven",
+      requiredPlants: 3707,
+      sectorName: "Hus emergency",
+      sowingDate: "2026-10-01",
+      harvestDate: "2026-10-23",
+    });
+    const result = simulateSowingDateChange([...blockers, target], plannerConfig, "day-eleven", "2026-10-01");
+    const emergency = result.alternatives.find((alternative) => alternative.cycleDay === 11);
+
+    expect(emergency?.tier).toBe("strained");
+    expect(emergency?.risks.join(" ")).toContain("11. dienā");
+  });
+
+  it("returns deterministic alternatives sorted by production priority", () => {
+    const rows = [row({ id: "deterministic", placement: { tables: 24, manual: true } })];
+    const first = simulateSowingDateChange(rows, plannerConfig, "deterministic", "2026-10-13").alternatives;
+    const second = simulateSowingDateChange(rows, plannerConfig, "deterministic", "2026-10-13").alternatives;
+
+    expect(second).toEqual(first);
+    expect(first[0]?.tier).toBe("preferred");
+  });
+
   it("reports insufficient data when seeding-table availability cannot be checked", () => {
     const result = simulateSowingDateChange(
       [{ ...baseRow, sowingTables: undefined }],

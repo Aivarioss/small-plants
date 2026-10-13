@@ -1166,6 +1166,40 @@ textarea {
   margin-left: 18px;
 }
 
+.simulation-alternatives {
+  display: grid;
+  gap: 10px;
+}
+
+.simulation-option {
+  display: grid;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--green);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 10px;
+}
+
+.simulation-option--compromise {
+  border-left-color: #d99a00;
+}
+
+.simulation-option--strained {
+  border-left-color: var(--red);
+}
+
+.simulation-option > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 12px;
+}
+
+.simulation-option p {
+  margin: 0;
+}
+
 @media (min-width: 720px) {
   .scenario-controls {
     grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto;

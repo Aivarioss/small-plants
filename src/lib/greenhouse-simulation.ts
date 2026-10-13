@@ -7,6 +7,7 @@ import {
   eachDate,
   generateWorkItemsForRows,
   getTotalSow,
+  parseHusEventMovementRows,
   parseSowingTableSelection,
 } from "./planning";
 import {
@@ -15,7 +16,7 @@ import {
   type PlacementDensityClass,
 } from "./greenhouse-placement";
 import { scheduleProductionWork } from "./scheduler";
-import type { GreenhouseRowId, PlannerConfig, SowingPlanRow, WorkItem, WorkType } from "./types";
+import type { GreenhouseRowId, HusEventEntry, PlannerConfig, SowingPlanRow, WorkItem, WorkType } from "./types";
 
 export const SEEDING_TABLE_CAPACITY = 13;
 export const GROWING_TABLE_CAPACITY = 91;
@@ -69,16 +70,21 @@ export type GreenhouseGrowingOccupancy = {
   capacity: number;
   freeTables: number;
   overCapacity: boolean;
+  physicalUsedTables: number;
   rows: Array<{
+    actualTableIds?: string[];
     dateRange: { end: string; start: string };
     density?: number;
     placementKind?: GrowingPlacementKind;
+    placementSource: "actual" | "planned";
     planRowId: string;
     primaryRow?: PhysicalGrowingRowId;
     reservedTables?: number;
+    rowLabel?: string;
     sectorName: string;
     tables: number;
     usesExtraBlock?: boolean;
+    warnings?: string[];
   }>;
   usedTables: number;
 };
@@ -138,6 +144,7 @@ export type GreenhouseSimulationAlternative = {
 };
 
 type GrowingPlacement = {
+  actualMovements?: ActualGrowingMovement[];
   density?: number;
   endDate: string;
   placementKind?: GrowingPlacementKind;
@@ -153,16 +160,39 @@ type GrowingPlacement = {
 };
 
 type RawGrowingPlacement = {
+  actualMovements?: ActualGrowingMovement[];
   density?: number;
   densityClass?: PlacementDensityClass;
   endDate: string;
   planRowId: string;
   plantsPerTrough?: number;
+  plannedTables?: number;
   releaseKnown: boolean;
   row: SowingPlanRow;
   sectorName: string;
   startDate: string;
   tables: number;
+};
+
+export type ActualGrowingMovement = {
+  eventDate: string;
+  eventId: string;
+  fromTableIds: string[];
+  tableIds: string[];
+  warnings: string[];
+};
+
+export type InterpretedMovingEventPlacement = {
+  eventDate: string;
+  eventId: string;
+  rows: Array<{
+    from: string;
+    fromGrowingTables: string[];
+    to: string;
+    toGrowingTables: string[];
+  }>;
+  tableIds: string[];
+  warnings: string[];
 };
 
 type PhysicalPlacementOption = {
@@ -226,6 +256,7 @@ export function buildGreenhouseOccupancyDay(
     ),
     ...seeding.conflicts.map((conflict) => `${conflict.table}: sēšanas galda konflikts (${conflict.sectorNames.join(", ")}).`),
     ...(seeding.overCapacity ? [`Sēšanas galdu noslodze pārsniedz ${SEEDING_TABLE_CAPACITY}.`] : []),
+    ...growing.rows.flatMap((row) => (row.warnings ?? []).map((warning) => `${row.sectorName}: ${warning}`)),
     ...(growing.overCapacity ? [`Augšanas galdu noslodze pārsniedz ${GROWING_TABLE_CAPACITY}.`] : []),
   ];
 
@@ -310,33 +341,39 @@ function growingPlacements(rows: SowingPlanRow[]): GrowingPlacement[] {
         row?.placement?.tables ??
         item.greenhousePlacement?.totalTables ??
         (row ? calculateRecommendedTables(getTotalSow(row)) : 0);
+      const actualMovements = row ? actualGrowingMovements(row) : [];
+      const actualTables = finalActualGrowingTables(actualMovements);
 
       return {
+        actualMovements,
         density: item.greenhousePlacement?.plantsPerTrough,
         densityClass: item.greenhousePlacement?.densityClass,
         endDate: row?.harvestDate ?? item.date,
         planRowId: item.planRowId,
         plantsPerTrough: item.greenhousePlacement?.plantsPerTrough,
+        plannedTables: tables,
         releaseKnown: true,
         row: row ?? fallbackRowFor(item.planRowId, item.sectorName, item.date),
         sectorName: item.sectorName,
-        startDate: item.date,
-        tables,
+        startDate: actualMovements[0]?.eventDate ?? item.date,
+        tables: actualTables.length > 0 ? actualTables.length : tables,
       };
     }),
     ...rows
       .filter((row) => !scheduledIds.has(row.id))
       .map((row) => ({
+        actualMovements: actualGrowingMovements(row),
         density: undefined,
         densityClass: undefined,
         endDate: row.harvestDate,
         planRowId: row.id,
         plantsPerTrough: undefined,
+        plannedTables: row.placement?.tables ?? calculateRecommendedTables(getTotalSow(row)),
         releaseKnown: false,
         row,
         sectorName: row.sectorName,
-        startDate: firstAdjustmentDate(row.adjustments?.thinning) ?? addDays(row.sowingDate, 8),
-        tables: row.placement?.tables ?? calculateRecommendedTables(getTotalSow(row)),
+        startDate: actualGrowingMovements(row)[0]?.eventDate ?? firstAdjustmentDate(row.adjustments?.thinning) ?? addDays(row.sowingDate, 8),
+        tables: finalActualGrowingTables(actualGrowingMovements(row)).length || row.placement?.tables || calculateRecommendedTables(getTotalSow(row)),
       })),
   ];
 
@@ -346,25 +383,63 @@ function growingPlacements(rows: SowingPlanRow[]): GrowingPlacement[] {
 function growingOccupancy(placements: GrowingPlacement[], date: string): GreenhouseGrowingOccupancy {
   const rows = placements
     .filter((placement) => placement.startDate <= date && date < placement.endDate)
-    .map((placement) => ({
-      dateRange: { start: placement.startDate, end: placement.endDate },
-      density: placement.density,
-      placementKind: placement.placementKind,
-      planRowId: placement.planRowId,
-      primaryRow: placement.primaryRow,
-      reservedTables: placement.reservedTables,
-      sectorName: placement.sectorName,
-      tables: placement.tables,
-      usesExtraBlock: placement.usesExtraBlock,
-    }));
-  const usedTables = rows.reduce((sum, row) => sum + row.tables, 0);
+    .map((placement) => growingOccupancyRowForDate(placement, date))
+    .filter((row): row is NonNullable<typeof row> => Boolean(row));
+  const physicalUsedTables = rows.reduce((sum, row) => sum + row.tables, 0);
+  const usedTables = rows.reduce((sum, row) => sum + (row.reservedTables ?? row.tables), 0);
 
   return {
     capacity: GROWING_TABLE_CAPACITY,
     freeTables: Math.max(0, GROWING_TABLE_CAPACITY - usedTables),
     overCapacity: usedTables > GROWING_TABLE_CAPACITY,
+    physicalUsedTables,
     rows,
     usedTables,
+  };
+}
+
+function growingOccupancyRowForDate(placement: GrowingPlacement, date: string): GreenhouseGrowingOccupancy["rows"][number] | undefined {
+  if ((placement.actualMovements ?? []).length > 0) {
+    const actualTableIds = actualGrowingTablesOnDate(placement.actualMovements ?? [], date);
+    if (actualTableIds.length === 0) {
+      return undefined;
+    }
+    const reservation = reservationForActualTables(actualTableIds);
+    const warnings = [
+      ...(placement.warnings ?? []),
+      ...actualPlacementMismatchWarnings(placement, actualTableIds, reservation),
+    ];
+
+    return {
+      actualTableIds,
+      dateRange: { start: placement.startDate, end: placement.endDate },
+      density: placement.density,
+      placementKind: "standardRow",
+      placementSource: "actual",
+      planRowId: placement.planRowId,
+      primaryRow: reservation.primaryRow,
+      reservedTables: reservation.reservedTables,
+      rowLabel: formatGrowingTableSelection(actualTableIds),
+      sectorName: placement.sectorName,
+      tables: actualTableIds.length,
+      usesExtraBlock: reservation.usesExtraBlock,
+      warnings,
+    };
+  }
+
+  return {
+    dateRange: { start: placement.startDate, end: placement.endDate },
+    density: placement.density,
+    placementKind: placement.placementKind,
+    placementSource: "planned",
+    planRowId: placement.planRowId,
+    primaryRow: placement.primaryRow,
+    reservedTables: placement.reservedTables,
+    rowLabel: plannedPlacementLabel(placement),
+    sectorName: placement.sectorName,
+    tables: placement.tables,
+    usesExtraBlock: placement.usesExtraBlock,
+    warnings: placement.warnings,
   };
 }
 
@@ -472,6 +547,31 @@ function assignPhysicalGrowingPlacements(rawPlacements: RawGrowingPlacement[]): 
     .sort((left, right) => left.startDate.localeCompare(right.startDate) || left.sectorName.localeCompare(right.sectorName))
     .forEach((raw) => {
       const active = activeGrowingReservations(reservations, raw.startDate);
+      if ((raw.actualMovements ?? []).length > 0) {
+        const actualTableIds = finalActualGrowingTables(raw.actualMovements ?? []);
+        const reservation = reservationForActualTables(actualTableIds);
+        const actualWarnings = [
+          ...(raw.actualMovements?.flatMap((movement) => movement.warnings) ?? []),
+          ...actualPlacementMismatchWarningsForPlan(raw.row, raw.plannedTables ?? raw.tables, actualTableIds, reservation),
+        ];
+
+        reservations.push({
+          actualMovements: raw.actualMovements,
+          density: raw.density,
+          endDate: raw.endDate,
+          placementKind: "standardRow",
+          planRowId: raw.planRowId,
+          primaryRow: reservation.primaryRow,
+          releaseKnown: raw.releaseKnown,
+          reservedTables: reservation.reservedTables,
+          sectorName: raw.sectorName,
+          startDate: raw.startDate,
+          tables: actualTableIds.length || raw.tables,
+          usesExtraBlock: reservation.usesExtraBlock,
+          warnings: actualWarnings,
+        });
+        return;
+      }
       const [option] = placementOptionsFor(raw.row, raw.tables, active, raw.startDate, raw.endDate);
 
       reservations.push({
@@ -876,7 +976,27 @@ function densityScore(densityClass: PlacementDensityClass): number {
 }
 
 function activeGrowingReservations(reservations: GrowingPlacement[], date: string): GrowingPlacement[] {
-  return reservations.filter((reservation) => reservation.startDate <= date && date < reservation.endDate);
+  return reservations
+    .filter((reservation) => reservation.startDate <= date && date < reservation.endDate)
+    .flatMap((reservation) => {
+      if ((reservation.actualMovements ?? []).length === 0) {
+        return [reservation];
+      }
+
+      const tableIds = actualGrowingTablesOnDate(reservation.actualMovements ?? [], date);
+      if (tableIds.length === 0) {
+        return [];
+      }
+
+      const actualReservation = reservationForActualTables(tableIds);
+      return [{
+        ...reservation,
+        primaryRow: actualReservation.primaryRow,
+        reservedTables: actualReservation.reservedTables,
+        tables: tableIds.length,
+        usesExtraBlock: actualReservation.usesExtraBlock,
+      }];
+    });
 }
 
 function freeLongRows(activeReservations: GrowingPlacement[]): LongGrowingRowId[] {
@@ -961,6 +1081,250 @@ function firstAdjustmentDate(value: string | string[] | undefined): string | und
   }
 
   return Array.isArray(value) ? value[0] : value;
+}
+
+export function interpretHusMovingEventPlacement(entry: HusEventEntry): InterpretedMovingEventPlacement | undefined {
+  if (entry.eventType !== "move" && entry.eventType !== "thinning") {
+    return undefined;
+  }
+
+  const movementRows = parseHusEventMovementRows(entry);
+  if (movementRows.length === 0) {
+    return undefined;
+  }
+
+  const rows = movementRows.map((row) => ({
+    from: row.from,
+    fromGrowingTables: parseGrowingTableSelection(row.from),
+    to: row.to,
+    toGrowingTables: parseGrowingTableSelection(row.to),
+  }));
+  const tableIds = uniqueGrowingTables(rows.flatMap((row) => row.toGrowingTables));
+  const warnings = rows.flatMap((row) => {
+    if (!row.to && !row.from) {
+      return [];
+    }
+
+    if (row.to && row.toGrowingTables.length === 0) {
+      return [`Moving ieraksta galamērķi "${row.to}" nevar droši interpretēt kā augšanas galdus.`];
+    }
+
+    return [];
+  });
+
+  if (tableIds.length === 0 && warnings.length === 0) {
+    return undefined;
+  }
+
+  return {
+    eventDate: entry.eventDate,
+    eventId: entry.id,
+    rows,
+    tableIds,
+    warnings,
+  };
+}
+
+function actualGrowingMovements(row: Pick<SowingPlanRow, "husEvents">): ActualGrowingMovement[] {
+  return (row.husEvents ?? [])
+    .map(interpretHusMovingEventPlacement)
+    .filter((placement): placement is InterpretedMovingEventPlacement => Boolean(placement))
+    .sort((left, right) => left.eventDate.localeCompare(right.eventDate) || left.eventId.localeCompare(right.eventId))
+    .map((placement) => ({
+      eventDate: placement.eventDate,
+      eventId: placement.eventId,
+      fromTableIds: uniqueGrowingTables(placement.rows.flatMap((row) => row.fromGrowingTables)),
+      tableIds: placement.tableIds,
+      warnings: placement.warnings,
+    }));
+}
+
+function actualGrowingTablesOnDate(movements: ActualGrowingMovement[], date: string): string[] {
+  const state = new Set<string>();
+
+  movements
+    .filter((movement) => movement.eventDate <= date)
+    .forEach((movement) => {
+      movement.fromTableIds.forEach((table) => state.delete(table));
+      movement.tableIds.forEach((table) => state.add(table));
+    });
+
+  return uniqueGrowingTables(Array.from(state));
+}
+
+function finalActualGrowingTables(movements: ActualGrowingMovement[]): string[] {
+  if (movements.length === 0) {
+    return [];
+  }
+
+  return actualGrowingTablesOnDate(movements, movements.at(-1)?.eventDate ?? "");
+}
+
+function parseGrowingTableSelection(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+
+  const tables: string[] = [];
+  value
+    .split(/[,\s]+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .forEach((part) => {
+      const rangeMatch = /^([ABCD])(\d{1,2})\s*[-–]\s*(?:([ABCD])?(\d{1,2}))$/i.exec(part);
+      if (rangeMatch) {
+        const startRow = rangeMatch[1].toUpperCase() as PhysicalGrowingRowId;
+        const endRow = (rangeMatch[3] ?? rangeMatch[1]).toUpperCase() as PhysicalGrowingRowId;
+        const start = Number(rangeMatch[2]);
+        const end = Number(rangeMatch[4]);
+
+        if (startRow === endRow) {
+          const from = Math.min(start, end);
+          const to = Math.max(start, end);
+          for (let table = from; table <= to; table += 1) {
+            const id = `${startRow}${table}`;
+            if (isGrowingTableId(id)) {
+              tables.push(id);
+            }
+          }
+        }
+        return;
+      }
+
+      const tableMatch = /^([ABCD])(\d{1,2})$/i.exec(part);
+      if (tableMatch) {
+        const id = `${tableMatch[1].toUpperCase()}${Number(tableMatch[2])}`;
+        if (isGrowingTableId(id)) {
+          tables.push(id);
+        }
+      }
+    });
+
+  return uniqueGrowingTables(tables);
+}
+
+function isGrowingTableId(tableId: string): boolean {
+  const match = /^([ABCD])(\d{1,2})$/.exec(tableId);
+  if (!match) {
+    return false;
+  }
+
+  const row = match[1] as PhysicalGrowingRowId;
+  const table = Number(match[2]);
+
+  if (row === "A") {
+    return table >= 14 && table <= 26;
+  }
+
+  return table >= 1 && table <= 26;
+}
+
+function uniqueGrowingTables(tables: string[]): string[] {
+  return Array.from(new Set(tables)).sort(compareGrowingTableIds);
+}
+
+function compareGrowingTableIds(left: string, right: string): number {
+  const leftRow = left[0];
+  const rightRow = right[0];
+  if (leftRow !== rightRow) {
+    return leftRow.localeCompare(rightRow);
+  }
+
+  return Number(left.slice(1)) - Number(right.slice(1));
+}
+
+function reservationForActualTables(tableIds: string[]): Pick<GrowingPlacement, "primaryRow" | "reservedTables" | "usesExtraBlock"> {
+  const rows = new Set(tableIds.map((table) => table[0] as PhysicalGrowingRowId));
+  const longRows = LONG_GROWING_ROWS.filter((row) => rows.has(row));
+  const usesExtraBlock = rows.has("A");
+  const reservedLongRows = longRows.length * LONG_ROW_TABLE_CAPACITY;
+  const reservedExtra = usesExtraBlock ? tableIds.filter((table) => table.startsWith("A")).length : 0;
+
+  return {
+    primaryRow: longRows[0] ?? (usesExtraBlock ? "A" : undefined),
+    reservedTables: reservedLongRows + reservedExtra,
+    usesExtraBlock,
+  };
+}
+
+function formatGrowingTableSelection(tableIds: string[]): string {
+  const byRow = new Map<string, number[]>();
+  tableIds.forEach((tableId) => {
+    const row = tableId[0];
+    const table = Number(tableId.slice(1));
+    byRow.set(row, [...(byRow.get(row) ?? []), table].sort((left, right) => left - right));
+  });
+
+  return Array.from(byRow.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .flatMap(([row, tables]) => formatNumberRanges(tables).map((range) => formatRowRange(row, range)))
+    .join(", ");
+}
+
+function formatRowRange(row: string, range: string): string {
+  const [start, end] = range.split("-");
+  return end ? `${row}${start}-${row}${end}` : `${row}${start}`;
+}
+
+function formatNumberRanges(values: number[]): string[] {
+  const ranges: string[] = [];
+  for (let index = 0; index < values.length; index += 1) {
+    const start = values[index];
+    let end = start;
+    while (index + 1 < values.length && values[index + 1] === end + 1) {
+      index += 1;
+      end = values[index];
+    }
+    ranges.push(start === end ? `${start}` : `${start}-${end}`);
+  }
+  return ranges;
+}
+
+function plannedPlacementLabel(placement: Pick<GrowingPlacement, "primaryRow" | "tables" | "usesExtraBlock">): string | undefined {
+  if (!placement.primaryRow) {
+    return undefined;
+  }
+
+  if (placement.primaryRow === "A") {
+    return "A14-A26";
+  }
+
+  return `${placement.primaryRow}1-${placement.primaryRow}${Math.min(placement.tables, LONG_ROW_TABLE_CAPACITY)}`;
+}
+
+function actualPlacementMismatchWarnings(
+  placement: GrowingPlacement,
+  actualTableIds: string[],
+  reservation: Pick<GrowingPlacement, "primaryRow" | "reservedTables">,
+): string[] {
+  const warnings: string[] = [];
+  if (placement.primaryRow && reservation.primaryRow && placement.primaryRow !== reservation.primaryRow) {
+    warnings.push(`Faktiskais Moving izvietojums ir ${reservation.primaryRow} rindā, bet plānotā rinda bija ${placement.primaryRow}.`);
+  }
+
+  if (placement.tables && actualTableIds.length !== placement.tables) {
+    warnings.push(`Faktiskais Moving izmanto ${actualTableIds.length} galdus, plānoti bija ${placement.tables}.`);
+  }
+
+  return warnings;
+}
+
+function actualPlacementMismatchWarningsForPlan(
+  row: Pick<SowingPlanRow, "placement">,
+  plannedTables: number,
+  actualTableIds: string[],
+  reservation: Pick<GrowingPlacement, "primaryRow">,
+): string[] {
+  const warnings: string[] = [];
+  if (row.placement?.primaryRow && reservation.primaryRow && row.placement.primaryRow !== reservation.primaryRow) {
+    warnings.push(`Faktiskais Moving izvietojums ir ${reservation.primaryRow} rindā, bet plānotā rinda bija ${row.placement.primaryRow}.`);
+  }
+
+  if (plannedTables && actualTableIds.length !== plannedTables) {
+    warnings.push(`Faktiskais Moving izmanto ${actualTableIds.length} galdus, plānoti bija ${plannedTables}.`);
+  }
+
+  return warnings;
 }
 
 function classifySimulation(

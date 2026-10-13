@@ -3,9 +3,11 @@ import { plannerConfig } from "./demo-data";
 import {
   buildGreenhouseOccupancyDay,
   GROWING_TABLE_CAPACITY,
+  interpretHusMovingEventPlacement,
   SEEDING_TABLE_CAPACITY,
   simulateSowingDateChange,
 } from "./greenhouse-simulation";
+import { localTodayIso } from "./planning";
 import type { SowingPlanRow } from "./types";
 
 const baseRow: SowingPlanRow = {
@@ -31,6 +33,12 @@ describe("greenhouse occupancy and sowing-date simulation", () => {
 
     expect(snapshot.seeding.capacity).toBe(SEEDING_TABLE_CAPACITY);
     expect(snapshot.growing.capacity).toBe(GROWING_TABLE_CAPACITY);
+  });
+
+  it("uses the local timezone date for today's greenhouse defaults", () => {
+    const localMidnight = new Date(2026, 0, 1, 0, 30);
+
+    expect(localTodayIso(localMidnight)).toBe("2026-01-01");
   });
 
   it("simulates moving one Hus 7 days earlier without mutating the original rows", () => {
@@ -115,6 +123,146 @@ describe("greenhouse occupancy and sowing-date simulation", () => {
     expect(handoffDay.seeding.rows).toHaveLength(1);
     expect(handoffDay.seeding.rows[0]?.sectorName).toBe("Hus second");
     expect(handoffDay.seeding.occupiedTableIds).toEqual(["A7", "A8", "A9"]);
+  });
+
+  it("interprets Moving rows as concrete growing table ranges", () => {
+    const interpreted = interpretHusMovingEventPlacement({
+      id: "move-h4",
+      eventDate: "2026-10-01",
+      eventType: "move",
+      location: "A11\nA12\nA13",
+      destinationLocation: "B1-B10\nB11-B20\nB21-B26",
+    });
+
+    expect(interpreted?.tableIds).toEqual(Array.from({ length: 26 }, (_, index) => `B${index + 1}`));
+    expect(interpreted?.warnings).toEqual([]);
+  });
+
+  it("uses actual Moving placement before the planned greenhouse placement", () => {
+    const hus4 = row({
+      adjustments: { thinning: "2026-10-01" },
+      id: "actual-h4",
+      placement: { primaryRow: "C", tables: 26, manual: true },
+      sectorName: "Hus 4",
+      sowingDate: "2026-09-22",
+      harvestDate: "2026-10-14",
+      husEvents: [
+        {
+          id: "move-h4",
+          eventDate: "2026-10-01",
+          eventType: "move",
+          location: "A11\nA12\nA13",
+          destinationLocation: "B1-B10\nB11-B20\nB21-B26",
+        },
+      ],
+    });
+
+    const snapshot = buildGreenhouseOccupancyDay([hus4], plannerConfig, "2026-10-02");
+    const actual = snapshot.growing.rows[0];
+
+    expect(actual?.placementSource).toBe("actual");
+    expect(actual?.rowLabel).toBe("B1-B26");
+    expect(actual?.tables).toBe(26);
+    expect(actual?.reservedTables).toBe(26);
+    expect(snapshot.warnings.some((warning) => warning.includes("plānotā rinda bija C"))).toBe(true);
+  });
+
+  it("reserves a whole long row when actual Moving uses only 24 of 26 tables", () => {
+    const hus5 = row({
+      adjustments: { thinning: "2026-10-03" },
+      id: "actual-h5",
+      sectorName: "Hus 5",
+      sowingDate: "2026-09-24",
+      harvestDate: "2026-10-16",
+      husEvents: [
+        {
+          id: "move-h5",
+          eventDate: "2026-10-03",
+          eventType: "move",
+          location: "A8\nA9\nA10",
+          destinationLocation: "D1-D9\nD10-D19\nD20-D24",
+        },
+      ],
+    });
+
+    const snapshot = buildGreenhouseOccupancyDay([hus5], plannerConfig, "2026-10-04");
+    const actual = snapshot.growing.rows[0];
+
+    expect(actual?.placementSource).toBe("actual");
+    expect(actual?.rowLabel).toBe("D1-D24");
+    expect(actual?.tables).toBe(24);
+    expect(actual?.reservedTables).toBe(26);
+    expect(snapshot.growing.physicalUsedTables).toBe(24);
+    expect(snapshot.growing.usedTables).toBe(26);
+    expect(snapshot.growing.freeTables).toBe(65);
+  });
+
+  it("applies multiple Moving records as partial repeated movement without treating each one as a full Hus move", () => {
+    const moved = row({
+      adjustments: { thinning: "2026-10-01" },
+      id: "multi-moving",
+      sectorName: "Hus moving",
+      sowingDate: "2026-09-22",
+      harvestDate: "2026-10-14",
+      husEvents: [
+        {
+          id: "first-move",
+          eventDate: "2026-10-01",
+          eventType: "move",
+          location: "A1",
+          destinationLocation: "B1-B5",
+        },
+        {
+          id: "second-move",
+          eventDate: "2026-10-05",
+          eventType: "move",
+          location: "B1-B5",
+          destinationLocation: "C1-C5",
+        },
+      ],
+    });
+
+    const beforeSecondMove = buildGreenhouseOccupancyDay([moved], plannerConfig, "2026-10-03");
+    const afterSecondMove = buildGreenhouseOccupancyDay([moved], plannerConfig, "2026-10-06");
+
+    expect(beforeSecondMove.growing.rows[0]?.rowLabel).toBe("B1-B5");
+    expect(afterSecondMove.growing.rows[0]?.rowLabel).toBe("C1-C5");
+  });
+
+  it("uses only Moving records up to the selected date and frees growing tables on Planting day", () => {
+    const moved = row({
+      adjustments: { thinning: "2026-10-01" },
+      id: "dated-moving",
+      sectorName: "Hus dated",
+      sowingDate: "2026-09-22",
+      harvestDate: "2026-10-14",
+      husEvents: [
+        {
+          id: "first-move",
+          eventDate: "2026-10-01",
+          eventType: "move",
+          location: "A1",
+          destinationLocation: "B1-B5",
+        },
+        {
+          id: "future-move",
+          eventDate: "2026-10-10",
+          eventType: "move",
+          location: "B1-B5",
+          destinationLocation: "C1-C5",
+        },
+      ],
+    });
+
+    const beforeFutureMove = buildGreenhouseOccupancyDay([moved], plannerConfig, "2026-10-09");
+    const afterFutureMove = buildGreenhouseOccupancyDay([moved], plannerConfig, "2026-10-10");
+    const plantingDay = buildGreenhouseOccupancyDay([moved], plannerConfig, "2026-10-14");
+
+    expect(beforeFutureMove.growing.rows[0]?.rowLabel).toBe("B1-B5");
+    expect(afterFutureMove.growing.rows[0]?.rowLabel).toBe("C1-C5");
+    expect(plantingDay.growing.rows).toHaveLength(0);
+    expect(plantingDay.growing.usedTables).toBe(0);
+    expect(plantingDay.growing.freeTables).toBe(GROWING_TABLE_CAPACITY);
   });
 
   it("checks exact seeding tables when a Hus is moved 7 days earlier", () => {

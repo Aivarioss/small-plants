@@ -30,6 +30,7 @@ import {
   hasManualWorkMoves,
   isAllowedMove,
   defaultHusEventDate,
+  localTodayIso,
   parseHusEventMovementRows,
   parseSowingTableSelection,
   serializeHusEventMovementRows,
@@ -165,8 +166,8 @@ export function PlannerApp() {
   const [husListMode, setHusListMode] = useState<"active" | "archive">("active");
   const [viewMode, setViewMode] = useState<ViewMode>("month");
   const [printLanguage, setPrintLanguage] = useState<AppLanguage>(() => readStoredLanguage());
-  const [anchorDate, setAnchorDate] = useState("2026-09-25");
-  const [selectedDate, setSelectedDate] = useState("2026-09-25");
+  const [anchorDate, setAnchorDate] = useState(() => localTodayIso());
+  const [selectedDate, setSelectedDate] = useState(() => localTodayIso());
   const [selectedRowId, setSelectedRowId] = useState("");
   const [draft, setDraft] = useState<SowingPlanDraft>(initialDraft);
   const [moveErrors, setMoveErrors] = useState<Record<string, string>>({});
@@ -3249,7 +3250,7 @@ function GreenhousePanel({
   const snapshot = buildGreenhouseOccupancyDay(rows, plannerConfig, date);
   const [simulationRowId, setSimulationRowId] = useState(rows[0]?.id ?? "");
   const selectedSimulationRow = rows.find((row) => row.id === simulationRowId) ?? rows[0];
-  const [simulationDate, setSimulationDate] = useState(selectedSimulationRow?.sowingDate ?? date);
+  const [simulationDate, setSimulationDate] = useState("");
   const selectedSimulationDate = simulationDate || selectedSimulationRow?.sowingDate || date;
   const [simulation, setSimulation] = useState<SowingDateSimulationResult | null>(null);
 
@@ -3272,11 +3273,15 @@ function GreenhousePanel({
           {t("date", language)}
           <input type="date" value={date} onChange={(event) => onDateChange(event.target.value)} />
         </label>
+        <button type="button" className="secondary-action" onClick={() => onDateChange(localTodayIso())}>
+          {t("today", language)}
+        </button>
       </div>
 
       <div className="greenhouse-stats">
         <strong>{language === "lv" ? "Sēšanas galdi" : "Seeding tables"}: {snapshot.seeding.usedTables}/13</strong>
-        <strong>{language === "lv" ? "Augšanas galdi" : "Growing tables"}: {snapshot.growing.usedTables}/91</strong>
+        <strong>{language === "lv" ? "Augšanas galdi rezervēti" : "Growing tables reserved"}: {snapshot.growing.usedTables}/91</strong>
+        <strong>{language === "lv" ? "Fiziski aizņemti" : "Physically occupied"}: {snapshot.growing.physicalUsedTables}/91</strong>
         <strong>{language === "lv" ? "Brīvi augšanai" : "Free for growing"}: {snapshot.growing.freeTables}</strong>
       </div>
 
@@ -3313,13 +3318,31 @@ function GreenhousePanel({
         {snapshot.growing.rows.map((row) => (
           <article className="greenhouse-row" key={row.planRowId}>
             <div>
-              <strong>{row.sectorName}</strong>
-              <span>{row.tables} {t("tables", language).toLowerCase()}</span>
+              <strong>{row.sectorName}{row.rowLabel ? ` — ${row.rowLabel}` : ""}</strong>
+              <span>
+                {row.tables} {t("tables", language).toLowerCase()}
+                {row.reservedTables && row.reservedTables !== row.tables
+                  ? ` · ${row.reservedTables} ${language === "lv" ? "rezervēti" : "reserved"}`
+                  : ""}
+              </span>
             </div>
             <p>
               {shortDate(row.dateRange.start)}–{shortDate(row.dateRange.end)} ·{" "}
               {row.density ? `${row.density.toFixed(1)} ${language === "lv" ? "stādi/renē" : "plants/trough"}` : language === "lv" ? "blīvums nav zināms" : "density unknown"}
             </p>
+            <p>
+              {row.placementSource === "actual"
+                ? language === "lv" ? "Faktiskais izvietojums" : "Actual placement"
+                : language === "lv" ? "Plānotais izvietojums" : "Planned placement"}
+              {row.reservedTables && row.reservedTables > row.tables
+                ? ` · ${row.primaryRow && row.primaryRow !== "A" ? `${row.primaryRow} ${language === "lv" ? "rinda rezervēta" : "row reserved"}` : language === "lv" ? "rezervēta kapacitāte" : "capacity reserved"}`
+                : ""}
+            </p>
+            {row.warnings?.map((warning) => (
+              <p className="capacity-note" key={warning}>
+                {warning}
+              </p>
+            ))}
           </article>
         ))}
         {snapshot.growing.rows.length === 0 ? (

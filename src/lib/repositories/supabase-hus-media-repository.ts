@@ -2,6 +2,7 @@ import "server-only";
 import type { HusNoteEntry, HusPhotoEntry } from "@/lib/types";
 import type { HusNoteRecord, HusPhotoRecord } from "@/lib/supabase/database";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { photoDetailsToNote, validatePhotoDetails, type HusMediaUploadInput } from "@/lib/hus-photo-archive";
 
 export const HUS_PHOTO_BUCKET = "small-plants-hus-photos";
 export const MAX_HUS_PHOTO_BYTES = 10 * 1024 * 1024;
@@ -27,16 +28,11 @@ export function isSupabaseHusMediaError(error: unknown): error is HusMediaPersis
   return error instanceof HusMediaPersistenceError;
 }
 
-export type SaveHusMediaInput = {
-  eventId?: string;
-  files: File[];
-  note?: string;
-  observationDate?: string;
-  rowId: string;
-};
+export type SaveHusMediaInput = HusMediaUploadInput & { rowId: string };
 
 export type SavedHusMedia = {
   note?: HusNoteEntry;
+  notes?: HusNoteEntry[];
   photos: HusPhotoEntry[];
 };
 
@@ -60,6 +56,7 @@ async function save(input: SaveHusMediaInput): Promise<SavedHusMedia> {
   const noteText = input.note?.trim() || undefined;
   const observationDate = input.observationDate?.trim() || undefined;
   const files = input.files;
+  const photoDetails = input.photoDetails === undefined ? undefined : validatePhotoDetails(input.photoDetails, files.length, eventId);
 
   if (!rowId) {
     throw new Error("Expected a Hus id.");
@@ -79,31 +76,44 @@ async function save(input: SaveHusMediaInput): Promise<SavedHusMedia> {
 
   const uploadedPaths: string[] = [];
   const storage = client.storage.from(HUS_PHOTO_BUCKET);
-  let createdNoteId: string | undefined;
+  const createdNoteIds: string[] = [];
 
   try {
     let note: HusNoteEntry | undefined;
     let noteId: string | undefined;
+    const individualNotes: HusNoteEntry[] = [];
 
-    if (!eventId) {
+    async function createNote(text?: string, date?: string): Promise<HusNoteEntry> {
       const noteRecord: HusNoteRecord = {
         id: crypto.randomUUID(),
         author: null,
-        note: noteText ?? null,
-        observation_date: observationDate || null,
+        note: text ?? null,
+        observation_date: date || null,
         sowing_plan_row_id: rowId,
       };
       const insert = await client.from("hus_notes").insert(noteRecord).select("*").single();
       if (insert.error) {
         throw new HusMediaPersistenceError("Neizdevās saglabāt HUS piezīmi", insert.error);
       }
-      note = recordToHusNote(insert.data as HusNoteRecord, []);
+      const saved = recordToHusNote(insert.data as HusNoteRecord, []);
+      createdNoteIds.push(saved.id);
+      return saved;
+    }
+
+    if (!eventId && (!photoDetails || noteText)) {
+      note = await createNote(noteText, observationDate);
       noteId = note.id;
-      createdNoteId = noteId;
     }
 
     const photoRecords: HusPhotoRecord[] = [];
-    for (const file of files) {
+    for (const [index, file] of files.entries()) {
+      let photoNoteId = noteId;
+      if (photoDetails) {
+        const details = photoDetails[index];
+        const photoNote = await createNote(photoDetailsToNote(details), details.date);
+        individualNotes.push(photoNote);
+        photoNoteId = photoNote.id;
+      }
       const storagePath = createStoragePath(rowId, file);
       const buffer = Buffer.from(await file.arrayBuffer());
       const upload = await storage.upload(storagePath, buffer, {
@@ -121,7 +131,7 @@ async function save(input: SaveHusMediaInput): Promise<SavedHusMedia> {
         content_type: file.type as HusPhotoRecord["content_type"],
         file_size_bytes: file.size,
         hus_event_id: eventId ?? null,
-        hus_note_id: noteId ?? null,
+        hus_note_id: photoNoteId ?? null,
         original_file_name: file.name || "hus-photo",
         sowing_plan_row_id: rowId,
         storage_bucket: HUS_PHOTO_BUCKET,
@@ -139,15 +149,22 @@ async function save(input: SaveHusMediaInput): Promise<SavedHusMedia> {
     }
 
     if (note) {
-      note = { ...note, photos };
+      const savedNoteId = note.id;
+      note = { ...note, photos: photos.filter((photo) => photo.husNoteId === savedNoteId) };
     }
 
-    return { note, photos };
+    return {
+      note,
+      ...(photoDetails ? { notes: individualNotes.map((entry) => ({
+        ...entry, photos: photos.filter((photo) => photo.husNoteId === entry.id),
+      })) } : {}),
+      photos,
+    };
   } catch (error) {
     if (uploadedPaths.length > 0) {
       await storage.remove(uploadedPaths).catch(() => undefined);
     }
-    if (createdNoteId) {
+    for (const createdNoteId of createdNoteIds) {
       try {
         await client.from("hus_notes").delete().eq("id", createdNoteId);
       } catch {

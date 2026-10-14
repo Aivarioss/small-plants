@@ -66,6 +66,24 @@ describe("HUS media API", () => {
     await expect(response.json()).resolves.toEqual({ error: "Atļauti tikai JPEG vai PNG attēli." });
   });
 
+  it("passes individual photo metadata without altering the legacy fields", async () => {
+    const save = vi.fn().mockResolvedValue({ notes: [], photos: [] });
+    vi.mocked(createSupabaseHusMediaRepository).mockReturnValue({ deletePhoto: vi.fn(), downloadPhoto: vi.fn(), save });
+    const details = [{ description: "Brūnās saknes", date: "2026-10-14", table: "C7" }];
+    const response = await POST(uploadRequest(new File(["demo"], "photo.jpg", { type: "image/jpeg" }),
+      { photoDetails: JSON.stringify(details) }));
+    expect(response.status).toBe(200);
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ photoDetails: details, rowId: "row-id" }));
+  });
+
+  it.each(["not-json", "{}", '[{"date":"2026-02-30"}]', "[]"])("rejects malformed photo metadata: %s", async (photoDetails) => {
+    const save = vi.fn();
+    vi.mocked(createSupabaseHusMediaRepository).mockReturnValue({ deletePhoto: vi.fn(), downloadPhoto: vi.fn(), save });
+    const response = await POST(uploadRequest(new File(["demo"], "photo.jpg", { type: "image/jpeg" }), { photoDetails }));
+    expect(response.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
   it("rejects files over 10 MB", async () => {
     const file = new File([new Uint8Array(MAX_HUS_PHOTO_BYTES + 1)], "photo.jpg", { type: "image/jpeg" });
 
@@ -76,7 +94,7 @@ describe("HUS media API", () => {
   });
 });
 
-function uploadRequest(file: File, fields: { eventId?: string; note?: string } = {}): NextRequest {
+function uploadRequest(file: File, fields: { eventId?: string; note?: string; photoDetails?: string } = {}): NextRequest {
   const formData = new FormData();
   formData.append("rowId", "row-id");
   if (fields.eventId) {
@@ -85,6 +103,7 @@ function uploadRequest(file: File, fields: { eventId?: string; note?: string } =
   if (fields.note) {
     formData.append("note", fields.note);
   }
+  if (fields.photoDetails !== undefined) formData.append("photoDetails", fields.photoDetails);
   formData.append("photos", file);
 
   return new NextRequest("http://localhost/api/hus-media", {

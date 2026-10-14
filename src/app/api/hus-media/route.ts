@@ -6,6 +6,7 @@ import {
   validateHusPhotoFile,
 } from "@/lib/repositories/supabase-hus-media-repository";
 import { isSupabaseServerConfigured } from "@/lib/supabase/server";
+import { validatePhotoDetails, type HusPhotoDetails } from "@/lib/hus-photo-archive";
 
 export async function POST(request: NextRequest) {
   const guard = await requireReadySession(request);
@@ -32,6 +33,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Pievieno piezīmi vai fotogrāfiju." }, { status: 400 });
   }
 
+  let photoDetails: HusPhotoDetails[] | undefined;
+  const rawDetails = formData.get("photoDetails");
+  if (rawDetails !== null) {
+    try {
+      if (typeof rawDetails !== "string") throw new Error("Invalid photo details.");
+      photoDetails = validatePhotoDetails(JSON.parse(rawDetails), files.length, eventId);
+    } catch {
+      return NextResponse.json({ error: "Invalid photo details or date." }, { status: 400 });
+    }
+  }
+
   try {
     files.forEach(validateHusPhotoFile);
     const result = await createSupabaseHusMediaRepository().save({
@@ -39,6 +51,7 @@ export async function POST(request: NextRequest) {
       files,
       note,
       observationDate,
+      ...(photoDetails ? { photoDetails } : {}),
       rowId,
     });
     return NextResponse.json(result);

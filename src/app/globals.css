@@ -1539,6 +1539,35 @@ textarea {
   margin-top: 4px;
 }
 
+.archive-tabs { margin-bottom: 14px; }
+.photo-archive { margin-top: 14px; }
+.photo-archive-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 240px);
+  gap: 12px;
+  margin: 16px 0;
+}
+.photo-archive-controls label,
+.photo-details-form label { display: grid; gap: 6px; min-width: 0; }
+.photo-archive-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
+  gap: 16px;
+}
+.photo-archive-card { overflow: hidden; border: 1px solid var(--border); border-radius: 8px; }
+.photo-archive-image { display: block; width: 100%; padding: 0; border: 0; background: var(--surface-soft); }
+.photo-archive-image img { display: block; width: 100%; height: auto; aspect-ratio: 4 / 3; object-fit: cover; }
+.photo-archive-metadata { display: grid; gap: 8px; padding: 12px; overflow-wrap: anywhere; min-width: 0; }
+.photo-archive-metadata p { margin: 0; white-space: pre-wrap; }
+.photo-archive-status { color: var(--muted); font-size: 0.85rem; }
+.photo-details-form { display: grid; gap: 10px; min-width: 0; border: 1px solid var(--border); border-radius: 8px; }
+.photo-details-form legend { max-width: 100%; overflow-wrap: anywhere; }
+.hus-photo-viewer .panel-header { flex-wrap: wrap; }
+@media (max-width: 600px) {
+  .photo-archive-controls { grid-template-columns: 1fr; }
+  .archive-tabs { display: flex; flex-wrap: wrap; }
+}
+
 .hus-photo-thumb {
   display: block;
   width: 64px;

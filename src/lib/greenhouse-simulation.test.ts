@@ -322,6 +322,7 @@ describe("greenhouse occupancy and sowing-date simulation", () => {
         row({
           extraPlants: 100,
           id: "large",
+          sowingTables: "A1-A5",
           requiredPlants: 6057,
           sectorName: "Hus 7",
           sectorType: 39,
@@ -452,7 +453,7 @@ describe("greenhouse occupancy and sowing-date simulation", () => {
     expect(first[0]?.tier).toBe("preferred");
   });
 
-  it("reports insufficient data when seeding-table availability cannot be checked", () => {
+  it("finds seeding tables instead of reporting missing data for an unassigned target", () => {
     const result = simulateSowingDateChange(
       [{ ...baseRow, sowingTables: undefined }],
       plannerConfig,
@@ -460,8 +461,9 @@ describe("greenhouse occupancy and sowing-date simulation", () => {
       "2026-10-06",
     );
 
-    expect(result.status).toBe("insufficientData");
-    expect(result.warnings.some((warning) => warning.includes("nav norādīti sēšanas galdi"))).toBe(true);
+    expect(result.status).toBe("can");
+    expect(result.recommendation?.seedingTables).toEqual(["A1", "A2", "A3"]);
+    expect(result.warnings.some((warning) => warning.includes("nav norādīti sēšanas galdi"))).toBe(false);
   });
 
   it("classifies thinning deadline conflicts as cannot", () => {

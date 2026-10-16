@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { calculateGreenhouseTablePlacement } from "./greenhouse-placement";
+import { calculateGreenhouseTablePlacement, evaluateGreenhouseDensity } from "./greenhouse-placement";
 
 describe("standalone greenhouse table placement", () => {
+  it("checks the exact density against the existing limit, before display rounding", () => {
+    expect(evaluateGreenhouseDensity(2100, 10).feasible).toBe(true);
+    expect(evaluateGreenhouseDensity(2101, 10).feasible).toBe(false);
+    expect(evaluateGreenhouseDensity(2101, 10).plantsPerTrough).toBe(35);
+  });
   it.each([
     [3656, 24, 0, "normal"],
     [3844, 26, 0, "normal"],

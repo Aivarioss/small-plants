@@ -1,6 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { effectiveOperationalLoad, scheduleProductionWork } from "./scheduler";
+import { effectiveOperationalLoad, evaluateThinningWorkload, scheduleProductionWork } from "./scheduler";
 import type { SowingPlanRow } from "./types";
+
+describe("simulation workload uses scheduler production rules", () => {
+  it("keeps sowing compatible without inventing an additional workload limit", () => {
+    const result = evaluateThinningWorkload("2026-10-27", "target", [
+      { date: "2026-10-27", planRowId: "other", type: "sowing", workloadWeight: 0.5 },
+    ]);
+    expect(result.projectedLoad).toBe(1);
+    expect(result.overload).toBe(0);
+    expect(result.sowingCount).toBe(1);
+  });
+  it("reuses the scheduler's Rings/thinning compatibility and Planting workload", () => {
+    const rings = evaluateThinningWorkload("2026-10-27", "target", [
+      { date: "2026-10-27", planRowId: "other", type: "rings", workloadWeight: 1 },
+    ]);
+    const planting = evaluateThinningWorkload("2026-10-27", "target", [
+      { date: "2026-10-27", planRowId: "other", type: "harvest", workloadWeight: 1 },
+    ]);
+    expect(rings.projectedLoad).toBe(1);
+    expect(rings.overload).toBe(0);
+    expect(planting.projectedLoad).toBe(2);
+    expect(planting.overload).toBe(1);
+    expect(planting.plantingCount).toBe(1);
+  });
+});
 
 function row(patch: Partial<SowingPlanRow> = {}): SowingPlanRow {
   return {

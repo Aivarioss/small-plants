@@ -2,6 +2,7 @@ import type { SowingPlanRow, WorkScheduleKind, WorkSource, WorkType } from "./ty
 import { calculateGreenhouseTablePlacement, type GreenhouseTablePlacement } from "./greenhouse-placement";
 
 const DAILY_TARGET = 1;
+const THINNING_WORKLOAD = 1;
 const GREENHOUSE_GROWING_TABLES = 91;
 
 export type ScheduledWorkItem = {
@@ -46,6 +47,21 @@ export type ScheduleResult = {
 };
 
 type ScheduledEntry = Pick<ScheduledWorkItem, "date" | "planRowId" | "type" | "workloadWeight">;
+
+export function evaluateThinningWorkload(date: string, planRowId: string, scheduled: ScheduledEntry[]) {
+  const entries = scheduled.filter((entry) => entry.date === date && !(entry.planRowId === planRowId && entry.type === "thinning"));
+  const projectedLoad = effectiveOperationalLoad([
+    ...entries, { date, planRowId, type: "thinning", workloadWeight: THINNING_WORKLOAD },
+  ]);
+  return {
+    projectedLoad,
+    overload: overloadAmount(projectedLoad),
+    weekdayScore: weekdayPreference("thinning", date),
+    sowingCount: entries.filter((entry) => entry.type === "sowing").length,
+    thinningCount: entries.filter((entry) => entry.type === "thinning").length,
+    plantingCount: entries.filter((entry) => entry.type === "harvest").length,
+  };
+}
 
 type DeadlineJob = {
   row: SowingPlanRow;
@@ -265,7 +281,7 @@ function deadlineJobsForRow(row: SowingPlanRow, warnings: ScheduleWarning[]): De
       earliest: cycleDayDate(row, 8),
       deadline: cycleDayDate(row, 10),
       scheduleKind: "window",
-      workload: 1,
+      workload: THINNING_WORKLOAD,
       splittable: false,
       preferredDates: [cycleDayDate(row, 9)],
       source: "automatic",

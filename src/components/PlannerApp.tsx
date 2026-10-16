@@ -74,6 +74,7 @@ import {
 } from "@/lib/localization";
 import { compressHusPhotoForUpload } from "@/lib/image-compression";
 import { HusPhotoArchive, PhotoArchiveMetadata } from "./HusPhotoArchive";
+import { SimulationResultView } from "./SimulationResultView";
 import { buildPhotoArchive, husPhotoFileUrl, photoArchiveHusTarget, type PhotoArchiveEntry, type HusMediaUploadInput, type HusPhotoDetails } from "@/lib/hus-photo-archive";
 import {
   buildGreenhouseOccupancyDay,
@@ -3519,123 +3520,6 @@ function GreenhousePanel({
       </section>
     </section>
   );
-}
-
-function SimulationResultView({ language, result }: { language: AppLanguage; result: SowingDateSimulationResult }) {
-  const statusLabel: Record<SowingDateSimulationResult["status"], string> = {
-    can: language === "lv" ? "Var" : "Can",
-    cannot: language === "lv" ? "Nevar" : "Cannot",
-    conditional: language === "lv" ? "Var ar nosacījumiem" : "Can with conditions",
-    insufficientData: language === "lv" ? "Nepietiek datu" : "Insufficient data",
-  };
-  const conflictDays = result.occupancy.filter((day) => day.warnings.length > 0);
-
-  return (
-    <div className={`simulation-result simulation-result--${result.status}`}>
-      <strong>{statusLabel[result.status]}</strong>
-      <p>{result.explanation}</p>
-      <dl>
-        <div>
-          <dt>{language === "lv" ? "Sēšana" : "Seeding"}</dt>
-          <dd>{shortDate(result.currentSowingDate)} → {shortDate(result.newSowingDate)}</dd>
-        </div>
-        <div>
-          <dt>{language === "lv" ? "Planting" : "Planting"}</dt>
-          <dd>{shortDate(result.currentMoveOutDate)} → {shortDate(result.newMoveOutDate)}</dd>
-        </div>
-      </dl>
-      {conflictDays.length > 0 ? (
-        <div>
-          <strong>{language === "lv" ? "Konfliktu / nepilnīgu datu dienas" : "Conflict / incomplete data days"}</strong>
-          <ul>
-            {conflictDays.slice(0, 8).map((day) => (
-              <li key={day.date}>
-                {shortDate(day.date)} · {day.warnings.join(" · ")}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-      {result.changedOtherWork.length > 0 ? (
-        <div>
-          <strong>{language === "lv" ? "Citu HUS darbu izmaiņas" : "Other Hus work changes"}</strong>
-          <ul>
-            {result.changedOtherWork.slice(0, 8).map((change) => (
-              <li key={`${change.planRowId}-${change.type}`}>
-                {change.sectorName} · {printWorkTitle(change.type, language)}: {change.before.map(shortDate).join(", ") || "—"} →{" "}
-                {change.after.map(shortDate).join(", ") || "—"}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-      {result.alternatives.length > 0 ? (
-        <div className="simulation-alternatives">
-          <strong>{language === "lv" ? "Iespējamie izvietojuma varianti" : "Possible placement options"}</strong>
-          {result.alternatives.map((alternative) => (
-            <article className={`simulation-option simulation-option--${alternative.tier}`} key={`${alternative.thinningDate}-${alternative.wateringZone}-${alternative.reservedTables}`}>
-              <div>
-                <strong>{simulationTierLabel(alternative.tier, language)}</strong>
-                <span>
-                  {shortDate(alternative.thinningDate)} · {formatCycleDay(alternative.cycleDay, language)}
-                </span>
-              </div>
-              <p>
-                {language === "lv" ? "Izvietojums" : "Placement"}:{" "}
-                {alternative.wateringZone
-                  ? alternative.wateringZone === "A"
-                    ? "A14-A26"
-                    : `${alternative.wateringZone}1-${alternative.wateringZone}26`
-                  : language === "lv" ? "nav atrasts" : "not found"}
-                {alternative.usesExtraBlock && alternative.wateringZone !== "A" ? " + A14-A26" : ""}
-              </p>
-              <p>
-                {language === "lv" ? "Galdi" : "Tables"}: {alternative.physicalTables} {language === "lv" ? "fiziski" : "physical"} ·{" "}
-                {alternative.reservedTables} {language === "lv" ? "rezervēti" : "reserved"} ·{" "}
-                {alternative.densityClass} · {alternative.explanation}
-              </p>
-              {alternative.sharedWith.length > 0 ? (
-                <p>
-                  {language === "lv" ? "Dalīta zona" : "Shared zone"}:{" "}
-                  {alternative.sharedWith.map((item) => `${item.sectorName} (${item.overlapDays} d.)`).join(", ")}
-                </p>
-              ) : null}
-              {alternative.risks.length > 0 ? (
-                <ul>
-                  {alternative.risks.map((risk) => (
-                    <li key={risk}>{risk}</li>
-                  ))}
-                </ul>
-              ) : null}
-            </article>
-          ))}
-        </div>
-      ) : (
-        <p className="capacity-note">
-          {language === "lv"
-            ? "Nav atrasts drošs augšanas izvietojuma variants ar pašreizējiem datiem."
-            : "No safe growing placement option was found with the current data."}
-        </p>
-      )}
-      <p className="capacity-note">
-        {language === "lv"
-          ? "Simulācija neko nesaglabā īstajā plānā."
-          : "The simulation does not save anything to the real plan."}
-      </p>
-    </div>
-  );
-}
-
-function simulationTierLabel(tier: SowingDateSimulationResult["alternatives"][number]["tier"], language: AppLanguage): string {
-  if (tier === "preferred") {
-    return language === "lv" ? "Vēlamais" : "Preferred";
-  }
-
-  if (tier === "compromise") {
-    return language === "lv" ? "Kompromiss" : "Compromise";
-  }
-
-  return language === "lv" ? "Saspringts" : "Strained";
 }
 
 function WorkItemCard({

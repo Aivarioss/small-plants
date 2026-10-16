@@ -1200,6 +1200,12 @@ textarea {
   margin: 0;
 }
 
+.simulation-details { margin: 14px 0; overflow-wrap: anywhere; }
+.simulation-details summary { cursor: pointer; font-weight: 800; }
+.simulation-option dd { overflow-wrap: anywhere; text-align: right; }
+.simulation-option dl > div { min-width: 0; flex-wrap: wrap; }
+.simulation-result h3 { margin-bottom: 12px; }
+
 @media (min-width: 720px) {
   .scenario-controls {
     grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto;

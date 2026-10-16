@@ -29,6 +29,18 @@ export type GreenhousePlacementOptions = {
   maxTables?: number;
 };
 
+// Fixed-size evaluation shares the production density classes and limits.
+// It does not change the automatic placement algorithm.
+export function evaluateGreenhouseDensity(plantCount: number, tables: number): GreenhouseTablePlacement {
+  const density = densityFor(plantCount, tables);
+  return placement(
+    plantCount, tables, classifyDensity(density),
+    Number.isFinite(plantCount) && plantCount > 0 && Number.isInteger(tables) && tables >= 1 &&
+      tables <= MAX_TOTAL_TABLES && density <= EXCEPTIONAL_MAX,
+    reasonFor(plantCount, tables, classifyDensity(density)),
+  );
+}
+
 export function calculateGreenhouseTablePlacement(
   plantCount: number,
   options: GreenhousePlacementOptions = {},

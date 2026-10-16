@@ -285,7 +285,7 @@ const text: Record<AppLanguage, Record<TextKey, string>> = {
     editEntry: "Edit entry",
     extra: "Extra",
     fixedDate: "Fixed date",
-    greenhouse: "Greenhouse",
+    greenhouse: "Small Plants House",
     greenhouseCapacity: "Physical capacity",
     greenhouseRequired: "Greenhouse required",
     husData: "Hus data",

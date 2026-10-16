@@ -56,7 +56,7 @@ export type GreenhouseSeedingOccupancy = {
   }>;
   unknownRows: Array<{
     planRowId: string;
-    reason: "missingSowingTables" | "unknownRelease";
+    reason: "missingSowingTables" | "unknownRelease" | "unknownCount";
     sectorName: string;
   }>;
   occupiedTableIds: string[];
@@ -131,10 +131,12 @@ type LongGrowingRowId = Extract<GreenhouseRowId, "B" | "C" | "D">;
 export type GreenhouseSimulationAlternative = {
   status: "can" | "conditional";
   seedingTables: string[];
+  seedingTableCount: number;
   normalTables: number;
   plantsPerTrough: number;
   placementKind: GrowingPlacementKind;
   workload: ReturnType<typeof evaluateThinningWorkload>;
+  avoidsDay9Overload: boolean;
   upcomingSowingCount: number;
   notices: SimulationNotice[];
   explanationEn: string;
@@ -331,7 +333,7 @@ export function simulateSowingDateChange(
   const alternatives = search.alternatives;
   const recommendation = alternatives[0];
   const previewRows = scenarioRows.map((row) => row.id === targetPlanRowId && recommendation ? {
-    ...row, sowingTables: recommendation.seedingTables.join(", "),
+    ...row,
     adjustments: { ...row.adjustments, thinning: recommendation.thinningDate },
   } : row);
   const previewTarget = previewRows.find((row) => row.id === targetPlanRowId) ?? scenarioTarget;
@@ -347,7 +349,7 @@ export function simulateSowingDateChange(
   const startDate = minIsoDate(currentRange.start, scenarioRange.start);
   const endDate = maxIsoDate(currentRange.end, scenarioRange.end);
   const occupancy = eachDate(startDate, endDate).map((date) => ({
-    date, seeding: seedingOccupancy(previewRows, placements, date),
+    date, seeding: simulationSeedingOccupancy(previewRows, placements, date),
     growing: simulationGrowingPreview(placements, date, recommendation, target.id), warnings: [],
   }));
   const notices = search.notices;
@@ -662,25 +664,44 @@ function findSowingDateAlternatives(
   const otherRows = rows.filter((row) => row.id !== target.id && !row.archivedAt);
   const counts = Array.from({ length: normalTables }, (_, index) => normalTables - index)
     .filter((count) => evaluateGreenhouseDensity(plants, count).feasible);
+  if (!counts.length) return { alternatives: [], incomplete: false, notices: [{
+    lv: "Ar " + normalTables + " augšanas galdiem " + plants + " stādi pārsniedz atļauto blīvumu; vajadzīgs lielāks izvietojums.",
+    en: plants + " plants exceed the permitted density on " + normalTables + " growing tables; a larger placement is required.",
+  }] };
   let incomplete = false;
   function candidatesForDay(cycleDay: number): GreenhouseSimulationAlternative[] {
     const date = addDays(target.sowingDate, cycleDay - 1);
     if (date >= target.harvestDate) return [];
-    const seeding = chooseSimulationSeedingTables(target, otherRows, reservations, date, needed);
-    notices.push(...seeding.notices);
-    incomplete ||= seeding.incomplete;
-    if (seeding.tables.length < needed) return [];
+    const seeding = checkSimulationSeedingCapacity(target, otherRows, reservations, date, needed);
+    if (!seeding.feasible && !seeding.incomplete) {
+      notices.push(...seeding.notices);
+      return [];
+    }
     const interval = eachDate(date, addDays(target.harvestDate, -1)).map((day) => ({
       date: day, active: simulationReservationsOnDate(reservations, day),
     }));
     const workload = evaluateThinningWorkload(date, target.id, work);
-    return counts.flatMap((count) => {
+    const avoidsDay9Overload = cycleDay === 8 &&
+      evaluateThinningWorkload(addDays(target.sowingDate, 8), target.id, work).overload > workload.overload;
+    const growingCandidates = counts.flatMap((count) => {
       const density = evaluateGreenhouseDensity(plants, count);
-      const options = [...new Map(interval.flatMap((day) =>
+      const options = [...new Map([{ active: [] as GrowingPlacement[] }, ...interval].flatMap((day) =>
         placementOptionsFor(target, count, day.active, date, target.harvestDate))
-        .map((option) => [[option.kind, option.primaryRow, option.physicalTables].join("|"), option])).values()];
-      return options.filter((option) => option.physicalTables === count &&
-        interval.every((day) => simulationOptionFits(option, day.active))).map((option) => {
+        .map((option) => {
+          // A manual row may share physical space, even when it was free on
+          // the thinning date. Classify it consistently for the whole stay.
+          if (target.placement?.primaryRow && option.kind === "standardRow" &&
+            interval.some((day) => day.active.some((entry) => entry.primaryRow === option.primaryRow))) {
+            option = { ...option, kind: "sharedRow", reservedTables: option.physicalTables };
+          }
+          return [[option.kind, option.primaryRow, option.physicalTables].join("|"), option] as const;
+        })).values()];
+      return options.filter((option) => {
+        if (option.physicalTables !== count) return false;
+        const conflict = interval.find((day) => !simulationOptionFits(option, day.active));
+        if (conflict) notices.push(simulationGrowingConflict(option, conflict.active, conflict.date));
+        return !conflict;
+      }).map((option) => {
         const sharedById = new Map<string, { planRowId: string; sectorName: string; overlapDays: number }>();
         if (option.kind === "sharedRow") for (const day of interval) {
           for (const entry of day.active.filter((entry) => entry.primaryRow === option.primaryRow)) {
@@ -696,7 +717,7 @@ function findSowingDateAlternatives(
           lv: "Citam HUS pārklājošajā periodā nav zināma augšanas rinda; izvietojums ir nosacīts.",
           en: "Another HUS has no known growing row during the overlap; this placement is conditional.",
         });
-        const unknownMoving = reservations.some((entry) => entry.actualMovements?.some((movement) =>
+        const unknownMoving = reservations.some((entry) => entry.endDate > date && entry.actualMovements?.some((movement) =>
           movement.eventDate < target.harvestDate && movement.warnings.length > 0));
         if (unknownMoving) missing.push({
           lv: "Cita HUS Moving ierakstā ir neskaidra atrašanās vieta; vajadzīgs precizējums.",
@@ -705,8 +726,7 @@ function findSowingDateAlternatives(
         const plantingHandoff = reservations.filter((entry) => entry.endDate === date &&
           (entry.primaryRow === option.primaryRow || option.usesExtraBlock && entry.usesExtraBlock));
         const freedFor = otherRows.filter((row) => row.sowingDate > date &&
-          row.sowingDate <= addDays(target.sowingDate, 9) &&
-          parseSowingTableSelection(row.sowingTables).some((table) => seeding.tables.includes(table)));
+          row.sowingDate <= addDays(target.sowingDate, 9));
         const upcomingSowingCount = otherRows.filter((row) =>
           row.sowingDate > date && row.sowingDate <= addDays(target.sowingDate, 9)).length;
         const risks: SimulationNotice[] = [...missing];
@@ -752,7 +772,10 @@ function findSowingDateAlternatives(
         const tier: SimulationAlternativeTier = cycleDay === 11 || option.kind === "sharedRow" ||
           density.densityClass === "exceptional" || workload.overload > 0 ? "strained"
           : count < normalTables || option.kind === "aExtraOnly" || plantingHandoff.length ? "compromise" : "preferred";
-        const explanation = freedFor.length ? {
+        const explanation = avoidsDay9Overload ? {
+          lv: "Retināšana 8. dienā ļauj izvairīties no darba pārslodzes 9. dienā un agrāk atbrīvo sēšanas galdus.",
+          en: "Thinning on day 8 avoids the workload overload on day 9 and releases seeding tables earlier.",
+        } : freedFor.length ? {
           lv: "Agrāka retināšana atbrīvo sēšanas galdus nākamajai sēšanai: " + freedFor.map((row) => row.sectorName + " " + row.sowingDate).join(", ") + ".",
           en: "Earlier thinning releases seeding tables for the next sowing: " + freedFor.map((row) => row.sectorName + " " + row.sowingDate).join(", ") + ".",
         } : upcomingSowingCount ? {
@@ -762,7 +785,6 @@ function findSowingDateAlternatives(
           lv: "Izvērtēta visa sēšanas un augšanas perioda pieejamība un darbu slodze pēc pašreizējiem plānošanas noteikumiem; priekšroka vienai laistīšanas rindai.",
           en: "Availability was checked throughout seeding and growing, using the existing workload rules; one watering row is preferred.",
         };
-        if (missing.length) incomplete = true;
         return {
           cycleDay, thinningDate: date, densityClass: density.densityClass,
           explanation: explanation.lv, explanationEn: explanation.en,
@@ -771,10 +793,20 @@ function findSowingDateAlternatives(
           wateringZone: option.primaryRow, placementKind: option.kind, sharedWith,
           tier, status: conditional ? "conditional" as const : "can" as const,
           score: option.score, risks: risks.map((entry) => entry.lv), notices: uniqueNotices(risks),
-          seedingTables: seeding.tables, workload, upcomingSowingCount,
+          seedingTables: seeding.tables, seedingTableCount: seeding.tableCount, workload, avoidsDay9Overload, upcomingSowingCount,
         };
       });
     });
+    if (!seeding.feasible) {
+      // Missing release data matters only if a growing placement could work.
+      // Otherwise the independently proven growing conflict explains rejection.
+      if (growingCandidates.length) {
+        incomplete = true;
+        notices.unshift(...seeding.notices);
+      }
+      return [];
+    }
+    return growingCandidates;
   }
   const regular = [8, 9, 10].flatMap(candidatesForDay);
   const normalFits = regular.some((option) => option.physicalTables === normalTables);
@@ -784,7 +816,7 @@ function findSowingDateAlternatives(
     ? normalFits ? regular.filter((option) => option.physicalTables === normalTables) : regular
     : candidatesForDay(11);
   const alternatives = candidates.sort(compareAlternatives).filter(uniqueAlternative).slice(0, 4);
-  if (!alternatives.length) notices.push({
+  if (!alternatives.length && !notices.length) notices.push({
     lv: "Nav atrasts fiziski derīgs sēšanas un augšanas izvietojums 8.–10. vai ārkārtas 11. dienā.",
     en: "No physically valid seeding and growing placement was found on days 8–10 or emergency day 11.",
   });
@@ -808,55 +840,160 @@ function simulationGrowingPreview(
   return { ...occupancy, usedTables, freeTables: Math.max(0, occupancy.capacity - usedTables), overCapacity: usedTables > occupancy.capacity };
 }
 
-function chooseSimulationSeedingTables(
+function checkSimulationSeedingCapacity(
   target: SowingPlanRow, rows: SowingPlanRow[], reservations: GrowingPlacement[], thinningDate: string, needed: number,
-): { tables: string[]; notices: SimulationNotice[]; incomplete: boolean } {
+): { tables: string[]; tableCount: number; feasible: boolean; notices: SimulationNotice[]; incomplete: boolean } {
+  const targetTables = parseSowingTableSelection(target.sowingTables);
+  const tableCount = Math.max(needed, targetTables.length);
+  const lifecycles = simulationSeedingLifecycles(rows, reservations).filter((entry) =>
+    entry.start <= thinningDate && entry.end >= target.sowingDate);
+  lifecycles.push({ planRowId: target.id, sectorName: target.sectorName, tables: targetTables,
+    start: target.sowingDate, end: thinningDate, count: tableCount, releaseKnown: true });
   const notices: SimulationNotice[] = [];
-  const busy = new Map<string, Set<string>>();
-  let incomplete = false;
+  const conflicts: SimulationNotice[] = [];
+  const notified = new Set<string>();
+  let blockedByUnknownRelease = false;
   for (const date of eachDate(target.sowingDate, thinningDate)) {
-    for (const row of rows) {
-      const placement = reservations.find((entry) => entry.planRowId === row.id);
-      if (row.sowingDate > date || placement?.releaseKnown && date > placement.startDate) continue;
-      const tables = parseSowingTableSelection(row.sowingTables);
-      if (!tables.length || !placement?.releaseKnown) {
-        incomplete = true;
+    const active = lifecycles.filter((entry) => entry.start <= date && date <= entry.end);
+    for (const entry of active) {
+      if ((entry.count === undefined || !entry.releaseKnown) && !notified.has(entry.planRowId)) {
+        notified.add(entry.planRowId);
         notices.push({
-          lv: row.sectorName + (tables.length ? ": nav droši zināms sēšanas galdu atbrīvošanas datums." : ": nav norādīti sēšanas galdi."),
-          en: row.sectorName + (tables.length ? ": the seeding-table release date is unknown." : ": seeding tables are not assigned."),
+          lv: date + ": " + entry.sectorName + (entry.count === undefined
+            ? " nav zināms nepieciešamais sēšanas galdu skaits; kapacitāti nevar pilnībā apstiprināt."
+            : " nav droši zināms sēšanas galdu atbrīvošanas datums; kapacitāti nevar pilnībā apstiprināt."),
+          en: date + ": " + entry.sectorName + (entry.count === undefined
+            ? " has an unknown required seeding-table count; capacity cannot be fully confirmed."
+            : " has an unknown seeding-table release date; capacity cannot be fully confirmed."),
         });
       }
-      for (const table of tables) busy.set(table, new Set([...(busy.get(table) ?? []), row.sectorName]));
+    }
+    const used = active.reduce((sum, entry) => sum + (entry.count ?? entry.tables.length), 0);
+    const certain = active.filter((entry) => entry.releaseKnown);
+    const certainUsed = certain.reduce((sum, entry) => sum + (entry.count ?? entry.tables.length), 0);
+    if (used > SEEDING_TABLE_CAPACITY) {
+      const uncertain = certainUsed <= SEEDING_TABLE_CAPACITY;
+      blockedByUnknownRelease ||= uncertain;
+      if (!uncertain) conflicts.push({
+        lv: date + ": vajag " + certainUsed + " sēšanas galdus, pieejami " + SEEDING_TABLE_CAPACITY + " (" + certain.map((entry) => entry.sectorName).join(", ") + ").",
+        en: date + ": " + certainUsed + " seeding tables required, " + SEEDING_TABLE_CAPACITY + " available (" + certain.map((entry) => entry.sectorName).join(", ") + ").",
+      });
+    }
+    for (let index = 1; index <= SEEDING_TABLE_CAPACITY; index++) {
+      const table = "A" + index;
+      const owners = active.filter((entry) => entry.tables.includes(table));
+      if (owners.length < 2) continue;
+      if (owners.filter((entry) => entry.releaseKnown).length < 2) {
+        blockedByUnknownRelease = true;
+      } else conflicts.push({
+        lv: date + ": " + table + " sēšanas galda konflikts (" + owners.map((entry) => entry.sectorName).join(", ") + ").",
+        en: date + ": " + table + " seeding-table conflict (" + owners.map((entry) => entry.sectorName).join(", ") + ").",
+      });
     }
   }
-  const assigned = parseSowingTableSelection(target.sowingTables);
-  if (assigned.length) {
-    const conflicts = assigned.filter((table) => busy.has(table));
-    for (const table of conflicts) notices.push({
-      lv: table + ": sēšanas galda konflikts (" + target.sectorName + ", " + [...busy.get(table)!].join(", ") + ") līdz " + thinningDate + ".",
-      en: table + ": seeding-table conflict (" + target.sectorName + ", " + [...busy.get(table)!].join(", ") + ") through " + thinningDate + ".",
-    });
-    if (assigned.length < needed) notices.push({
-      lv: "Nepietiek piešķirto sēšanas galdu: vajag " + needed + ", norādīti " + assigned.length + ".",
-      en: "Too few assigned seeding tables: " + needed + " required, " + assigned.length + " assigned.",
-    });
-    return { tables: conflicts.length || assigned.length < needed ? [] : assigned, notices, incomplete };
+  if (conflicts.length) return { tables: targetTables, tableCount, feasible: false, notices: uniqueNotices(conflicts), incomplete: false };
+  // A daily count is sufficient for interchangeable tables. Fixed reservations
+  // also need a continuous allocation: no unrecorded mid-cycle table moves.
+  const certainLifecycles = lifecycles.filter((entry) => entry.releaseKnown);
+  if (!simulationFixedSeedingFits(certainLifecycles, target.sowingDate, thinningDate)) {
+    const fixed = certainLifecycles.filter((entry) => entry.tables.length);
+    const conflict = {
+      lv: target.sowingDate + "–" + thinningDate + ": fiksētās sēšanas galdu rezervācijas neatstāj nepārtrauktu vietu nepieciešamajam galdu skaitam (" + fixed.map((entry) => entry.sectorName + ": " + entry.tables.join(", ") + " " + entry.start + "–" + entry.end).join("; ") + ").",
+      en: target.sowingDate + "–" + thinningDate + ": fixed seeding-table reservations leave no continuous allocation for the required table counts (" + fixed.map((entry) => entry.sectorName + ": " + entry.tables.join(", ") + " " + entry.start + "–" + entry.end).join("; ") + ").",
+    };
+    return { tables: targetTables, tableCount, feasible: false, notices: [conflict], incomplete: false };
   }
-  const free = Array.from({ length: SEEDING_TABLE_CAPACITY }, (_, i) => "A" + (i + 1)).filter((table) => !busy.has(table));
-  const combinations: string[][] = [];
-  function choose(start: number, chosen: string[]) {
-    if (chosen.length === needed) { combinations.push(chosen); return; }
-    for (let i = start; i <= free.length - (needed - chosen.length); i++) choose(i + 1, [...chosen, free[i]]);
+  if (blockedByUnknownRelease || certainLifecycles.length !== lifecycles.length &&
+    !simulationFixedSeedingFits(lifecycles, target.sowingDate, thinningDate)) {
+    return { tables: targetTables, tableCount, feasible: false, notices: uniqueNotices(notices), incomplete: true };
   }
-  if (needed <= free.length) choose(0, []);
-  const gaps = (tables: string[]) => tables.slice(1).reduce((sum, table, i) =>
-    sum + Number(Number(table.slice(1)) !== Number(tables[i].slice(1)) + 1), 0);
-  combinations.sort((a, b) => gaps(a) - gaps(b) || Number(a[0].slice(1)) - Number(b[0].slice(1)));
-  if (!combinations.length) notices.push({
-    lv: "Visā periodā " + target.sowingDate + "–" + thinningDate + " vajag " + needed + " brīvus sēšanas galdus; pieejami " + free.length + ".",
-    en: "Throughout " + target.sowingDate + "–" + thinningDate + ", " + needed + " seeding tables are required; " + free.length + " remain available.",
+  return { tables: targetTables, tableCount, feasible: true, notices: uniqueNotices(notices), incomplete: notices.length > 0 };
+}
+
+type SimulationSeedingLifecycle = {
+  planRowId: string; sectorName: string; start: string; end: string;
+  tables: string[]; count?: number; releaseKnown: boolean;
+};
+
+function simulationSeedingLifecycles(rows: SowingPlanRow[], reservations: GrowingPlacement[]): SimulationSeedingLifecycle[] {
+  return rows.filter((row) => !row.archivedAt).map((row) => {
+    const placement = reservations.find((entry) => entry.planRowId === row.id);
+    const releaseKnown = Boolean(placement?.releaseKnown || placement?.actualMovements?.length);
+    const plants = getTotalSow(row);
+    const validCount = Number.isFinite(plants) && Number.isInteger(plants) && plants > 0;
+    const plan = validCount ? calculateSowingPlan(plants) : undefined;
+    const tables = parseSowingTableSelection(row.sowingTables);
+    return { planRowId: row.id, sectorName: row.sectorName, start: row.sowingDate,
+      // Planting bounds even an unknown release; old cycles cannot reserve forever.
+      end: releaseKnown && placement ? minIsoDate(placement.startDate, addDays(row.harvestDate, -1)) : addDays(row.harvestDate, -1),
+      tables, releaseKnown,
+      count: plan ? Math.max(tables.length, plan.fullTables + Number(plan.hasPartialTable)) : undefined };
   });
-  return { tables: combinations[0] ?? [], notices, incomplete };
+}
+
+function simulationFixedSeedingFits(entries: SimulationSeedingLifecycle[], start: string, end: string): boolean {
+  if (!entries.some((entry) => entry.tables.length)) return true;
+  const overlaps = (a: SimulationSeedingLifecycle, b: SimulationSeedingLifecycle) =>
+    maxIsoDate(maxIsoDate(a.start, b.start), start) <= minIsoDate(minIsoDate(a.end, b.end), end);
+  const mask = (tables: string[]) => tables.reduce((bits, table) => bits | 1 << (Number(table.slice(1)) - 1), 0);
+  const all = (1 << SEEDING_TABLE_CAPACITY) - 1;
+  const jobs = entries.map((entry) => {
+    const fixed = mask(entry.tables);
+    const blocked = entries.filter((other) => other !== entry && overlaps(entry, other))
+      .reduce((bits, other) => bits | mask(other.tables), 0);
+    return { entry, fixed, available: all & ~blocked & ~fixed,
+      extra: (entry.count ?? entry.tables.length) - entry.tables.length };
+  }).sort((a, b) => bitCount(a.available) - a.extra - (bitCount(b.available) - b.extra) || b.extra - a.extra);
+  const allocated: Array<{ entry: SimulationSeedingLifecycle; bits: number }> = [];
+  function fit(index: number): boolean {
+    if (index === jobs.length) return true;
+    const job = jobs[index];
+    const busy = allocated.filter((other) => overlaps(job.entry, other.entry)).reduce((bits, other) => bits | other.bits, 0);
+    const available = job.available & ~busy;
+    if (bitCount(available) < job.extra || (busy & job.fixed)) return false;
+    function choose(bits: number, remaining: number, from: number): boolean {
+      if (!remaining) {
+        allocated.push({ entry: job.entry, bits: bits | job.fixed });
+        const valid = fit(index + 1);
+        allocated.pop();
+        return valid;
+      }
+      for (let i = from; i < SEEDING_TABLE_CAPACITY; i++) {
+        if ((available & 1 << i) && choose(bits | 1 << i, remaining - 1, i + 1)) return true;
+      }
+      return false;
+    }
+    return choose(0, job.extra, 0);
+  }
+  return fit(0);
+}
+
+function bitCount(bits: number): number {
+  let count = 0;
+  for (; bits; bits &= bits - 1) count++;
+  return count;
+}
+
+function simulationSeedingOccupancy(rows: SowingPlanRow[], placements: GrowingPlacement[], date: string): GreenhouseSeedingOccupancy {
+  const active = simulationSeedingLifecycles(rows, placements).filter((entry) => entry.start <= date && date <= entry.end);
+  const tableOccupancy = Array.from({ length: SEEDING_TABLE_CAPACITY }, (_, index) => "A" + (index + 1)).map((table) => {
+    const owners = active.filter((entry) => entry.tables.includes(table));
+    return { table, planRowIds: owners.map((entry) => entry.planRowId), sectorNames: owners.map((entry) => entry.sectorName) };
+  }).filter((entry) => entry.planRowIds.length);
+  const usedTables = active.reduce((sum, entry) => sum + (entry.count ?? entry.tables.length), 0);
+  return { capacity: SEEDING_TABLE_CAPACITY, usedTables, freeTables: Math.max(0, SEEDING_TABLE_CAPACITY - usedTables),
+    incomplete: active.some((entry) => entry.count === undefined || !entry.releaseKnown), overCapacity: usedTables > SEEDING_TABLE_CAPACITY,
+    occupiedTableIds: tableOccupancy.map((entry) => entry.table),
+    // No concrete free table numbers are claimed for count-only reservations.
+    freeTableIds: active.some((entry) => entry.count !== entry.tables.length) ? [] :
+      Array.from({ length: SEEDING_TABLE_CAPACITY }, (_, index) => "A" + (index + 1)).filter((table) => !tableOccupancy.some((entry) => entry.table === table)),
+    tableOccupancy, conflicts: tableOccupancy.filter((entry) => entry.planRowIds.length > 1),
+    unknownRows: active.flatMap((entry) => entry.count === undefined || !entry.releaseKnown ? [{
+      planRowId: entry.planRowId, sectorName: entry.sectorName, reason: entry.count === undefined ? "unknownCount" as const : "unknownRelease" as const,
+    }] : []),
+    rows: active.map((entry) => ({ planRowId: entry.planRowId, sectorName: entry.sectorName, sowingDate: entry.start,
+      dateRange: { start: entry.start, end: entry.end }, tables: entry.tables, tableCount: entry.count ?? entry.tables.length })),
+  };
 }
 
 function simulationReservationsOnDate(reservations: GrowingPlacement[], date: string): GrowingPlacement[] {
@@ -884,6 +1021,24 @@ function simulationOptionFits(option: PhysicalPlacementOption, active: GrowingPl
   if (sameRow.length) return false;
   return option.physicalTables <= 26 || option.kind === "largeWithExtra" &&
     option.physicalTables <= 39 && aUsed === 0;
+}
+
+function simulationGrowingConflict(option: PhysicalPlacementOption, active: GrowingPlacement[], date: string): SimulationNotice {
+  const used = active.reduce((sum, entry) => sum + entry.tables, 0);
+  if (used + option.physicalTables > GROWING_TABLE_CAPACITY) return {
+    lv: date + ": augšanas vietā aizņemti " + used + " galdi; kopā ar vēl " + option.physicalTables + " galdiem pārsniegta " + GROWING_TABLE_CAPACITY + " galdu kapacitāte (" + active.map((entry) => entry.sectorName).join(", ") + ").",
+    en: date + ": " + used + " growing tables are occupied; adding " + option.physicalTables + " exceeds the " + GROWING_TABLE_CAPACITY + "-table capacity (" + active.map((entry) => entry.sectorName).join(", ") + ").",
+  };
+  const sameRow = active.filter((entry) => entry.primaryRow === option.primaryRow);
+  const extra = active.filter((entry) => entry.primaryRow === "A" || entry.usesExtraBlock);
+  const extraConflict = option.usesExtraBlock && extra.length && (option.primaryRow === "A" || !sameRow.length);
+  const owners = extraConflict ? extra : sameRow;
+  const row = extraConflict ? "A14–A26" : option.primaryRow;
+  const names = [...new Set(owners.map((entry) => entry.sectorName))].join(", ");
+  return {
+    lv: date + ": " + row + " rinda nepieciešama " + names + "; vēl " + option.physicalTables + " galdiem nepietiek vietas.",
+    en: date + ": " + row + " row is required by " + names + "; there is not enough room for another " + option.physicalTables + " tables.",
+  };
 }
 
 
@@ -1203,6 +1358,7 @@ function compareAlternatives(left: GreenhouseSimulationAlternative, right: Green
     Number(left.status !== "can") - Number(right.status !== "can") ||
     tierScore(left.tier) - tierScore(right.tier) ||
     left.workload.overload - right.workload.overload ||
+    Number(right.avoidsDay9Overload) - Number(left.avoidsDay9Overload) ||
     right.upcomingSowingCount - left.upcomingSowingCount ||
     left.workload.projectedLoad - right.workload.projectedLoad ||
     left.workload.sowingCount - right.workload.sowingCount ||

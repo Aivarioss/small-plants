@@ -17,20 +17,21 @@ describe("simulation result summary", () => {
     expect(html.indexOf(summary)).toBeGreaterThan(-1);
     expect(html.indexOf(summary)).toBeLessThan(html.indexOf("<details"));
     expect(html).toContain(details);
-    expect(html).toContain("A1, A2, A3");
+    expect(html).toContain((language === "lv" ? "Sēšanas galdi" : "Seeding tables") + "</dt><dd>3</dd>");
     expect(html).not.toContain(language === "lv" ? "Nepietiek datu" : "Insufficient data");
     expect(html).toContain(language === "lv" ? "iespējams iesēt agrāk" : "earlier seeding is possible");
     expect(html).toContain(language === "lv" ? "stādi/renē" : "plants/trough");
   });
 
   it("clearly labels a proposal with unresolved data instead of claiming feasibility", () => {
-    const other = { ...target, id: "unknown", sectorName: "Unknown HUS" };
+    const other = { ...target, id: "unknown", sectorName: "Unknown HUS", requiredPlants: Number.NaN,
+      placement: { primaryRow: "D" as const, tables: 4, manual: true } };
     const result = simulateSowingDateChange([target, other], plannerConfig, target.id, target.sowingDate);
     const html = renderToStaticMarkup(<SimulationResultView result={result} language="en" />);
     expect(result.status).toBe("conditional");
     expect(html).toContain("conditional proposal");
     expect(html).not.toContain("Verified solution");
-    expect(html).toContain("seeding tables are not assigned");
+    expect(html).toContain("unknown required seeding-table count");
   });
 
   it("renames only the small plants navigation, preserving actual greenhouse terminology", () => {

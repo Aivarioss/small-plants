@@ -453,7 +453,7 @@ describe("greenhouse occupancy and sowing-date simulation", () => {
     expect(first[0]?.tier).toBe("preferred");
   });
 
-  it("finds seeding tables instead of reporting missing data for an unassigned target", () => {
+  it("checks seeding capacity instead of reporting missing numbers for an unassigned target", () => {
     const result = simulateSowingDateChange(
       [{ ...baseRow, sowingTables: undefined }],
       plannerConfig,
@@ -462,7 +462,8 @@ describe("greenhouse occupancy and sowing-date simulation", () => {
     );
 
     expect(result.status).toBe("can");
-    expect(result.recommendation?.seedingTables).toEqual(["A1", "A2", "A3"]);
+    expect(result.recommendation?.seedingTableCount).toBe(3);
+    expect(result.recommendation?.seedingTables).toEqual([]);
     expect(result.warnings.some((warning) => warning.includes("nav norādīti sēšanas galdi"))).toBe(false);
   });
 

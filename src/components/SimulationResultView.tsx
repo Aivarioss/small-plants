@@ -15,7 +15,7 @@ export function SimulationResultView({ language, result }: { language: AppLangua
       <h3>{result.targetSectorName} — {conclusion}</h3>
       {best ? (
         <SimulationOption alternative={best} language={language} sowingDate={result.newSowingDate} primary />
-      ) : <p>{lv ? "Skati precīzos ierobežojumus sadaļā “Detalizēta pārbaude”." : "See the specific constraints under “Detailed check”."}</p>}
+      ) : <p>{result.notices[0]?.[language] ?? (lv ? "Risinājums nav atrasts." : "No solution found.")}</p>}
       <p>{lv ? "Planting" : "Planting"}: {formatDate(result.currentMoveOutDate)} → {formatDate(result.newMoveOutDate)}</p>
       {result.alternatives.length > 1 ? (
         <div className="simulation-alternatives">
@@ -59,7 +59,8 @@ function SimulationOption({ alternative: option, language, sowingDate, primary =
         {" · "}{option.status === "can" ? lv ? "Pārbaudīts risinājums" : "Verified solution" : lv ? "Nosacīts priekšlikums" : "Conditional proposal"}</strong>
       <dl>
         <div><dt>{lv ? "Sēšana" : "Seeding"}</dt><dd>{formatDate(sowingDate)}</dd></div>
-        <div><dt>{lv ? "Sēšanas galdi" : "Seeding tables"}</dt><dd>{option.seedingTables.join(", ")}</dd></div>
+        <div><dt>{lv ? "Sēšanas galdi" : "Seeding tables"}</dt><dd>{option.seedingTableCount}
+          {option.seedingTables.length ? " · " + option.seedingTables.join(", ") : null}</dd></div>
         <div><dt>{lv ? "Retināšana" : "Thinning"}</dt><dd>{formatDate(option.thinningDate)} ({option.cycleDay}{lv ? ". diena" : "th day"})</dd></div>
         <div><dt>{lv ? "Augšanas vieta" : "Growing location"}</dt><dd>{location}{option.usesExtraBlock && option.wateringZone !== "A" ? " + A14–A26" : ""}</dd></div>
         <div><dt>{lv ? "Blīvums" : "Density"}</dt><dd>{option.plantsPerTrough} {lv ? "stādi/renē" : "plants/trough"} · {density}</dd></div>

@@ -22,7 +22,16 @@ export type JointSimulationRequest = {
   allowOtherSowingChanges?: boolean;
   /** Prefer regular windows, then preserve non-requested HUS before compression. */
   prioritizeRequestedHus?: boolean;
+  /** Validate this exact joint candidate only, preserving every other HUS. */
+  candidatePlacements?: JointCandidatePlacement[];
   limits?: Partial<JointSearchLimits>;
+};
+
+export type JointCandidatePlacement = {
+  planRowId: string;
+  thinningDate: string;
+  wateringZone: GreenhouseRowId;
+  physicalTables?: number;
 };
 
 export type JointSearchLimits = {
@@ -113,6 +122,7 @@ type Context = {
   requestedIds: Set<string>;
   end: string;
   result: JointSimulationResult;
+  seedingChecks: Map<string, ReturnType<typeof model.checkSeedingCapacity>>;
 };
 
 const defaults: JointSearchLimits = { maxNodes: 12000, beamWidth: 48, maxMutableRows: 8, maxSowingScenarios: 12 };
@@ -235,7 +245,7 @@ export function simulateJointSowingPlan(request: JointSimulationRequest): JointS
   const mutableIds = new Set(movable.slice(0, limits.maxMutableRows).map((row) => row.id));
   result.search.frozenByLimit = movable.filter((row) => !mutableIds.has(row.id)).map((row) => row.id);
   result.search.truncated = result.search.frozenByLimit.length > 0;
-  const context: Context = { request, rows, baselineWork, baselineThin, baselineReservations, mutableIds, requestedIds, end, result };
+  const context: Context = { request, rows, baselineWork, baselineThin, baselineReservations, mutableIds, requestedIds, end, result, seedingChecks: new Map() };
   const invalidFrozen = baselineReservations.find((entry) => !mutableIds.has(entry.planRowId) && entry.releaseKnown &&
     (entry.startDate >= entry.endDate || entry.startDate < rows.find((row) => row.id === entry.planRowId)!.sowingDate));
   if (invalidFrozen) return fail("input", invalidFrozen.sectorName + ": fiksētā retināšanas/Moving diena nav starp sēšanu un Planting.",
@@ -246,31 +256,57 @@ export function simulateJointSowingPlan(request: JointSimulationRequest): JointS
   const changedRows = applySowingChanges(rows, request.sowingChanges);
   if (!validWorkWindows(context, changedRows)) return result;
   const requestedContext = { ...context, mutableIds: new Set([...mutableIds].filter((id) => requestedIds.has(id))) };
-  const searches: Array<{ context: Context; stage: JointSearchStage }> = request.prioritizeRequestedHus && requestedContext.mutableIds.size !== mutableIds.size ? [
-    ...(["normal", "compromise"] as const).map((stage) => ({ context: requestedContext, stage })),
-    ...(["normal", "compromise"] as const).map((stage) => ({ context, stage })),
-    { context: requestedContext, stage: "emergency" }, { context, stage: "emergency" },
-  ] : (["normal", "compromise", "emergency"] as const).map((stage) => ({ context, stage }));
-  for (const attempt of searches) {
-    if (!result.search.stages.includes(attempt.stage)) result.search.stages.push(attempt.stage);
-    result.plans = search(attempt.context, changedRows, attempt.stage);
-    if (result.plans.length || result.search.nodes >= limits.maxNodes) break;
-  }
-  if (!result.plans.length && result.search.nodes < limits.maxNodes && request.allowOtherSowingChanges !== false) {
-    result.search.stages.push("sowingCompromise");
-    const flexibleSowing = rows.filter((row) => mutableIds.has(row.id) && !requestedIds.has(row.id) &&
-      row.sowingDate > request.asOfDate && !row.husEvents?.length && !request.completedWork?.some((work) => work.planRowId === row.id));
-    outer: for (const row of flexibleSowing) for (const offset of [-1, 1, -2, 2, -3, 3]) {
-      if (result.search.sowingScenarios >= limits.maxSowingScenarios || result.search.nodes >= limits.maxNodes) {
-        result.search.truncated = true;
-        break outer;
+  if (request.candidatePlacements) {
+    const candidates = request.candidatePlacements;
+    if (candidates.length !== requestedIds.size || new Set(candidates.map((entry) => entry.planRowId)).size !== requestedIds.size ||
+      candidates.some((entry) => !requestedIds.has(entry.planRowId))) return fail("input",
+      "Kandidātā jānorāda katrs pieprasītais HUS tieši vienu reizi.", "The candidate must specify every requested HUS exactly once.");
+    for (const entry of candidates) {
+      const row = changedRows.find((row) => row.id === entry.planRowId)!;
+      if (!requestedContext.mutableIds.has(row.id)) return fail("immutableWork",
+        row.sectorName + ": faktiskais vai bloķētais Moving/retināšana nav pārplānojama.",
+        row.sectorName + ": actual or locked Moving/thinning cannot be replanned.", [row.id], entry.thinningDate);
+      if (!validDate(entry.thinningDate) || !thinningDates(context, row, "emergency").includes(entry.thinningDate) ||
+        !["A", "B", "C", "D"].includes(entry.wateringZone) ||
+        entry.physicalTables !== undefined && (!Number.isInteger(entry.physicalTables) || entry.physicalTables < 1 || entry.physicalTables > 39)) return fail("input",
+        row.sectorName + ": nederīgs kandidāta retināšanas datums, rinda vai galdu skaits (" + entry.thinningDate + ").",
+        row.sectorName + ": invalid candidate thinning date, row or table count (" + entry.thinningDate + ").", [row.id], entry.thinningDate);
+    }
+    result.plans = search(requestedContext, changedRows, "emergency", candidates);
+  } else {
+    const stages: Array<{ context: Context; stage: JointSearchStage }> = request.prioritizeRequestedHus && requestedContext.mutableIds.size !== mutableIds.size ? [
+      ...(["normal", "compromise"] as const).map((stage) => ({ context: requestedContext, stage })),
+      ...(["normal", "compromise"] as const).map((stage) => ({ context, stage })),
+      { context: requestedContext, stage: "emergency" }, { context, stage: "emergency" },
+    ] : (["normal", "compromise", "emergency"] as const).map((stage) => ({ context, stage }));
+    const searches = stages.flatMap((attempt) => attempt.stage === "compromise" && request.prioritizeRequestedHus &&
+      attempt.context.mutableIds.size === 2 && requestedIds.size === 2 && changedRows.some((row) =>
+        requestedIds.has(row.id) && (row.placement?.tables ?? calculateGreenhouseTablePlacement(getTotalSow(row)).totalTables) > 26)
+      ? [{ ...attempt, fullRowsOnly: true }, { ...attempt, fullRowsOnly: false }] : [{ ...attempt, fullRowsOnly: false }]);
+    for (const attempt of searches) {
+      if (!result.search.stages.includes(attempt.stage)) result.search.stages.push(attempt.stage);
+      const found = search(attempt.context, changedRows, attempt.stage, undefined, attempt.fullRowsOnly);
+      result.plans = bestPlans([...result.plans, ...found], context);
+      // A simple whole-row swap is a certified fallback. Still use the remaining
+      // budget to look for a less compressed solution with the usual ranking.
+      if ((!attempt.fullRowsOnly && result.plans.length) || result.search.nodes >= limits.maxNodes) break;
+    }
+    if (!result.plans.length && result.search.nodes < limits.maxNodes && request.allowOtherSowingChanges !== false) {
+      result.search.stages.push("sowingCompromise");
+      const flexibleSowing = rows.filter((row) => mutableIds.has(row.id) && !requestedIds.has(row.id) &&
+        row.sowingDate > request.asOfDate && !row.husEvents?.length && !request.completedWork?.some((work) => work.planRowId === row.id));
+      outer: for (const row of flexibleSowing) for (const offset of [-1, 1, -2, 2, -3, 3]) {
+        if (result.search.sowingScenarios >= limits.maxSowingScenarios || result.search.nodes >= limits.maxNodes) {
+          result.search.truncated = true;
+          break outer;
+        }
+        const sowingDate = addDays(row.sowingDate, offset);
+        if (sowingDate < request.asOfDate || sowingDate >= row.harvestDate) continue;
+        result.search.sowingScenarios++;
+        const scenario = applySowingChanges(changedRows, [{ planRowId: row.id, sowingDate }]);
+        if (!validWorkWindows(context, scenario, false)) continue;
+        result.plans = bestPlans([...result.plans, ...search(context, scenario, "sowingCompromise")], context);
       }
-      const sowingDate = addDays(row.sowingDate, offset);
-      if (sowingDate < request.asOfDate || sowingDate >= row.harvestDate) continue;
-      result.search.sowingScenarios++;
-      const scenario = applySowingChanges(changedRows, [{ planRowId: row.id, sowingDate }]);
-      if (!validWorkWindows(context, scenario, false)) continue;
-      result.plans = bestPlans([...result.plans, ...search(context, scenario, "sowingCompromise")], context);
     }
   }
   result.search.truncated ||= result.search.nodes >= limits.maxNodes;
@@ -288,16 +324,18 @@ export function simulateJointSowingPlan(request: JointSimulationRequest): JointS
   return result;
 }
 
-function search(context: Context, rows: SowingPlanRow[], stage: JointSearchStage): JointSimulationPlan[] {
+function search(context: Context, rows: SowingPlanRow[], stage: JointSearchStage, candidates?: JointCandidatePlacement[], fullRowsOnly = false): JointSimulationPlan[] {
   const { result, request } = context;
   const mutable = rows.filter((row) => context.mutableIds.has(row.id)).sort((a, b) =>
     a.sowingDate.localeCompare(b.sowingDate) || a.id.localeCompare(b.id));
   const frozen = context.baselineReservations.filter((entry) => !context.mutableIds.has(entry.planRowId));
+  const completed: JointSimulationPlan[] = [];
   let beam: State[] = [{ choices: [], reservations: frozen }];
   for (let index = 0; index < mutable.length; index++) {
     const row = mutable[index];
     const next: State[] = [];
-    const dates = thinningDates(context, row, stage);
+    const candidate = candidates?.find((entry) => entry.planRowId === row.id);
+    const dates = candidate ? [candidate.thinningDate] : thinningDates(context, row, stage);
     if (!dates.length) {
       conflict(context, "workWindow", row.harvestDate, [row.id], {
         lv: row.sectorName + ": pirms Planting " + row.harvestDate + " nav atļautas retināšanas dienas.",
@@ -320,17 +358,24 @@ function search(context: Context, rows: SowingPlanRow[], stage: JointSearchStage
         conflict(context, "missingData", row.sowingDate, [row.id], { lv: row.sectorName + ": nav derīga augšanas galdu skaita.", en: row.sectorName + ": a valid growing-table count is missing." });
         continue;
       }
-      const counts = stage === "normal" ? [normal] : Array.from({ length: normal }, (_, i) => normal - i);
+      const counts = candidate ? [candidate.physicalTables ?? normal] : fullRowsOnly ? [Math.min(normal, 26)] : stage === "normal" ? [normal] :
+        [...new Set([normal, ...(request.prioritizeRequestedHus && normal > 26 ? [26] : []), ...Array.from({ length: normal }, (_, i) => normal - i)])];
       if (!counts.some((count) => evaluateGreenhouseDensity(plants, count).feasible)) {
-        conflict(context, "growingCapacity", row.sowingDate, [row.id], {
-          lv: row.sectorName + ": " + normal + " galdiem pārsniegts atļautais augšanas blīvums.",
-          en: row.sectorName + ": the permitted growing density is exceeded on " + normal + " tables.",
+        conflict(context, "growingCapacity", candidate?.thinningDate ?? row.sowingDate, [row.id], {
+          lv: row.sectorName + ": " + counts[0] + " galdiem pārsniegts atļautais augšanas blīvums.",
+          en: row.sectorName + ": the permitted growing density is exceeded on " + counts[0] + " tables.",
         });
         continue;
       }
       for (const date of dates) {
-        const seed = model.checkSeedingCapacity(row, rows.filter((other) => other.id !== row.id), [...state.reservations, ...optimistic], date, seedingCount(row), request.asOfDate,
-          { step: () => tick(context), exhausted: false });
+        if (candidate?.wateringZone === "A" && counts[0] > 13) {
+          conflict(context, "growingCapacity", date, [row.id], {
+            lv: date + ": " + row.sectorName + " vajag " + counts[0] + " galdus A14–A26 blokā, pieejami 13.",
+            en: date + ": " + row.sectorName + " needs " + counts[0] + " tables in A14–A26; only 13 are available.",
+          });
+          continue;
+        }
+        const seed = checkSeeding(context, row, rows, [...state.reservations, ...optimistic], date);
         if (seed.searchLimited) break expanding;
         if (!seed.feasible) {
           conflict(context, seed.incomplete ? "missingData" : "seedingCapacity", date, [row.id], seed.notices[0]);
@@ -345,6 +390,8 @@ function search(context: Context, rows: SowingPlanRow[], stage: JointSearchStage
             model.placementOptions(freeRow, count, day.active, date, row.harvestDate)).map((option) =>
             [[option.kind, option.primaryRow, count].join("|"), option] as const)).values()];
           for (const option of options) {
+            if (candidate && option.primaryRow !== candidate.wateringZone) continue;
+            if (fullRowsOnly && option.kind !== "standardRow") continue;
             if (stage === "normal" && option.kind === "sharedRow") continue;
             if (!tick(context)) break expanding;
             const failed = interval.find((day) => !model.optionFits(option, day.active));
@@ -353,20 +400,40 @@ function search(context: Context, rows: SowingPlanRow[], stage: JointSearchStage
               continue;
             }
             const choice = { row, date, option };
-            next.push({ choices: [...state.choices, choice], reservations: [...state.reservations, reservation(choice)] });
+            const nextState = { choices: [...state.choices, choice], reservations: [...state.reservations, reservation(choice)] };
+            // Certify the first complete candidate before spending the remaining
+            // budget on more alternatives. Never lose a proven plan at the limit.
+            if (index === mutable.length - 1 && !completed.length) {
+              const plan = completePlan(context, rows, nextState);
+              if (plan) completed.push(plan);
+            }
+            next.push(nextState);
           }
         }
       }
     }
-    if (!next.length) return [];
+    if (!next.length) return completed;
     const sorted = next.sort((a, b) => compareVectors(stateScore(context, a), stateScore(context, b)) || stateKey(a).localeCompare(stateKey(b)));
     result.search.truncated ||= sorted.length > result.search.beamWidth;
     beam = sorted.slice(0, result.search.beamWidth);
   }
-  return bestPlans(beam.flatMap((state) => {
+  return bestPlans([...completed, ...beam.flatMap((state) => {
     const plan = completePlan(context, rows, state);
     return plan ? [plan] : [];
-  }), context);
+  })], context);
+}
+
+/** Seeding allocation depends on sowing/release dates, not on growing row or
+ * density. Reuse a completed proof across those physically equivalent trials. */
+function checkSeeding(context: Context, row: SowingPlanRow, rows: SowingPlanRow[], reservations: Reservation[], date: string) {
+  const key = JSON.stringify([row.id, date, rows.map((entry) => [entry.id, entry.sowingDate]),
+    reservations.map((entry) => [entry.planRowId, entry.startDate, entry.plannedStartDate, entry.releaseKnown])]);
+  const cached = context.seedingChecks.get(key);
+  if (cached) return cached;
+  const check = model.checkSeedingCapacity(row, rows.filter((other) => other.id !== row.id), reservations, date, seedingCount(row), context.request.asOfDate,
+    { step: () => tick(context), exhausted: false });
+  if (!check.searchLimited && context.seedingChecks.size < 4096) context.seedingChecks.set(key, check);
+  return check;
 }
 
 function completePlan(context: Context, rows: SowingPlanRow[], state: State): JointSimulationPlan | undefined {
@@ -381,9 +448,7 @@ function completePlan(context: Context, rows: SowingPlanRow[], state: State): Jo
         en: row.sectorName + ": the seeding-table count is unknown; joint capacity is not fully confirmed." });
       continue;
     }
-    const seed = model.checkSeedingCapacity(row, rows.filter((other) => other.id !== row.id), state.reservations,
-      entry.startDate < context.end ? entry.startDate : context.end, count, request.asOfDate,
-      { step: () => tick(context), exhausted: false });
+    const seed = checkSeeding(context, row, rows, state.reservations, entry.startDate < context.end ? entry.startDate : context.end);
     if (seed.searchLimited) return undefined;
     if (!seed.feasible) {
       conflict(context, seed.incomplete ? "missingData" : "seedingCapacity", entry.startDate, [row.id], seed.notices[0]);
@@ -447,7 +512,16 @@ function completePlan(context: Context, rows: SowingPlanRow[], state: State): Jo
         en: date + ": " + entry.sectorName + " growing placement is not fully known; the proposal is conditional." });
     }
     const usedTables = longUsed.filter((value) => value > 0).length * 26 + aUsed;
-    return { date, seeding: model.seedingOccupancy(rows, state.reservations, date),
+    const seeding = model.seedingOccupancy(rows, state.reservations, date);
+    if (seeding.overCapacity || seeding.conflicts.length) conflict(context, "seedingCapacity", date, seeding.rows.map((row) => row.planRowId), {
+      lv: date + ": sēšanas galdos vajag " + seeding.usedTables + "/13; galdu konflikti: " +
+        (seeding.conflicts.map((entry) => entry.table + " (" + entry.sectorNames.join(", ") + ")").join("; ") || "nav") +
+        "; HUS: " + seeding.rows.map((row) => row.sectorName).join(", ") + ".",
+      en: date + ": seeding tables required " + seeding.usedTables + "/13; table conflicts: " +
+        (seeding.conflicts.map((entry) => entry.table + " (" + entry.sectorNames.join(", ") + ")").join("; ") || "none") +
+        "; HUS: " + seeding.rows.map((row) => row.sectorName).join(", ") + ".",
+    });
+    return { date, seeding,
       growing: { ...growing, usedTables, physicalUsedTables: physical, freeTables: Math.max(0, 91 - usedTables), overCapacity }, warnings: [] };
   });
   if (occupancy.some((day) => day.growing.overCapacity || day.seeding.overCapacity || day.seeding.conflicts.length)) return undefined;

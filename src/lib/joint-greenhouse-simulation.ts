@@ -20,6 +20,8 @@ export type JointSimulationRequest = {
   lockedPlanRowIds?: string[];
   /** The simple sowing-date UI may adjust pending thinning, never another sowing. */
   allowOtherSowingChanges?: boolean;
+  /** Prefer regular windows, then preserve non-requested HUS before compression. */
+  prioritizeRequestedHus?: boolean;
   limits?: Partial<JointSearchLimits>;
 };
 
@@ -82,6 +84,7 @@ export type JointSimulationPlan = {
     overloadOnThinningDays: number;
     emergencyDays: number;
     changedRows: number;
+    otherHusChanges: number;
   };
 };
 export type JointSimulationResult = {
@@ -242,9 +245,15 @@ export function simulateJointSowingPlan(request: JointSimulationRequest): JointS
   }
   const changedRows = applySowingChanges(rows, request.sowingChanges);
   if (!validWorkWindows(context, changedRows)) return result;
-  for (const stage of ["normal", "compromise", "emergency"] as const) {
-    result.search.stages.push(stage);
-    result.plans = search(context, changedRows, stage);
+  const requestedContext = { ...context, mutableIds: new Set([...mutableIds].filter((id) => requestedIds.has(id))) };
+  const searches: Array<{ context: Context; stage: JointSearchStage }> = request.prioritizeRequestedHus && requestedContext.mutableIds.size !== mutableIds.size ? [
+    ...(["normal", "compromise"] as const).map((stage) => ({ context: requestedContext, stage })),
+    ...(["normal", "compromise"] as const).map((stage) => ({ context, stage })),
+    { context: requestedContext, stage: "emergency" }, { context, stage: "emergency" },
+  ] : (["normal", "compromise", "emergency"] as const).map((stage) => ({ context, stage }));
+  for (const attempt of searches) {
+    if (!result.search.stages.includes(attempt.stage)) result.search.stages.push(attempt.stage);
+    result.plans = search(attempt.context, changedRows, attempt.stage);
     if (result.plans.length || result.search.nodes >= limits.maxNodes) break;
   }
   if (!result.plans.length && result.search.nodes < limits.maxNodes && request.allowOtherSowingChanges !== false) {
@@ -261,7 +270,7 @@ export function simulateJointSowingPlan(request: JointSimulationRequest): JointS
       result.search.sowingScenarios++;
       const scenario = applySowingChanges(changedRows, [{ planRowId: row.id, sowingDate }]);
       if (!validWorkWindows(context, scenario, false)) continue;
-      result.plans = bestPlans([...result.plans, ...search(context, scenario, "sowingCompromise")]);
+      result.plans = bestPlans([...result.plans, ...search(context, scenario, "sowingCompromise")], context);
     }
   }
   result.search.truncated ||= result.search.nodes >= limits.maxNodes;
@@ -357,7 +366,7 @@ function search(context: Context, rows: SowingPlanRow[], stage: JointSearchStage
   return bestPlans(beam.flatMap((state) => {
     const plan = completePlan(context, rows, state);
     return plan ? [plan] : [];
-  }));
+  }), context);
 }
 
 function completePlan(context: Context, rows: SowingPlanRow[], state: State): JointSimulationPlan | undefined {
@@ -462,6 +471,7 @@ function completePlan(context: Context, rows: SowingPlanRow[], state: State): Jo
       .reduce((sum, date) => sum + evaluateThinningWorkload(date, workItems.find((item) => item.type === "thinning" && item.date === date)!.planRowId, workItems).overload, 0),
     emergencyDays: proposals.filter((entry) => entry.cycleDay === 11).length,
     changedRows: changes.filter((entry) => entry.field === "wateringZone").length,
+    otherHusChanges: new Set(changes.filter((entry) => !context.requestedIds.has(entry.planRowId)).map((entry) => entry.planRowId)).size,
   };
   return { status: notices.length ? "conditional" : "can", proposals, changes, notices: uniqueNotices(notices), workItems, occupancy, score };
 }
@@ -550,10 +560,24 @@ function stateScore(context: Context, state: State): number[] {
     state.choices.filter((choice) => dateDistance(choice.row.sowingDate, choice.date) === 10).length,
     state.choices.filter((choice) => context.baselineReservations.find((entry) => entry.planRowId === choice.row.id)?.primaryRow !== choice.option.primaryRow).length,
     state.choices.reduce((sum, choice) => sum + choice.option.score, 0)];
+  if (context.request.prioritizeRequestedHus) {
+    const otherChanges = state.choices.filter((choice) => !context.requestedIds.has(choice.row.id) &&
+      (choice.date !== context.baselineThin.get(choice.row.id) ||
+        choice.option.primaryRow !== context.baselineReservations.find((entry) => entry.planRowId === choice.row.id)?.primaryRow ||
+        choice.option.physicalTables !== (choice.row.placement?.tables ?? calculateGreenhouseTablePlacement(getTotalSow(choice.row)).totalTables))).length;
+    const [density, severity, compression, dates, shift, load, emergency, zones, physical] = state.rank;
+    state.rank = [emergency, otherChanges, density, severity, compression, load, dates, shift, zones, physical];
+  }
   return state.rank;
 }
-function bestPlans(plans: JointSimulationPlan[]): JointSimulationPlan[] {
-  const sorted = plans.sort((a, b) => compareVectors(Object.values(a.score), Object.values(b.score)) || planKey(a).localeCompare(planKey(b)));
+function bestPlans(plans: JointSimulationPlan[], context: Context): JointSimulationPlan[] {
+  const rank = (plan: JointSimulationPlan) => {
+    const s = plan.score;
+    return context.request.prioritizeRequestedHus ? [s.emergencyDays, s.otherHusChanges, s.sowingCompromises,
+      s.densityAndWateringCompromises, s.densitySeverity, s.compressedTables, s.overloadOnThinningDays,
+      s.changedThinningDates, s.thinningShiftDays, s.changedRows] : Object.values(s);
+  };
+  const sorted = plans.sort((a, b) => compareVectors(rank(a), rank(b)) || planKey(a).localeCompare(planKey(b)));
   const seen = new Set<string>();
   return sorted.filter((plan) => {
     const key = JSON.stringify(plan.proposals.map((proposal) => {

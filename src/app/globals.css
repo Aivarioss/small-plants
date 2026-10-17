@@ -1112,13 +1112,18 @@ textarea {
 }
 
 .scenario-controls input,
-.scenario-controls select {
+.scenario-controls select,
+.scenario-mode select {
   min-height: 40px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #ffffff;
   padding: 9px 10px;
 }
+
+.scenario-mode { display: grid; gap: 6px; max-width: 420px; }
+.joint-simulation-proposals { display: grid; gap: 12px; min-width: 0; }
+.scenario-controls--joint button { grid-column: 1 / -1; }
 
 .simulation-result {
   border: 1px solid var(--border);
@@ -1207,10 +1212,14 @@ textarea {
 .simulation-result h3 { margin-bottom: 12px; }
 
 @media (min-width: 720px) {
+  .scenario-controls--joint,
+  .joint-simulation-proposals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .scenario-controls {
     grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto;
     align-items: end;
   }
+
+  .scenario-controls.scenario-controls--joint { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
   .simulation-result dl {
     grid-template-columns: repeat(2, minmax(0, 1fr));

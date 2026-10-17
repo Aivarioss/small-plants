@@ -74,13 +74,9 @@ import {
 } from "@/lib/localization";
 import { compressHusPhotoForUpload } from "@/lib/image-compression";
 import { HusPhotoArchive, PhotoArchiveMetadata } from "./HusPhotoArchive";
-import { SimulationResultView } from "./SimulationResultView";
-import { simulateGreenhouseSowing } from "@/lib/greenhouse-sowing-simulator";
+import { SowingSimulationPanel } from "./SowingSimulationPanel";
 import { buildPhotoArchive, husPhotoFileUrl, photoArchiveHusTarget, type PhotoArchiveEntry, type HusMediaUploadInput, type HusPhotoDetails } from "@/lib/hus-photo-archive";
-import {
-  buildGreenhouseOccupancyDay,
-  type SowingDateSimulationResult,
-} from "@/lib/greenhouse-simulation";
+import { buildGreenhouseOccupancyDay } from "@/lib/greenhouse-simulation";
 import {
   archiveRow,
   loadArchivedRows,
@@ -3368,19 +3364,6 @@ function GreenhousePanel({
 }) {
   const language = useAppLanguage();
   const snapshot = buildGreenhouseOccupancyDay(rows, plannerConfig, date);
-  const [simulationRowId, setSimulationRowId] = useState(rows[0]?.id ?? "");
-  const selectedSimulationRow = rows.find((row) => row.id === simulationRowId) ?? rows[0];
-  const [simulationDate, setSimulationDate] = useState("");
-  const selectedSimulationDate = simulationDate || selectedSimulationRow?.sowingDate || date;
-  const [simulation, setSimulation] = useState<SowingDateSimulationResult | null>(null);
-
-  function runSimulation() {
-    if (!selectedSimulationRow || !selectedSimulationDate) {
-      return;
-    }
-
-    setSimulation(simulateGreenhouseSowing(rows, plannerConfig, selectedSimulationRow.id, selectedSimulationDate, localTodayIso()));
-  }
 
   return (
     <section className="panel greenhouse-panel">
@@ -3482,42 +3465,7 @@ function GreenhousePanel({
         </div>
       ))}
 
-      <section className="scenario-panel">
-        <div className="panel-header">
-          <div>
-            <p className="eyebrow">{language === "lv" ? "Izmēģināt izmaiņu" : "Try a change"}</p>
-            <h3>{language === "lv" ? "Pārcelt HUS sēšanas datumu" : "Move Hus seeding date"}</h3>
-          </div>
-        </div>
-        <div className="scenario-controls">
-          <label>
-            {t("chooseHus", language)}
-            <select
-              value={selectedSimulationRow?.id ?? ""}
-              onChange={(event) => {
-                const next = rows.find((row) => row.id === event.target.value);
-                setSimulationRowId(event.target.value);
-                setSimulationDate(next?.sowingDate ?? date);
-                setSimulation(null);
-              }}
-            >
-              {rows.map((row) => (
-                <option key={row.id} value={row.id}>
-                  {row.sectorName} · {shortDate(row.sowingDate)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            {language === "lv" ? "Jaunā sēšana" : "New seeding date"}
-            <input type="date" value={selectedSimulationDate} onChange={(event) => setSimulationDate(event.target.value)} />
-          </label>
-          <button className="primary-action" type="button" onClick={runSimulation} disabled={!selectedSimulationRow}>
-            {language === "lv" ? "Aprēķināt" : "Calculate"}
-          </button>
-        </div>
-        {simulation ? <SimulationResultView result={simulation} language={language} /> : null}
-      </section>
+      <SowingSimulationPanel rows={rows} language={language} asOfDate={localTodayIso()} />
     </section>
   );
 }

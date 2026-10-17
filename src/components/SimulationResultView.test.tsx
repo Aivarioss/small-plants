@@ -17,9 +17,12 @@ describe("simulation result summary", () => {
     expect(html.indexOf(summary)).toBeGreaterThan(-1);
     expect(html.indexOf(summary)).toBeLessThan(html.indexOf("<details"));
     expect(html).toContain(details);
-    expect(html).toContain((language === "lv" ? "Sēšanas galdi" : "Seeding tables") + "</dt><dd>3</dd>");
+    expect(html).toContain((language === "lv" ? "Pietiek, vajag " : "Enough, need ") + "3</dd>");
     expect(html).not.toContain(language === "lv" ? "Nepietiek datu" : "Insufficient data");
-    expect(html).toContain(language === "lv" ? "iespējams iesēt agrāk" : "earlier seeding is possible");
+    expect(html).toContain(language === "lv" ? "Var sēt" : "Can sow");
+    expect(html.match(/<article/g)).toHaveLength(1);
+    expect(html).not.toContain("<details open");
+    expect(html.split("<details")[0]).not.toContain(language === "lv" ? "Plānotā darbu slodze" : "Planned workload");
     expect(html).toContain(language === "lv" ? "stādi/renē" : "plants/trough");
   });
 
@@ -29,7 +32,7 @@ describe("simulation result summary", () => {
     const result = simulateSowingDateChange([target, other], plannerConfig, target.id, target.sowingDate);
     const html = renderToStaticMarkup(<SimulationResultView result={result} language="en" />);
     expect(result.status).toBe("conditional");
-    expect(html).toContain("conditional proposal");
+    expect(html).toContain("Possible with conditions");
     expect(html).not.toContain("Verified solution");
     expect(html).toContain("unknown required seeding-table count");
   });

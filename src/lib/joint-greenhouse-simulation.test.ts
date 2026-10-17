@@ -11,8 +11,10 @@ function hus(id: string, sowingDate = "2026-10-20", requiredPlants = 3656): Sowi
     adjustments: { thinning: addDays(sowingDate, 8) }, source: "user" };
 }
 function actual(id: string, destination: string, plants = 3900, end = "2026-11-20"): SowingPlanRow {
-  return { ...hus(id, "2026-09-25", plants), harvestDate: end,
-    husEvents: [{ id: id + "-moving", eventType: "move", eventDate: "2026-10-03", destinationLocation: destination }] };
+  // Explicit whole source tables confirm full release; a destination alone
+  // cannot establish that seeding tables have been completely cleared.
+  return { ...hus(id, "2026-09-25", plants), harvestDate: end, sowingTables: "A1–A6",
+    husEvents: [{ id: id + "-moving", eventType: "move", eventDate: "2026-10-03", location: "A1–A6", destinationLocation: destination }] };
 }
 function run(rows: SowingPlanRow[], extra: Partial<JointSimulationRequest> = {}) {
   return simulateJointSowingPlan({ rows, config: plannerConfig, asOfDate: "2026-10-16",
@@ -166,6 +168,16 @@ describe("joint HUS simulation", () => {
     expect(result.plans).toEqual([]);
     expect(result.conflicts.some((entry) => entry.code === "growingCapacity" && /^2026-10-/.test(entry.date))).toBe(true);
     expect(result.conflicts.some((entry) => entry.message.lv.includes("91 galdu kapacitāte"))).toBe(true);
+  });
+
+  it("can disable other sowing changes while retaining the joint engine's thinning search", () => {
+    const target = hus("Target");
+    const other = { ...hus("Other", "2026-10-25", 900), sowingTables: "A1–A11" };
+    const result = run([target, other], { allowOtherSowingChanges: false });
+    expect(result.search.stages).toEqual(["normal", "compromise", "emergency"]);
+    expect(result.search.sowingScenarios).toBe(0);
+    expect(result.plans).toEqual([]);
+    expect(other.sowingDate).toBe("2026-10-25");
   });
 
   it("preserves Moving, completed work, photos, notes and baseline capacity", () => {

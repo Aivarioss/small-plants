@@ -99,6 +99,7 @@ export type GreenhouseOccupancyDay = {
 };
 
 export type SowingDateSimulationResult = {
+  requiredChanges?: SimulationNotice[];
   recommendation?: GreenhouseSimulationAlternative;
   notices: SimulationNotice[];
   alternatives: GreenhouseSimulationAlternative[];
@@ -161,6 +162,8 @@ export type GreenhouseSimulationAlternative = {
 export type SimulationNotice = { lv: string; en: string };
 
 type GrowingPlacement = {
+  plannedStartDate?: string;
+  plannedPrimaryRow?: PhysicalGrowingRowId;
   actualMovements?: ActualGrowingMovement[];
   density?: number;
   endDate: string;
@@ -177,6 +180,7 @@ type GrowingPlacement = {
 };
 
 type RawGrowingPlacement = {
+  plannedStartDate?: string;
   actualMovements?: ActualGrowingMovement[];
   density?: number;
   densityClass?: PlacementDensityClass;
@@ -231,14 +235,6 @@ type PhysicalPlacementOption = {
   usesExtraBlock: boolean;
 };
 
-type SeedingLifecycle = {
-  endDate?: string;
-  planRowId: string;
-  sectorName: string;
-  sowingDate: string;
-  tables: string[];
-};
-
 const LONG_GROWING_ROWS: LongGrowingRowId[] = ["B", "C", "D"];
 const A_EXTRA_TABLE_CAPACITY = 13;
 const LONG_ROW_TABLE_CAPACITY = 26;
@@ -261,7 +257,8 @@ export function buildGreenhouseOccupancyDay(
   config: PlannerConfig,
   date: string,
 ): GreenhouseOccupancyDay {
-  const finalRows = finalScheduledRows(rows, config);
+  const datedRows = rows.map((row) => ({ ...row, husEvents: row.husEvents?.filter((event) => event.eventDate <= date) }));
+  const finalRows = finalScheduledRows(datedRows, config);
   const placements = growingPlacements(finalRows);
   const seeding = seedingOccupancy(finalRows, placements, date);
   const growing = growingOccupancy(placements, date);
@@ -272,9 +269,13 @@ export function buildGreenhouseOccupancyDay(
         : `${row.sectorName}: nav droši zināms sēšanas galdu atbrīvošanas datums.`
     ),
     ...seeding.conflicts.map((conflict) => `${conflict.table}: sēšanas galda konflikts (${conflict.sectorNames.join(", ")}).`),
-    ...(seeding.overCapacity ? [`Sēšanas galdu noslodze pārsniedz ${SEEDING_TABLE_CAPACITY}.`] : []),
+    ...(seeding.usedTables > SEEDING_TABLE_CAPACITY ? [`Sēšanas galdu noslodze pārsniedz ${SEEDING_TABLE_CAPACITY}.`] : []),
     ...growing.rows.flatMap((row) => (row.warnings ?? []).map((warning) => `${row.sectorName}: ${warning}`)),
-    ...(growing.overCapacity ? [`Augšanas galdu noslodze pārsniedz ${GROWING_TABLE_CAPACITY}.`] : []),
+    ...growing.rows.flatMap((row, index) => growing.rows.slice(index + 1).flatMap((other) => {
+      const shared = row.actualTableIds?.filter((table) => other.actualTableIds?.includes(table)) ?? [];
+      return shared.length ? [`${shared.join(", ")}: augšanas galdu konflikts (${row.sectorName}, ${other.sectorName}).`] : [];
+    })),
+    ...(growing.usedTables > GROWING_TABLE_CAPACITY ? [`Augšanas galdu noslodze pārsniedz ${GROWING_TABLE_CAPACITY}.`] : []),
   ];
 
   return {
@@ -290,6 +291,7 @@ export function simulateSowingDateChange(
   config: PlannerConfig,
   targetPlanRowId: string,
   newSowingDate: string,
+  options: { movePlantingWithSowing?: boolean; allowSameDaySeedingRelease?: boolean } = {},
 ): SowingDateSimulationResult {
   const originalRowsSnapshot = JSON.stringify(rows);
   const target = rows.find((row) => row.id === targetPlanRowId);
@@ -305,7 +307,7 @@ export function simulateSowingDateChange(
 
     return clearOptimizerWorkAdjustments({
       ...row,
-      harvestDate: addDays(newSowingDate, row.cycleLength - 1),
+      harvestDate: options.movePlantingWithSowing ? addDays(newSowingDate, row.cycleLength - 1) : row.harvestDate,
       sowingDate: newSowingDate,
     });
   });
@@ -329,7 +331,7 @@ export function simulateSowingDateChange(
         placementKind: primaryRow === "A" ? "aExtraOnly" as const : tables > 26 ? "largeWithExtra" as const : "standardRow" as const };
     });
   const scenarioTarget = scenarioRows.find((row) => row.id === targetPlanRowId) ?? target;
-  const search = findSowingDateAlternatives(currentRows, scenarioTarget, existingPlacements, currentWorkItems);
+  const search = findSowingDateAlternatives(currentRows, scenarioTarget, existingPlacements, currentWorkItems, options.allowSameDaySeedingRelease);
   const alternatives = search.alternatives;
   const recommendation = alternatives[0];
   const previewRows = scenarioRows.map((row) => row.id === targetPlanRowId && recommendation ? {
@@ -349,7 +351,7 @@ export function simulateSowingDateChange(
   const startDate = minIsoDate(currentRange.start, scenarioRange.start);
   const endDate = maxIsoDate(currentRange.end, scenarioRange.end);
   const occupancy = eachDate(startDate, endDate).map((date) => ({
-    date, seeding: simulationSeedingOccupancy(previewRows, placements, date),
+    date, seeding: simulationSeedingOccupancy(previewRows, placements, date, options.allowSameDaySeedingRelease),
     growing: simulationGrowingPreview(placements, date, recommendation, target.id), warnings: [],
   }));
   const notices = search.notices;
@@ -402,6 +404,7 @@ function growingPlacements(rows: SowingPlanRow[]): GrowingPlacement[] {
         planRowId: item.planRowId,
         plantsPerTrough: item.greenhousePlacement?.plantsPerTrough,
         plannedTables: tables,
+        plannedStartDate: item.date,
         releaseKnown: true,
         row: row ?? fallbackRowFor(item.planRowId, item.sectorName, item.date),
         sectorName: item.sectorName,
@@ -437,11 +440,12 @@ function growingOccupancy(placements: GrowingPlacement[], date: string): Greenho
     .filter((row): row is NonNullable<typeof row> => Boolean(row));
   const physicalUsedTables = rows.reduce((sum, row) => sum + row.tables, 0);
   const usedTables = rows.reduce((sum, row) => sum + (row.reservedTables ?? row.tables), 0);
+  const actualTables = rows.flatMap((row) => row.actualTableIds ?? []);
 
   return {
     capacity: GROWING_TABLE_CAPACITY,
     freeTables: Math.max(0, GROWING_TABLE_CAPACITY - usedTables),
-    overCapacity: usedTables > GROWING_TABLE_CAPACITY,
+    overCapacity: usedTables > GROWING_TABLE_CAPACITY || new Set(actualTables).size < actualTables.length,
     physicalUsedTables,
     rows,
     usedTables,
@@ -456,8 +460,8 @@ function growingOccupancyRowForDate(placement: GrowingPlacement, date: string): 
     }
     const reservation = reservationForActualTables(actualTableIds);
     const warnings = [
-      ...(placement.warnings ?? []),
-      ...actualPlacementMismatchWarnings(placement, actualTableIds, reservation),
+      ...(placement.actualMovements ?? []).filter((movement) => movement.eventDate <= date).flatMap((movement) => movement.warnings),
+      ...actualPlacementMismatchWarnings(placement, reservation),
     ];
 
     return {
@@ -494,38 +498,12 @@ function growingOccupancyRowForDate(placement: GrowingPlacement, date: string): 
 }
 
 function seedingOccupancy(rows: SowingPlanRow[], placements: GrowingPlacement[], date: string): GreenhouseSeedingOccupancy {
-  const lifecycles: SeedingLifecycle[] = rows.map((row) => {
-    const placement = placements.find((candidate) => candidate.planRowId === row.id);
-    return {
-      endDate: placement?.releaseKnown ? placement.startDate : undefined,
-      planRowId: row.id,
-      sectorName: row.sectorName,
-      sowingDate: row.sowingDate,
-      tables: parseSowingTableSelection(row.sowingTables),
-    };
-  });
-  const activeLifecycles = lifecycles.filter((row) => row.sowingDate <= date && (!row.endDate || date <= row.endDate));
-  const sowingRows = activeLifecycles
-    .filter((row) => row.tables.length > 0 && row.endDate)
-    .map((row) => ({
-      dateRange: { start: row.sowingDate, end: row.endDate ?? row.sowingDate },
-      planRowId: row.planRowId,
-      sectorName: row.sectorName,
-      sowingDate: row.sowingDate,
-      tables: row.tables,
-      tableCount: row.tables.length,
-    }));
-  const unknownRows = activeLifecycles.flatMap((row): GreenhouseSeedingOccupancy["unknownRows"] => {
-    if (row.tables.length === 0) {
-      return [{ planRowId: row.planRowId, reason: "missingSowingTables", sectorName: row.sectorName }];
-    }
-
-    if (!row.endDate) {
-      return [{ planRowId: row.planRowId, reason: "unknownRelease", sectorName: row.sectorName }];
-    }
-
-    return [];
-  });
+  const active = simulationSeedingLifecycles(rows, placements, true).filter((entry) => entry.start <= date && date <= entry.end);
+  const sowingRows = groupedSeedingRows(active, rows).filter((row) => row.tables.length > 0);
+  const unknownRows = [...new Map(active.flatMap((entry): GreenhouseSeedingOccupancy["unknownRows"] => {
+    const reason = entry.count === undefined ? "missingSowingTables" : !entry.releaseKnown ? "unknownRelease" : undefined;
+    return reason ? [{ planRowId: entry.planRowId, sectorName: entry.sectorName, reason }] : [];
+  }).map((entry) => [entry.planRowId, entry])).values()];
   const tableOccupancy = tableOccupancyFor(sowingRows);
   const conflicts = tableOccupancy.filter((table) => table.planRowIds.length > 1);
   const occupiedTableIds = tableOccupancy.map((table) => table.table);
@@ -579,11 +557,13 @@ function assignPhysicalGrowingPlacements(rawPlacements: RawGrowingPlacement[]): 
         const reservation = reservationForActualTables(actualTableIds);
         const actualWarnings = [
           ...(raw.actualMovements?.flatMap((movement) => movement.warnings) ?? []),
-          ...actualPlacementMismatchWarningsForPlan(raw.row, raw.plannedTables ?? raw.tables, actualTableIds, reservation),
+          ...actualPlacementMismatchWarningsForPlan(raw.row, reservation),
         ];
 
         reservations.push({
           actualMovements: raw.actualMovements,
+          plannedStartDate: raw.plannedStartDate,
+          plannedPrimaryRow: raw.row.placement?.primaryRow,
           density: raw.density,
           endDate: raw.endDate,
           placementKind: "standardRow",
@@ -625,6 +605,7 @@ function findSowingDateAlternatives(
   target: SowingPlanRow,
   reservations: GrowingPlacement[],
   currentWork: WorkItem[],
+  allowSameDaySeedingRelease = false,
 ): { alternatives: GreenhouseSimulationAlternative[]; notices: SimulationNotice[]; incomplete: boolean } {
   const notices: SimulationNotice[] = [];
   const plants = getTotalSow(target);
@@ -634,7 +615,7 @@ function findSowingDateAlternatives(
       en: "A valid HUS sowing plant count is missing; the number of seeding tables cannot be calculated.",
     }] };
   }
-  if (actualGrowingMovements(target).length > 0) {
+  if (target.husEvents?.some((event) => event.eventType === "move" || event.eventType === "thinning")) {
     return { alternatives: [], incomplete: true, notices: [{
       lv: "Šim HUS jau ir faktiskais Moving. Vēsturisku izvietojumu nepārplānojam; simulācijai izvēlies HUS pirms Moving.",
       en: "This HUS already has an actual Moving record. Historical placement is preserved; select a HUS before Moving.",
@@ -672,7 +653,7 @@ function findSowingDateAlternatives(
   function candidatesForDay(cycleDay: number): GreenhouseSimulationAlternative[] {
     const date = addDays(target.sowingDate, cycleDay - 1);
     if (date >= target.harvestDate) return [];
-    const seeding = checkSimulationSeedingCapacity(target, otherRows, reservations, date, needed);
+    const seeding = checkSimulationSeedingCapacity(target, otherRows, reservations, date, needed, target.sowingDate, undefined, allowSameDaySeedingRelease);
     if (!seeding.feasible && !seeding.incomplete) {
       notices.push(...seeding.notices);
       return [];
@@ -717,8 +698,10 @@ function findSowingDateAlternatives(
           lv: "Citam HUS pārklājošajā periodā nav zināma augšanas rinda; izvietojums ir nosacīts.",
           en: "Another HUS has no known growing row during the overlap; this placement is conditional.",
         });
-        const unknownMoving = reservations.some((entry) => entry.endDate > date && entry.actualMovements?.some((movement) =>
-          movement.eventDate < target.harvestDate && movement.warnings.length > 0));
+        const unknownMoving = reservations.some((entry) => entry.endDate > date && (
+          entry.actualMovements?.some((movement) => movement.eventDate < target.harvestDate && movement.warnings.length > 0) ||
+          !entry.actualMovements?.length && rows.find((row) => row.id === entry.planRowId)?.husEvents?.some((event) =>
+            event.eventDate < target.harvestDate && (event.eventType === "move" || event.eventType === "thinning"))));
         if (unknownMoving) missing.push({
           lv: "Cita HUS Moving ierakstā ir neskaidra atrašanās vieta; vajadzīgs precizējums.",
           en: "Another HUS has an unclear Moving destination; clarification is required.",
@@ -766,7 +749,11 @@ function findSowingDateAlternatives(
           lv: "Retināšana 11. dienā ir ārkārtas risinājums; vajadzīga saskaņošana.",
           en: "Day-11 thinning is an emergency option requiring approval.",
         });
-        const conditional = missing.length > 0 || count < normalTables || cycleDay === 11 ||
+        if (allowSameDaySeedingRelease && !risks.some((notice) => notice.en.includes("before sowing"))) risks.push({
+          lv: "Sēšanas galdu izmantošanai retināšanas dienā jāapstiprina darbu secība: vispirms pilnībā atbrīvot galdus, pēc tam sēt.",
+          en: "Using seeding tables on the thinning day requires confirmed work order: fully clear the tables before sowing.",
+        });
+        const conditional = allowSameDaySeedingRelease || missing.length > 0 || count < normalTables || cycleDay === 11 ||
           workload.overload > 0 || workload.plantingCount > 0 || plantingHandoff.length > 0 ||
           option.kind === "sharedRow" || option.usesExtraBlock || density.densityClass === "exceptional";
         const tier: SimulationAlternativeTier = cycleDay === 11 || option.kind === "sharedRow" ||
@@ -846,6 +833,7 @@ function checkSimulationSeedingCapacity(
   target: SowingPlanRow, rows: SowingPlanRow[], reservations: GrowingPlacement[], thinningDate: string, needed: number,
   checkFrom = target.sowingDate,
   allocationBudget?: SimulationAllocationBudget,
+  allowSameDayPlannedRelease = false,
 ): { tables: string[]; tableCount: number; feasible: boolean; notices: SimulationNotice[]; incomplete: boolean; searchLimited?: boolean } {
   const start = maxIsoDate(target.sowingDate, checkFrom);
   const targetTables = parseSowingTableSelection(target.sowingTables);
@@ -853,8 +841,27 @@ function checkSimulationSeedingCapacity(
   const lifecycles = simulationSeedingLifecycles(rows, reservations).filter((entry) =>
     entry.start <= thinningDate && entry.end >= start);
   lifecycles.push({ planRowId: target.id, sectorName: target.sectorName, tables: targetTables,
-    start: target.sowingDate, end: thinningDate, count: tableCount, releaseKnown: true });
+    start: target.sowingDate, end: thinningDate, count: tableCount, releaseKnown: true, plannedRelease: true });
   const notices: SimulationNotice[] = [];
+  // A separate fallback, never the default capacity model: work order must be
+  // confirmed before using a table released by planned thinning on the same day.
+  if (allowSameDayPlannedRelease) for (const entry of lifecycles) {
+    if (!entry.plannedRelease) continue;
+    if (lifecycles.some((other) => other.planRowId !== entry.planRowId && other.start === entry.end)) notices.push({
+      lv: entry.end + ": vispirms jāizretina " + entry.sectorName + " un pilnībā jāatbrīvo sēšanas galdi; tikai tad tajā pašā dienā drīkst sēt nākamo HUS.",
+      en: entry.end + ": thin " + entry.sectorName + " and fully clear the seeding tables before sowing the next HUS on the same day.",
+    });
+    entry.end = addDays(entry.end, -1);
+  }
+  for (const row of rows) for (const release of confirmedSeedingReleases(row)) {
+    if (release.date < start || release.date > thinningDate) continue;
+    const active = lifecycles.filter((entry) => entry.start <= release.date && release.date <= entry.end);
+    const used = active.reduce((sum, entry) => sum + (entry.count ?? entry.tables.length), 0);
+    if (used + release.tables.length > SEEDING_TABLE_CAPACITY || targetTables.some((table) => release.tables.includes(table))) notices.push({
+      lv: release.date + ": " + row.sectorName + " Moving atbrīvo " + release.tables.join(", ") + "; sēšana tajā pašā dienā iespējama tikai pēc galdu pilnīgas atbrīvošanas.",
+      en: release.date + ": " + row.sectorName + " Moving frees " + release.tables.join(", ") + "; same-day sowing requires these tables to be fully cleared first.",
+    });
+  }
   const conflicts: SimulationNotice[] = [];
   const notified = new Set<string>();
   let blockedByUnknownRelease = false;
@@ -924,21 +931,79 @@ function checkSimulationSeedingCapacity(
 type SimulationSeedingLifecycle = {
   planRowId: string; sectorName: string; start: string; end: string;
   tables: string[]; count?: number; releaseKnown: boolean;
+  plannedRelease?: boolean;
 };
 
-function simulationSeedingLifecycles(rows: SowingPlanRow[], reservations: GrowingPlacement[]): SimulationSeedingLifecycle[] {
-  return rows.filter((row) => !row.archivedAt).map((row) => {
+function simulationSeedingLifecycles(rows: SowingPlanRow[], reservations: GrowingPlacement[], recordedTablesOnly = false, asOfDate = "9999-12-31"): SimulationSeedingLifecycle[] {
+  return rows.filter((row) => !row.archivedAt).flatMap((row) => {
     const placement = reservations.find((entry) => entry.planRowId === row.id);
-    const releaseKnown = Boolean(placement?.releaseKnown || placement?.actualMovements?.length);
     const plants = getTotalSow(row);
     const validCount = Number.isFinite(plants) && Number.isInteger(plants) && plants > 0;
     const plan = validCount ? calculateSowingPlan(plants) : undefined;
     const tables = parseSowingTableSelection(row.sowingTables);
-    return { planRowId: row.id, sectorName: row.sectorName, start: row.sowingDate,
-      // Planting bounds even an unknown release; old cycles cannot reserve forever.
-      end: releaseKnown && placement ? minIsoDate(placement.startDate, addDays(row.harvestDate, -1)) : addDays(row.harvestDate, -1),
-      tables, releaseKnown,
-      count: plan ? Math.max(tables.length, plan.fullTables + Number(plan.hasPartialTable)) : undefined };
+    const hasActual = row.husEvents?.some((event) => event.eventDate <= asOfDate && (event.eventType === "move" || event.eventType === "thinning"));
+    const count = recordedTablesOnly ? tables.length || undefined : plan ? Math.max(tables.length, plan.fullTables + Number(plan.hasPartialTable)) : hasActual && tables.length ? tables.length : undefined;
+    const last = addDays(row.harvestDate, -1);
+    const plannedEnd = placement?.plannedStartDate ?? placement?.startDate;
+    const events = (row.husEvents ?? []).filter((event) => event.eventType === "move" || event.eventType === "thinning")
+      .filter((event) => event.eventDate <= asOfDate && event.eventDate >= row.sowingDate && event.eventDate < row.harvestDate)
+      .sort((a, b) => a.eventDate.localeCompare(b.eventDate) || a.id.localeCompare(b.id));
+    const base = { planRowId: row.id, sectorName: row.sectorName };
+    const entries: SimulationSeedingLifecycle[] = [];
+    // Before the first actual event use only the plan, never a later Moving.
+    const first = events[0]?.eventDate;
+    const end = minIsoDate(plannedEnd && placement?.releaseKnown ? plannedEnd : last, first ? addDays(first, -1) : last);
+    if (end >= row.sowingDate) entries.push({ ...base, start: row.sowingDate, end, tables, count, releaseKnown: Boolean(placement?.releaseKnown),
+      plannedRelease: Boolean(placement?.releaseKnown) && end === plannedEnd });
+    const releases = confirmedSeedingReleases(row);
+    const dates = [...new Set(events.map((event) => event.eventDate))];
+    for (const [index, date] of dates.entries()) {
+      const freed = new Set(releases.filter((release) => release.date <= date).flatMap((release) => release.tables));
+      const remaining = tables.filter((table) => !freed.has(table));
+      // With no identified original tables, a destination does not prove which
+      // seeding tables are empty. Keep the remaining reservation conservatively.
+      const releasedCount = tables.length ? tables.filter((table) => freed.has(table)).length : freed.size;
+      const remainingCount = count === undefined
+        ? !tables.length && plan && freed.size >= plan.fullTables + Number(plan.hasPartialTable) ? 0 : undefined
+        : Math.max(0, count - releasedCount);
+      if (remainingCount === 0) continue;
+      entries.push({ ...base, start: date, end: dates[index + 1] ? addDays(dates[index + 1], -1) : last,
+        tables: remaining, count: remainingCount, releaseKnown: false });
+    }
+    return entries;
+  });
+}
+
+/** A bare, valid table/range in Moving's source with a growing destination
+ * denotes a whole source table. Free text or an explicit partial-move note is
+ * insufficient evidence of an empty table. No new persistence fields required. */
+function confirmedSeedingReleases(row: SowingPlanRow): Array<{ date: string; tables: string[] }> {
+  const seen = new Set<string>();
+  return (row.husEvents ?? []).filter((event) => (event.eventType === "move" || event.eventType === "thinning") &&
+    event.eventDate >= row.sowingDate && event.eventDate < row.harvestDate)
+    .sort((a, b) => a.eventDate.localeCompare(b.eventDate) || a.id.localeCompare(b.id))
+    .flatMap((event) => {
+      if (/daļ|dal[eē]j|partial|remaining|paliek|atliku|half|puse|some plants|not.*(?:empty|clear)|nav.*atbrīv|\d+\s*%/i.test(event.note ?? "")) return [];
+      const tables = parseHusEventMovementRows(event).flatMap((movement) => {
+        const tokens = movement.from.trim().replace(/\s*([-–])\s*/g, "$1").split(/[,;\s]+/);
+        const valid = tokens.length && tokens.every((token) => {
+          const match = /^A(\d{1,2})(?:[-–]A?(\d{1,2}))?$/i.exec(token);
+          return match && [Number(match[1]), Number(match[2] ?? match[1])].every((n) => n >= 1 && n <= 13);
+        });
+        return valid && parseGrowingTableSelection(movement.to).length ? tokens.flatMap((token) => parseSowingTableSelection(token)) : [];
+      }).filter((table) => !seen.has(table));
+      tables.forEach((table) => seen.add(table));
+      return tables.length ? [{ date: event.eventDate, tables: [...new Set(tables)] }] : [];
+    });
+}
+
+function groupedSeedingRows(entries: SimulationSeedingLifecycle[], rows: SowingPlanRow[]): GreenhouseSeedingOccupancy["rows"] {
+  return [...new Set(entries.map((entry) => entry.planRowId))].map((id) => {
+    const parts = entries.filter((entry) => entry.planRowId === id);
+    const first = parts[0];
+    return { planRowId: id, sectorName: first.sectorName, sowingDate: rows.find((row) => row.id === id)?.sowingDate ?? first.start,
+      dateRange: { start: first.start, end: first.end }, tables: [...new Set(parts.flatMap((entry) => entry.tables))],
+      tableCount: parts.reduce((sum, entry) => sum + (entry.count ?? entry.tables.length), 0) };
   });
 }
 
@@ -987,15 +1052,17 @@ function bitCount(bits: number): number {
   return count;
 }
 
-function simulationSeedingOccupancy(rows: SowingPlanRow[], placements: GrowingPlacement[], date: string): GreenhouseSeedingOccupancy {
-  const active = simulationSeedingLifecycles(rows, placements).filter((entry) => entry.start <= date && date <= entry.end);
+function simulationSeedingOccupancy(rows: SowingPlanRow[], placements: GrowingPlacement[], date: string, allowSameDayPlannedRelease = false): GreenhouseSeedingOccupancy {
+  const active = simulationSeedingLifecycles(rows, placements, false, date).filter((entry) => entry.start <= date &&
+    date <= entry.end && !(allowSameDayPlannedRelease && entry.plannedRelease && date === entry.end));
   const tableOccupancy = Array.from({ length: SEEDING_TABLE_CAPACITY }, (_, index) => "A" + (index + 1)).map((table) => {
     const owners = active.filter((entry) => entry.tables.includes(table));
     return { table, planRowIds: owners.map((entry) => entry.planRowId), sectorNames: owners.map((entry) => entry.sectorName) };
   }).filter((entry) => entry.planRowIds.length);
   const usedTables = active.reduce((sum, entry) => sum + (entry.count ?? entry.tables.length), 0);
   return { capacity: SEEDING_TABLE_CAPACITY, usedTables, freeTables: Math.max(0, SEEDING_TABLE_CAPACITY - usedTables),
-    incomplete: active.some((entry) => entry.count === undefined || !entry.releaseKnown), overCapacity: usedTables > SEEDING_TABLE_CAPACITY,
+    incomplete: active.some((entry) => entry.count === undefined || !entry.releaseKnown),
+    overCapacity: usedTables > SEEDING_TABLE_CAPACITY || tableOccupancy.some((entry) => entry.planRowIds.length > 1),
     occupiedTableIds: tableOccupancy.map((entry) => entry.table),
     // No concrete free table numbers are claimed for count-only reservations.
     freeTableIds: active.some((entry) => entry.count !== entry.tables.length) ? [] :
@@ -1004,8 +1071,7 @@ function simulationSeedingOccupancy(rows: SowingPlanRow[], placements: GrowingPl
     unknownRows: active.flatMap((entry) => entry.count === undefined || !entry.releaseKnown ? [{
       planRowId: entry.planRowId, sectorName: entry.sectorName, reason: entry.count === undefined ? "unknownCount" as const : "unknownRelease" as const,
     }] : []),
-    rows: active.map((entry) => ({ planRowId: entry.planRowId, sectorName: entry.sectorName, sowingDate: entry.start,
-      dateRange: { start: entry.start, end: entry.end }, tables: entry.tables, tableCount: entry.count ?? entry.tables.length })),
+    rows: groupedSeedingRows(active, rows),
   };
 }
 
@@ -1634,16 +1700,11 @@ function plannedPlacementLabel(placement: Pick<GrowingPlacement, "primaryRow" | 
 
 function actualPlacementMismatchWarnings(
   placement: GrowingPlacement,
-  actualTableIds: string[],
   reservation: Pick<GrowingPlacement, "primaryRow" | "reservedTables">,
 ): string[] {
   const warnings: string[] = [];
-  if (placement.primaryRow && reservation.primaryRow && placement.primaryRow !== reservation.primaryRow) {
-    warnings.push(`Faktiskais Moving izvietojums ir ${reservation.primaryRow} rindā, bet plānotā rinda bija ${placement.primaryRow}.`);
-  }
-
-  if (placement.tables && actualTableIds.length !== placement.tables) {
-    warnings.push(`Faktiskais Moving izmanto ${actualTableIds.length} galdus, plānoti bija ${placement.tables}.`);
+  if (placement.plannedPrimaryRow && reservation.primaryRow && placement.plannedPrimaryRow !== reservation.primaryRow) {
+    warnings.push(`Faktiskais Moving izvietojums ir ${reservation.primaryRow} rindā, bet plānotā rinda bija ${placement.plannedPrimaryRow}.`);
   }
 
   return warnings;
@@ -1651,17 +1712,11 @@ function actualPlacementMismatchWarnings(
 
 function actualPlacementMismatchWarningsForPlan(
   row: Pick<SowingPlanRow, "placement">,
-  plannedTables: number,
-  actualTableIds: string[],
   reservation: Pick<GrowingPlacement, "primaryRow">,
 ): string[] {
   const warnings: string[] = [];
   if (row.placement?.primaryRow && reservation.primaryRow && row.placement.primaryRow !== reservation.primaryRow) {
     warnings.push(`Faktiskais Moving izvietojums ir ${reservation.primaryRow} rindā, bet plānotā rinda bija ${row.placement.primaryRow}.`);
-  }
-
-  if (plannedTables && actualTableIds.length !== plannedTables) {
-    warnings.push(`Faktiskais Moving izmanto ${actualTableIds.length} galdus, plānoti bija ${plannedTables}.`);
   }
 
   return warnings;

@@ -18,6 +18,8 @@ export type JointSimulationRequest = {
   /** Actual completions that cannot be inferred from planned adjustments. */
   completedWork?: Array<Pick<WorkItem, "planRowId" | "type" | "date">>;
   lockedPlanRowIds?: string[];
+  /** The simple sowing-date UI may adjust pending thinning, never another sowing. */
+  allowOtherSowingChanges?: boolean;
   limits?: Partial<JointSearchLimits>;
 };
 
@@ -245,7 +247,7 @@ export function simulateJointSowingPlan(request: JointSimulationRequest): JointS
     result.plans = search(context, changedRows, stage);
     if (result.plans.length || result.search.nodes >= limits.maxNodes) break;
   }
-  if (!result.plans.length && result.search.nodes < limits.maxNodes) {
+  if (!result.plans.length && result.search.nodes < limits.maxNodes && request.allowOtherSowingChanges !== false) {
     result.search.stages.push("sowingCompromise");
     const flexibleSowing = rows.filter((row) => mutableIds.has(row.id) && !requestedIds.has(row.id) &&
       row.sowingDate > request.asOfDate && !row.husEvents?.length && !request.completedWork?.some((work) => work.planRowId === row.id));

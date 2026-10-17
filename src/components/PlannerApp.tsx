@@ -75,10 +75,10 @@ import {
 import { compressHusPhotoForUpload } from "@/lib/image-compression";
 import { HusPhotoArchive, PhotoArchiveMetadata } from "./HusPhotoArchive";
 import { SimulationResultView } from "./SimulationResultView";
+import { simulateGreenhouseSowing } from "@/lib/greenhouse-sowing-simulator";
 import { buildPhotoArchive, husPhotoFileUrl, photoArchiveHusTarget, type PhotoArchiveEntry, type HusMediaUploadInput, type HusPhotoDetails } from "@/lib/hus-photo-archive";
 import {
   buildGreenhouseOccupancyDay,
-  simulateSowingDateChange,
   type SowingDateSimulationResult,
 } from "@/lib/greenhouse-simulation";
 import {
@@ -3379,7 +3379,7 @@ function GreenhousePanel({
       return;
     }
 
-    setSimulation(simulateSowingDateChange(rows, plannerConfig, selectedSimulationRow.id, selectedSimulationDate));
+    setSimulation(simulateGreenhouseSowing(rows, plannerConfig, selectedSimulationRow.id, selectedSimulationDate, localTodayIso()));
   }
 
   return (
@@ -3478,7 +3478,7 @@ function GreenhousePanel({
 
       {snapshot.warnings.map((warning) => (
         <div className="capacity-warning" key={warning}>
-          <strong>⚠️ {warning}</strong>
+          <strong>⚠️ {language === "en" ? warning.replace("augšanas galdu konflikts", "growing-table conflict") : warning}</strong>
         </div>
       ))}
 

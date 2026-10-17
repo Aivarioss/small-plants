@@ -840,20 +840,25 @@ function simulationGrowingPreview(
   return { ...occupancy, usedTables, freeTables: Math.max(0, occupancy.capacity - usedTables), overCapacity: usedTables > occupancy.capacity };
 }
 
+type SimulationAllocationBudget = { step: () => boolean; exhausted: boolean };
+
 function checkSimulationSeedingCapacity(
   target: SowingPlanRow, rows: SowingPlanRow[], reservations: GrowingPlacement[], thinningDate: string, needed: number,
-): { tables: string[]; tableCount: number; feasible: boolean; notices: SimulationNotice[]; incomplete: boolean } {
+  checkFrom = target.sowingDate,
+  allocationBudget?: SimulationAllocationBudget,
+): { tables: string[]; tableCount: number; feasible: boolean; notices: SimulationNotice[]; incomplete: boolean; searchLimited?: boolean } {
+  const start = maxIsoDate(target.sowingDate, checkFrom);
   const targetTables = parseSowingTableSelection(target.sowingTables);
   const tableCount = Math.max(needed, targetTables.length);
   const lifecycles = simulationSeedingLifecycles(rows, reservations).filter((entry) =>
-    entry.start <= thinningDate && entry.end >= target.sowingDate);
+    entry.start <= thinningDate && entry.end >= start);
   lifecycles.push({ planRowId: target.id, sectorName: target.sectorName, tables: targetTables,
     start: target.sowingDate, end: thinningDate, count: tableCount, releaseKnown: true });
   const notices: SimulationNotice[] = [];
   const conflicts: SimulationNotice[] = [];
   const notified = new Set<string>();
   let blockedByUnknownRelease = false;
-  for (const date of eachDate(target.sowingDate, thinningDate)) {
+  for (const date of eachDate(start, thinningDate)) {
     const active = lifecycles.filter((entry) => entry.start <= date && date <= entry.end);
     for (const entry of active) {
       if ((entry.count === undefined || !entry.releaseKnown) && !notified.has(entry.planRowId)) {
@@ -895,7 +900,12 @@ function checkSimulationSeedingCapacity(
   // A daily count is sufficient for interchangeable tables. Fixed reservations
   // also need a continuous allocation: no unrecorded mid-cycle table moves.
   const certainLifecycles = lifecycles.filter((entry) => entry.releaseKnown);
-  if (!simulationFixedSeedingFits(certainLifecycles, target.sowingDate, thinningDate)) {
+  const limited = () => ({ tables: targetTables, tableCount, feasible: false, incomplete: true, searchLimited: true, notices: [{
+    lv: start + ": sasniegta fiksēto sēšanas galdu izvietojuma meklēšanas robeža.",
+    en: start + ": the fixed seeding-table allocation search limit was reached.",
+  }] });
+  if (!simulationFixedSeedingFits(certainLifecycles, start, thinningDate, allocationBudget)) {
+    if (allocationBudget?.exhausted) return limited();
     const fixed = certainLifecycles.filter((entry) => entry.tables.length);
     const conflict = {
       lv: target.sowingDate + "–" + thinningDate + ": fiksētās sēšanas galdu rezervācijas neatstāj nepārtrauktu vietu nepieciešamajam galdu skaitam (" + fixed.map((entry) => entry.sectorName + ": " + entry.tables.join(", ") + " " + entry.start + "–" + entry.end).join("; ") + ").",
@@ -904,7 +914,8 @@ function checkSimulationSeedingCapacity(
     return { tables: targetTables, tableCount, feasible: false, notices: [conflict], incomplete: false };
   }
   if (blockedByUnknownRelease || certainLifecycles.length !== lifecycles.length &&
-    !simulationFixedSeedingFits(lifecycles, target.sowingDate, thinningDate)) {
+    !simulationFixedSeedingFits(lifecycles, start, thinningDate, allocationBudget)) {
+    if (allocationBudget?.exhausted) return limited();
     return { tables: targetTables, tableCount, feasible: false, notices: uniqueNotices(notices), incomplete: true };
   }
   return { tables: targetTables, tableCount, feasible: true, notices: uniqueNotices(notices), incomplete: notices.length > 0 };
@@ -931,7 +942,7 @@ function simulationSeedingLifecycles(rows: SowingPlanRow[], reservations: Growin
   });
 }
 
-function simulationFixedSeedingFits(entries: SimulationSeedingLifecycle[], start: string, end: string): boolean {
+function simulationFixedSeedingFits(entries: SimulationSeedingLifecycle[], start: string, end: string, budget?: SimulationAllocationBudget): boolean {
   if (!entries.some((entry) => entry.tables.length)) return true;
   const overlaps = (a: SimulationSeedingLifecycle, b: SimulationSeedingLifecycle) =>
     maxIsoDate(maxIsoDate(a.start, b.start), start) <= minIsoDate(minIsoDate(a.end, b.end), end);
@@ -946,12 +957,14 @@ function simulationFixedSeedingFits(entries: SimulationSeedingLifecycle[], start
   }).sort((a, b) => bitCount(a.available) - a.extra - (bitCount(b.available) - b.extra) || b.extra - a.extra);
   const allocated: Array<{ entry: SimulationSeedingLifecycle; bits: number }> = [];
   function fit(index: number): boolean {
+    if (budget && (budget.exhausted || !budget.step())) { budget.exhausted = true; return false; }
     if (index === jobs.length) return true;
     const job = jobs[index];
     const busy = allocated.filter((other) => overlaps(job.entry, other.entry)).reduce((bits, other) => bits | other.bits, 0);
     const available = job.available & ~busy;
     if (bitCount(available) < job.extra || (busy & job.fixed)) return false;
     function choose(bits: number, remaining: number, from: number): boolean {
+      if (budget?.exhausted) return false;
       if (!remaining) {
         allocated.push({ entry: job.entry, bits: bits | job.fixed });
         const valid = fit(index + 1);
@@ -1728,3 +1741,18 @@ function fallbackRowFor(planRowId: string, sectorName: string, date: string): So
     variety: "",
   };
 }
+
+// Pure resource checks shared by the single-HUS preview and the bounded joint
+// search. These do not schedule work, change input rows, or perform persistence.
+export const greenhouseSimulationModel = {
+  growingPlacements,
+  growingOccupancy,
+  reservationsOnDate: simulationReservationsOnDate,
+  placementOptions: placementOptionsFor,
+  optionFits: simulationOptionFits,
+  growingConflict: simulationGrowingConflict,
+  checkSeedingCapacity: checkSimulationSeedingCapacity,
+  seedingOccupancy: simulationSeedingOccupancy,
+  actualMovements: actualGrowingMovements,
+};
+export type { GrowingPlacement as SimulationGrowingReservation, PhysicalPlacementOption as SimulationPlacementOption };

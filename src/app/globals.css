@@ -1134,6 +1134,7 @@ textarea {
 }
 
 .simulation-result--conditional,
+.simulation-result--searchLimited,
 .simulation-result--insufficientData {
   border-left-color: #d99a00;
 }

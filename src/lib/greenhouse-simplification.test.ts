@@ -109,7 +109,7 @@ describe("simple sowing preview over the existing engines", () => {
   it("uses the joint engine to adjust pending thinning and explicitly names the other HUS and dates", () => {
     const target = hus({ sowingDate: "2026-10-23", harvestDate: "2026-11-14" });
     const other = hus({ id: "other", sectorName: "HUS 8B", requiredPlants: 900, sowingDate: "2026-10-13", harvestDate: "2026-11-04",
-      sowingTables: "A1–A11", adjustments: { thinning: "2026-10-22" }, placement: { primaryRow: "D", tables: 6, manual: true } });
+      sowingTables: "A1–A11", adjustments: { thinning: "2026-10-22" }, adjustmentSources: { thinning: "optimizer" }, placement: { primaryRow: "D", tables: 6, manual: true } });
     const rows = [target, other];
     const before = structuredClone(rows);
     const result = simulateGreenhouseSowing(rows, plannerConfig, target.id, "2026-10-21", "2026-10-16");

@@ -6,7 +6,8 @@ export function SimulationResultView({ language, result }: { language: AppLangua
   const lv = language === "lv";
   const conclusion = result.status === "can" ? lv ? "Var sēt" : "Can sow"
     : result.status === "conditional" ? lv ? "Iespējams ar nosacījumu" : "Possible with conditions"
-      : result.status === "insufficientData" ? lv ? "Vajadzīgs precizējums" : "Clarification needed"
+      : result.status === "searchLimited" ? lv ? "Pārbaude nav pabeigta" : "Check incomplete"
+        : result.status === "insufficientData" ? lv ? "Vajadzīgs precizējums" : "Clarification needed"
         : lv ? "Nav iespējams" : "Not possible";
   return (
     <div className={"simulation-result simulation-result--" + result.status}>

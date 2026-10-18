@@ -1,24 +1,28 @@
-import { simulateSowingDateChange, type GreenhouseSimulationAlternative, type SimulationNotice, type SowingDateSimulationResult } from "./greenhouse-simulation";
-import { simulateJointSowingPlan, type JointPlanChange, type JointSimulationPlan, type JointSimulationResult, type JointHusProposal } from "./joint-greenhouse-simulation";
+import { type GreenhouseSimulationAlternative, type SimulationNotice, type SowingDateSimulationResult } from "./greenhouse-simulation";
+import { simulateJointSowingPlan, type JointPlanChange, type JointSimulationPlan, type JointSimulationResult, type JointHusProposal, type JointSimulationRequest } from "./joint-greenhouse-simulation";
 import { generateWorkItemsForRows } from "./planning";
 import { printWorkTitle } from "./localization";
 import type { PlannerConfig, SowingPlanRow } from "./types";
 
-/** Presentation adapter over the existing single-HUS and joint engines.
+/** Presentation adapter over the house allocation and existing joint engine.
  * It chooses one preview and never persists it. Planting remains fixed. */
 export function simulateGreenhouseSowing(
   rows: SowingPlanRow[], config: PlannerConfig, targetId: string, sowingDate: string, asOfDate: string,
 ): SowingDateSimulationResult {
-  const direct = simulateSowingDateChange(rows, config, targetId, sowingDate);
-  if (direct.status === "can" && direct.recommendation && direct.recommendation.cycleDay < 11 && direct.recommendation.densityClass !== "exceptional") return direct;
-  if (rows.find((row) => row.id === targetId)?.husEvents?.some((event) => event.eventType === "move" || event.eventType === "thinning")) return direct;
-
-  const joint = simulateJointSowingPlan({ rows, config, asOfDate,
-    sowingChanges: [{ planRowId: targetId, sowingDate }], allowOtherSowingChanges: false, prioritizeRequestedHus: true });
+  const original = rows.find((row) => row.id === targetId);
+  if (!original) throw new Error("HUS nav atrasts simulācijai.");
+  const joint = previewJoint({ rows, config, asOfDate, sowingChanges: [{ planRowId: targetId, sowingDate }] });
+  const failureNotices = conflictNotices(joint);
+  const direct: SowingDateSimulationResult = { targetPlanRowId: targetId, targetSectorName: original.sectorName,
+    currentSowingDate: original.sowingDate, newSowingDate: sowingDate,
+    currentMoveOutDate: original.harvestDate, newMoveOutDate: original.harvestDate,
+    status: joint.status, notices: failureNotices, warnings: failureNotices.map((notice) => notice.lv),
+    explanation: failureNotices[0]?.lv ?? "", alternatives: [], changedOtherWork: [], occupancy: [],
+    scenarioRows: rows.map((row) => row.id === targetId ? { ...row, sowingDate } : row), originalRowsUnchanged: joint.originalRowsUnchanged };
   const plan = joint.plans[0];
   const target = plan?.proposals.find((entry) => entry.planRowId === targetId);
   const requiredChanges = plan ? describeJointOtherChanges(rows, plan, [targetId]) : [];
-  if (plan && target && (!direct.recommendation || betterJointProposal(target, requiredChanges.length > 0, direct.recommendation))) {
+  if (plan && target) {
     const notices = unique([...requiredChanges, ...plan.notices]);
     const status = requiredChanges.length || plan.status === "conditional" ? "conditional" : "can";
     const recommendation: GreenhouseSimulationAlternative = {
@@ -49,15 +53,6 @@ export function simulateGreenhouseSowing(
           placement: { ...row.placement, primaryRow: proposal.wateringZone, tables: proposal.physicalTables } } : row;
       }) };
   }
-  if (direct.recommendation) return direct;
-  const ordered = simulateSowingDateChange(rows, config, targetId, sowingDate, { allowSameDaySeedingRelease: true });
-  if (ordered.recommendation) return ordered;
-  // A bounded joint search is not proof of impossibility. Retain the concrete
-  // single-HUS obstacles and say which part could not be fully searched.
-  if (joint.status === "searchLimited") {
-    const notices = unique([...joint.conflicts.filter((conflict) => conflict.code === "searchLimit").map((conflict) => conflict.message), ...direct.notices]);
-    return { ...direct, status: "insufficientData", notices, warnings: notices.map((notice) => notice.lv) };
-  }
   return direct;
 }
 
@@ -78,16 +73,14 @@ export function simulateTwoHusSowing(rows: SowingPlanRow[], config: PlannerConfi
   if (invalid || actual) return { status: "insufficientData", proposals: [], requiredChanges: [], originalRowsUnchanged: true,
     notices: [{ lv: invalid ? "Izvēlies divus dažādus HUS." : actual!.sectorName + ": faktiskais Moving/retināšana nav pārplānojama.",
       en: invalid ? "Choose two different HUS." : actual!.sectorName + ": actual Moving/thinning cannot be replanned." }] };
-  const result = simulateJointSowingPlan({ rows, config, asOfDate, sowingChanges: changes,
-    allowOtherSowingChanges: false, prioritizeRequestedHus: true });
+  const result = previewJoint({ rows, config, asOfDate, sowingChanges: changes });
   const plan = result.plans[0];
   const requiredChanges = plan ? describeJointOtherChanges(rows, plan, changes.map((change) => change.planRowId)) : [];
   const proposals = changes.flatMap((change) => plan?.proposals.filter((proposal) => proposal.planRowId === change.planRowId) ?? []);
   const incompleteSelection = Boolean(plan && proposals.length !== 2);
   const notices = incompleteSelection ? [{ lv: "Izvēlētajiem HUS nav divu pārvietojamu, vēl neizpildītu retināšanas darbu.",
     en: "The selected HUS do not both have movable, pending thinning work." }]
-    : plan ? unique([...requiredChanges, ...plan.notices]) : result.conflicts.slice().sort((a, b) =>
-      Number(b.code === "searchLimit") - Number(a.code === "searchLimit") || a.date.localeCompare(b.date)).map((conflict) => conflict.message);
+    : plan ? unique([...requiredChanges, ...plan.notices]) : conflictNotices(result);
   return { status: incompleteSelection ? "insufficientData" : plan ? requiredChanges.length || plan.status === "conditional" ? "conditional" : "can" : result.status,
     plan: incompleteSelection ? undefined : plan, proposals: incompleteSelection ? [] : proposals, notices, requiredChanges,
     originalRowsUnchanged: result.originalRowsUnchanged };
@@ -105,15 +98,26 @@ function describeJointOtherChanges(rows: SowingPlanRow[], plan: JointSimulationP
   });
 }
 
-function betterJointProposal(proposal: JointHusProposal, changesOthers: boolean, direct: GreenhouseSimulationAlternative): boolean {
-  const rank = (day: number, other: boolean, density: string, shared: boolean, compressed: boolean, overload: number) =>
-    [Number(day === 11), Number(other), Number(density === "exceptional"), Number(shared), Number(compressed), overload];
-  const joint = rank(proposal.cycleDay, changesOthers, proposal.densityClass, proposal.sharedWith.length > 0,
-    proposal.physicalTables < proposal.normalTables, proposal.workload.overload);
-  const baseline = rank(direct.cycleDay, false, direct.densityClass, direct.sharedWith.length > 0,
-    direct.physicalTables < direct.normalTables, direct.workload.overload);
-  for (let i = 0; i < joint.length; i++) if (joint[i] !== baseline[i]) return joint[i] < baseline[i];
-  return false;
+function previewJoint(request: JointSimulationRequest): JointSimulationResult {
+  const options = { ...request, allowOtherSowingChanges: false, prioritizeRequestedHus: true, recalculateFuturePlacements: true };
+  const result = simulateJointSowingPlan(options);
+  if (result.status === "cannot" && result.conflicts.some((conflict) => conflict.code === "seedingCapacity")) {
+    const ordered = simulateJointSowingPlan({ ...options, allowSameDaySeedingRelease: true });
+    if (ordered.plans.length) return ordered;
+  }
+  return result;
+}
+
+function conflictNotices(result: JointSimulationResult): SimulationNotice[] {
+  const seen = new Set<string>();
+  return result.conflicts.slice().sort((a, b) => Number(b.code === "searchLimit") - Number(a.code === "searchLimit") || a.date.localeCompare(b.date))
+    .filter((conflict) => {
+      const key = JSON.stringify([conflict.code, conflict.date, conflict.planRowIds,
+        conflict.message.lv.replace(/vēl \d+ galdiem/g, "vēl vajadzīgajiem galdiem")]);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).map((conflict) => conflict.message);
 }
 
 function unique(notices: SimulationNotice[]): SimulationNotice[] {

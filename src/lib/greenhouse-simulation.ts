@@ -118,7 +118,7 @@ export type SowingDateSimulationResult = {
   occupancy: GreenhouseOccupancyDay[];
   originalRowsUnchanged: boolean;
   scenarioRows: SowingPlanRow[];
-  status: GreenhouseOccupancyStatus;
+  status: GreenhouseOccupancyStatus | "searchLimited";
   targetPlanRowId: string;
   targetSectorName: string;
   warnings: string[];
@@ -380,6 +380,38 @@ export function simulateSowingDateChange(
 
 function finalScheduledRows(rows: SowingPlanRow[], config: PlannerConfig): SowingPlanRow[] {
   return applyWorkloadBalanceProposals(rows, balanceWorkload(rows, config));
+}
+
+/** A saved row is automatic only when its provenance explicitly says so.
+ * Missing provenance preserves a possible manual choice. */
+function canReassignPlannedRow(row: SowingPlanRow): boolean {
+  return !row.placement?.primaryRow || row.placement.manual === false;
+}
+
+/** Pure first pass for previews, using the same scheduler and chronological
+ * physical assignment as the house view. The caller must certify the full plan. */
+export function buildFuturePlacementScenario(rows: SowingPlanRow[], config: PlannerConfig, mutableIds: Set<string>,
+  baselineThin: Map<string, string>, asOfDate: string): { rows: SowingPlanRow[]; placements: GrowingPlacement[] } {
+  const scenario = rows.map((row) => {
+    if (!mutableIds.has(row.id) || row.archivedAt || row.status === "done" || row.husEvents?.some((event) => event.eventType === "move" || event.eventType === "thinning")) return { ...row };
+    const adjustments = { ...row.adjustments };
+    const adjustmentSources = { ...row.adjustmentSources };
+    const old = baselineThin.get(row.id);
+    const regular = [7, 8, 9].map((offset) => addDays(row.sowingDate, offset));
+    if (!adjustments.thinning || adjustmentSources.thinning === "optimizer") {
+      if (old && old >= asOfDate && old < row.harvestDate && regular.includes(old)) {
+        adjustments.thinning = old;
+        adjustmentSources.thinning = "optimizer";
+      } else {
+        delete adjustments.thinning;
+        delete adjustmentSources.thinning;
+      }
+    }
+    return { ...row, adjustments, adjustmentSources,
+      placement: row.placement ? { ...row.placement, primaryRow: canReassignPlannedRow(row) ? undefined : row.placement.primaryRow } : undefined };
+  });
+  const scheduled = finalScheduledRows(scenario, config);
+  return { rows: scheduled, placements: growingPlacements(scheduled) };
 }
 
 function growingPlacements(rows: SowingPlanRow[]): GrowingPlacement[] {
@@ -1800,6 +1832,8 @@ function fallbackRowFor(planRowId: string, sectorName: string, date: string): So
 // Pure resource checks shared by the single-HUS preview and the bounded joint
 // search. These do not schedule work, change input rows, or perform persistence.
 export const greenhouseSimulationModel = {
+  buildFuturePlacementScenario,
+  canReassignPlannedRow,
   growingPlacements,
   growingOccupancy,
   reservationsOnDate: simulationReservationsOnDate,

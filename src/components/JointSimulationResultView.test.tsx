@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { JointSimulationResultView } from "./JointSimulationResultView";
 import { SowingSimulationPanel } from "./SowingSimulationPanel";
+import { SimulationResultView } from "./SimulationResultView";
 import { twoHusScenario } from "@/lib/__fixtures__/two-hus-scenario";
-import { simulateTwoHusSowing } from "@/lib/greenhouse-sowing-simulator";
+import { simulateGreenhouseSowing, simulateTwoHusSowing } from "@/lib/greenhouse-sowing-simulator";
 import { plannerConfig } from "@/lib/demo-data";
 
 const rows = twoHusScenario();
@@ -40,5 +41,14 @@ describe("joint simulation presentation", () => {
     expect(html).toContain("Simulēt vienu HUS");
     expect(html).toContain('<option value="joint" disabled="">Simulēt divus HUS');
     expect(html).toContain('value="2026-10-20"');
+  });
+
+  it.each(["lv", "en"] as const)("distinguishes an incomplete single-HUS search from proven impossibility (%s)", (language) => {
+    const base = simulateGreenhouseSowing(rows, plannerConfig, rows[0].id, "2026-10-18", "2026-10-17");
+    const html = renderToStaticMarkup(<SimulationResultView language={language} result={{ ...base, status: "searchLimited", recommendation: undefined, alternatives: [] }} />);
+    expect(html).toContain(language === "lv" ? "Pārbaude nav pabeigta" : "Check incomplete");
+    expect(html).not.toContain(language === "lv" ? "Nav iespējams" : "Not possible");
+    expect(html).not.toContain("data-recommendation");
+    expect(html).not.toContain("<details open");
   });
 });

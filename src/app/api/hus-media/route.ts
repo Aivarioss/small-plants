@@ -6,7 +6,7 @@ import {
   validateHusPhotoFile,
 } from "@/lib/repositories/supabase-hus-media-repository";
 import { isSupabaseServerConfigured } from "@/lib/supabase/server";
-import { validatePhotoDetails, type HusPhotoDetails } from "@/lib/hus-photo-archive";
+import { validHusUploadId, validatePhotoDetails, type HusPhotoDetails } from "@/lib/hus-photo-archive";
 
 export async function POST(request: NextRequest) {
   const guard = await requireReadySession(request);
@@ -20,6 +20,10 @@ export async function POST(request: NextRequest) {
   }
 
   const rowId = stringField(formData, "rowId");
+  const uploadId = stringField(formData, "uploadId");
+  if (uploadId && !validHusUploadId(uploadId)) {
+    return NextResponse.json({ error: "Invalid upload id." }, { status: 400 });
+  }
   const eventId = stringField(formData, "eventId");
   const note = stringField(formData, "note");
   const observationDate = stringField(formData, "observationDate");
@@ -47,6 +51,7 @@ export async function POST(request: NextRequest) {
   try {
     files.forEach(validateHusPhotoFile);
     const result = await createSupabaseHusMediaRepository().save({
+      ...(uploadId ? { uploadId } : {}),
       eventId,
       files,
       note,

@@ -36,6 +36,16 @@ describe("HUS media API", () => {
     expect(response.status).toBe(401);
   });
 
+  it("rejects an invalid retry identity before writing any media", async () => {
+    const formData = new FormData();
+    formData.append("rowId", "row-id");
+    formData.append("uploadId", "not-a-uuid");
+    formData.append("note", "Novērojums");
+    const response = await POST(new NextRequest("http://localhost/api/hus-media", { method: "POST", body: formData }));
+    expect(response.status).toBe(400);
+    expect(createSupabaseHusMediaRepository).not.toHaveBeenCalled();
+  });
+
   it("saves a note and photos through the protected repository", async () => {
     const save = vi.fn().mockResolvedValue({
       note: {

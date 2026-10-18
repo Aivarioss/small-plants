@@ -343,6 +343,8 @@ describe("supabase sowing plan repository", () => {
 
   it("round-trips Hus journal events linked to plant corrections when updating a row", async () => {
     const husEventsUpsert = upsertResult();
+    const eventDeletion = deleteResult();
+    const correctionDeletion = deleteResult();
     const client = {
       from: vi
         .fn()
@@ -350,9 +352,9 @@ describe("supabase sowing plan repository", () => {
         .mockReturnValueOnce(updateResult({ id: baseRecord.id }))
         .mockReturnValueOnce(deleteResult())
         .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(deleteResult())
+        .mockReturnValueOnce(correctionDeletion)
         .mockReturnValueOnce(upsertResult())
-        .mockReturnValueOnce(deleteResult())
+        .mockReturnValueOnce(eventDeletion)
         .mockReturnValueOnce(husEventsUpsert)
         .mockReturnValueOnce(selectSingleByIdResult({
           ...baseRecord,
@@ -420,6 +422,10 @@ describe("supabase sowing plan repository", () => {
       ],
     }, baseRecord.updated_at);
 
+    // Retained IDs must never be deleted: doing so cascades to existing private photo metadata.
+    expect(eventDeletion.delete.mock.results[0].value.not).toHaveBeenCalledWith("id", "in", "(33333333-3333-4333-8333-333333333333)");
+    expect(correctionDeletion.delete.mock.results[0].value.not).toHaveBeenCalledWith("id", "in", "(22222222-2222-4222-8222-222222222222)");
+    expect(eventDeletion.delete.mock.results[0].value.eq).toHaveBeenCalledWith("sowing_plan_row_id", baseRecord.id);
     expect(husEventsUpsert.upsert).toHaveBeenCalledWith(
       [
         {
@@ -1003,10 +1009,12 @@ function updateResult(data: unknown) {
 function deleteResult() {
   const builder = {
     eq: vi.fn(),
+    not: vi.fn(),
     is: vi.fn(),
     select: vi.fn(),
   };
   builder.eq.mockReturnValue(builder);
+  builder.not.mockReturnValue(builder);
   builder.is.mockReturnValue(builder);
   builder.select.mockReturnValue({
     maybeSingle: vi.fn().mockResolvedValue({ data: { id: baseRecord.id }, error: null }),

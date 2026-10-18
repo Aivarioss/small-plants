@@ -1,8 +1,9 @@
 import "server-only";
+import { createHash } from "node:crypto";
 import type { HusNoteEntry, HusPhotoEntry } from "@/lib/types";
 import type { HusNoteRecord, HusPhotoRecord } from "@/lib/supabase/database";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { photoDetailsToNote, validatePhotoDetails, type HusMediaUploadInput } from "@/lib/hus-photo-archive";
+import { photoDetailsToNote, validHusUploadId, validatePhotoDetails, type HusMediaUploadInput } from "@/lib/hus-photo-archive";
 
 export const HUS_PHOTO_BUCKET = "small-plants-hus-photos";
 export const MAX_HUS_PHOTO_BYTES = 10 * 1024 * 1024;
@@ -52,6 +53,8 @@ export function createSupabaseHusMediaRepository(): HusMediaRepository {
 
 async function save(input: SaveHusMediaInput): Promise<SavedHusMedia> {
   const rowId = input.rowId.trim();
+  const uploadId = input.uploadId;
+  if (uploadId && !validHusUploadId(uploadId)) throw new Error("Invalid upload id.");
   const eventId = input.eventId?.trim() || undefined;
   const noteText = input.note?.trim() || undefined;
   const observationDate = input.observationDate?.trim() || undefined;
@@ -74,6 +77,14 @@ async function save(input: SaveHusMediaInput): Promise<SavedHusMedia> {
     await assertEventBelongsToRow(client, rowId, eventId);
   }
 
+  const photoId = (index: number) => uploadId ? husUploadRecordId(rowId, uploadId, "photo:" + index) : undefined;
+  const noteIdFor = (slot: string) => uploadId ? husUploadRecordId(rowId, uploadId, slot) : undefined;
+  const existingPhotos = new Map<string, HusPhotoRecord>();
+  if (uploadId && files.length) {
+    const existing = await client.from("hus_photos").select("*").in("id", files.map((_, index) => photoId(index)!));
+    if (existing.error) throw new HusMediaPersistenceError("Neizdevās pārbaudīt iepriekš saglabātos foto", existing.error);
+    for (const photo of (existing.data ?? []) as HusPhotoRecord[]) existingPhotos.set(photo.id, photo);
+  }
   const uploadedPaths: string[] = [];
   const storage = client.storage.from(HUS_PHOTO_BUCKET);
   const createdNoteIds: string[] = [];
@@ -83,9 +94,21 @@ async function save(input: SaveHusMediaInput): Promise<SavedHusMedia> {
     let noteId: string | undefined;
     const individualNotes: HusNoteEntry[] = [];
 
-    async function createNote(text?: string, date?: string): Promise<HusNoteEntry> {
+    async function createNote(text?: string, date?: string, slot = "note"): Promise<HusNoteEntry> {
+      const stableId = noteIdFor(slot);
+      if (stableId) {
+        const existing = await client.from("hus_notes").select("*").eq("id", stableId).maybeSingle();
+        if (existing.error) throw new HusMediaPersistenceError("Neizdevās pārbaudīt piezīmi", existing.error);
+        if (existing.data) {
+          const saved = existing.data as HusNoteRecord;
+          if (saved.sowing_plan_row_id !== rowId || (saved.note ?? undefined) !== text || (saved.observation_date ?? undefined) !== date) {
+            throw new Error("Upload id already belongs to a different note.");
+          }
+          return recordToHusNote(saved, []);
+        }
+      }
       const noteRecord: HusNoteRecord = {
-        id: crypto.randomUUID(),
+        id: stableId ?? crypto.randomUUID(),
         author: null,
         note: text ?? null,
         observation_date: date || null,
@@ -106,15 +129,27 @@ async function save(input: SaveHusMediaInput): Promise<SavedHusMedia> {
     }
 
     const photoRecords: HusPhotoRecord[] = [];
+    const reusedPhotos: HusPhotoEntry[] = [];
     for (const [index, file] of files.entries()) {
       let photoNoteId = noteId;
       if (photoDetails) {
         const details = photoDetails[index];
-        const photoNote = await createNote(photoDetailsToNote(details), details.date);
+        const photoNote = await createNote(photoDetailsToNote(details), details.date, "note:" + index);
         individualNotes.push(photoNote);
         photoNoteId = photoNote.id;
       }
-      const storagePath = createStoragePath(rowId, file);
+      const stablePhotoId = photoId(index);
+      const existing = stablePhotoId ? existingPhotos.get(stablePhotoId) : undefined;
+      if (existing) {
+        if (existing.sowing_plan_row_id !== rowId || (existing.hus_event_id ?? undefined) !== eventId ||
+          (existing.hus_note_id ?? undefined) !== photoNoteId || existing.original_file_name !== file.name ||
+          existing.content_type !== file.type || existing.file_size_bytes !== file.size) {
+          throw new Error("Upload id already belongs to a different photo.");
+        }
+        reusedPhotos.push(recordToHusPhoto(existing));
+        continue;
+      }
+      const storagePath = createStoragePath(rowId, file, stablePhotoId);
       const buffer = Buffer.from(await file.arrayBuffer());
       const upload = await storage.upload(storagePath, buffer, {
         contentType: file.type,
@@ -127,7 +162,7 @@ async function save(input: SaveHusMediaInput): Promise<SavedHusMedia> {
 
       uploadedPaths.push(storagePath);
       photoRecords.push({
-        id: crypto.randomUUID(),
+        id: stablePhotoId ?? crypto.randomUUID(),
         content_type: file.type as HusPhotoRecord["content_type"],
         file_size_bytes: file.size,
         hus_event_id: eventId ?? null,
@@ -139,13 +174,13 @@ async function save(input: SaveHusMediaInput): Promise<SavedHusMedia> {
       });
     }
 
-    let photos: HusPhotoEntry[] = [];
+    let photos: HusPhotoEntry[] = reusedPhotos;
     if (photoRecords.length > 0) {
       const insertPhotos = await client.from("hus_photos").insert(photoRecords).select("*");
       if (insertPhotos.error) {
         throw new HusMediaPersistenceError("Neizdevās saglabāt HUS fotogrāfiju metadatus", insertPhotos.error);
       }
-      photos = ((insertPhotos.data ?? []) as HusPhotoRecord[]).map(recordToHusPhoto);
+      photos = [...reusedPhotos, ...((insertPhotos.data ?? []) as HusPhotoRecord[]).map(recordToHusPhoto)];
     }
 
     if (note) {
@@ -289,10 +324,10 @@ function recordToHusPhoto(record: HusPhotoRecord): HusPhotoEntry {
   };
 }
 
-function createStoragePath(rowId: string, file: File): string {
+function createStoragePath(rowId: string, file: File, stableId?: string): string {
   const extension = file.type === "image/png" ? ".png" : ".jpg";
   const date = new Date().toISOString().slice(0, 10);
-  return `hus/${rowId}/${date}-${crypto.randomUUID()}${extension}`;
+  return `hus/${rowId}/${date}-${stableId ?? crypto.randomUUID()}${extension}`;
 }
 
 function supabaseErrorSummary(error: unknown): string {
@@ -305,4 +340,13 @@ function supabaseErrorSummary(error: unknown): string {
   ].filter(Boolean);
 
   return parts.length > 0 ? parts.join(" · ") : "Supabase operation failed.";
+}
+
+/** Reuses existing UUID primary keys; no additional table or migration is needed. */
+function husUploadRecordId(rowId: string, uploadId: string, slot: string): string {
+  const hex = createHash("sha256").update(rowId + ":" + uploadId + ":" + slot).digest("hex").slice(0, 32).split("");
+  hex[12] = "4";
+  hex[16] = ((parseInt(hex[16], 16) & 3) | 8).toString(16);
+  const id = hex.join("");
+  return [id.slice(0, 8), id.slice(8, 12), id.slice(12, 16), id.slice(16, 20), id.slice(20)].join("-");
 }

@@ -2184,3 +2184,49 @@ textarea {
   border-left-style: dashed;
   background: #f8faf7;
 }
+
+.hus-entry-fields {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.hus-entry-photos {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.event-line-grid > .hus-entry-photos {
+  grid-column: 1 / -1;
+}
+
+.hus-entry-photo-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hus-entry-photo-list li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.hus-entry-photo-list img {
+  object-fit: cover;
+  border-radius: 6px;
+}
+
+.hus-entry-photo-list span {
+  flex: 1;
+  overflow-wrap: anywhere;
+  min-width: 70px;
+}

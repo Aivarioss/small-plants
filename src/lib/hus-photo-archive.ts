@@ -2,12 +2,18 @@ import type { HusPhotoEntry, SowingPlanRow } from "./types";
 
 export type HusPhotoDetails = { description?: string; date?: string; table?: string };
 export type HusMediaUploadInput = {
+  /** Stable for one dialog submission, including retries after a lost response. */
+  uploadId?: string;
   eventId?: string;
   files: File[];
   note?: string;
   observationDate?: string;
   photoDetails?: HusPhotoDetails[];
 };
+
+export function validHusUploadId(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
 export type PhotoArchiveFilter = "all" | "active" | "archived";
 export type PhotoArchiveEntry = {
   photo: HusPhotoEntry;

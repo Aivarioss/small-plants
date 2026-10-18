@@ -508,7 +508,11 @@ async function replaceTablePlacement(row: SowingPlanRow): Promise<void> {
 async function replacePlantCorrections(row: SowingPlanRow): Promise<void> {
   const client = createSupabaseServerClient();
 
-  const { error: deleteError } = await client.from("plant_corrections").delete().eq("sowing_plan_row_id", row.id);
+  const records = rowPlantCorrectionsToRecords(row);
+  let deletion = client.from("plant_corrections").delete();
+  // Never delete/recreate retained IDs: foreign keys link corrections and private photos to them.
+  if (records.length) deletion = deletion.not("id", "in", "("+records.map((record) => record.id).join(",")+")");
+  const { error: deleteError } = await deletion.eq("sowing_plan_row_id", row.id);
   if (deleteError && isPlantCorrectionsRelationError(deleteError) && (row.plantCorrections ?? []).length === 0) {
     return;
   }
@@ -519,7 +523,6 @@ async function replacePlantCorrections(row: SowingPlanRow): Promise<void> {
     throw new SupabasePersistenceError("Neizdevās dzēst iepriekšējās stādu korekcijas", deleteError);
   }
 
-  const records = rowPlantCorrectionsToRecords(row);
   if (records.length === 0) {
     return;
   }
@@ -534,7 +537,11 @@ async function replacePlantCorrections(row: SowingPlanRow): Promise<void> {
 async function replaceHusEvents(row: SowingPlanRow): Promise<void> {
   const client = createSupabaseServerClient();
 
-  const { error: deleteError } = await client.from("hus_events").delete().eq("sowing_plan_row_id", row.id);
+  const records = rowHusEventsToRecords(row);
+  let deletion = client.from("hus_events").delete();
+  // Never delete/recreate retained IDs: foreign keys link corrections and private photos to them.
+  if (records.length) deletion = deletion.not("id", "in", "("+records.map((record) => record.id).join(",")+")");
+  const { error: deleteError } = await deletion.eq("sowing_plan_row_id", row.id);
   if (deleteError && isHusEventsRelationError(deleteError) && (row.husEvents ?? []).length === 0) {
     return;
   }
@@ -545,7 +552,6 @@ async function replaceHusEvents(row: SowingPlanRow): Promise<void> {
     throw new SupabasePersistenceError("Neizdevās dzēst iepriekšējos HUS žurnāla ierakstus", deleteError);
   }
 
-  const records = rowHusEventsToRecords(row);
   if (records.length === 0) {
     return;
   }

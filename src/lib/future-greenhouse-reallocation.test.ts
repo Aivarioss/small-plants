@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { twoHusScenario } from "./__fixtures__/two-hus-scenario";
 import { plannerConfig } from "./demo-data";
-import { buildFuturePlacementScenario, buildGreenhouseOccupancyDay } from "./greenhouse-simulation";
+import { resetFuturePlacementRows, buildGreenhouseOccupancyDay } from "./greenhouse-simulation";
 import { simulateGreenhouseSowing, simulateTwoHusSowing } from "./greenhouse-sowing-simulator";
 import { simulateJointSowingPlan } from "./joint-greenhouse-simulation";
-import { addDays, generateWorkItemsForRows } from "./planning";
+import { addDays } from "./planning";
 import type { SowingPlanRow } from "./types";
 
 const changes = [{ planRowId: "HUS 8A", sowingDate: "2026-10-17" }, { planRowId: "HUS 8B", sowingDate: "2026-10-20" }];
@@ -130,13 +130,18 @@ describe("house allocation before joint search", () => {
     expect(result.notices.some((n) => n.lv.includes("HUS 9"))).toBe(true);
   });
 
-  it("keeps already valid automatic thinning dates in the first pass", () => {
-    const rows = scenario().map((row) => row.id === "HUS 8A" ? { ...row, sowingDate: "2026-10-18", adjustments: { thinning: "2026-10-26" } } : row);
-    const work = generateWorkItemsForRows(rows, plannerConfig);
-    const thin = new Map(work.filter((w) => w.type === "thinning").map((w) => [w.planRowId, w.date]));
-    const result = buildFuturePlacementScenario(rows, plannerConfig, new Set([rows[0].id, rows[1].id]), thin, "2026-10-17");
-    expect(result.placements.find((p) => p.planRowId === rows[0].id)?.startDate).toBe("2026-10-26");
-    expect(result.rows[1].adjustments!.thinning).toBe("2026-10-31");
+  it("discards valid automatic dates and rows too, retaining only counts and fixed work", () => {
+    const rows = scenario();
+    rows[0].sowingDate = "2026-10-18";
+    rows[0].adjustments = { thinning: "2026-10-26" };
+    const before = structuredClone(rows);
+    const result = resetFuturePlacementRows(rows, new Set(rows.map((row) => row.id)));
+    expect(result[0].placement?.primaryRow).toBeUndefined();
+    expect(result[0].placement?.tables).toBe(24);
+    expect(result[0].adjustments?.thinning).toBeUndefined();
+    expect(result[1].adjustments?.thinning).toBeUndefined();
+    expect(result.slice(2)).toEqual(before.slice(2));
+    expect(rows).toEqual(before);
   });
 
   it("extends the horizon across later cycles instead of stopping at the requested Planting", () => {

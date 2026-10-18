@@ -587,7 +587,7 @@ export function localizedWorkDetails(item: WorkItem, row: SowingPlanRow | undefi
       return [
         materials.thinning,
         item.placement
-          ? `${item.placement.primaryRow ? `Row ${item.placement.primaryRow}` : "No free row"} · ${item.placement.tables} tables`
+          ? `${item.placement.rowIds?.length ? `Row ${item.placement.rowIds.join(", ")}` : item.placement.primaryRow ? `Row ${item.placement.primaryRow}` : "Location unknown"} · ${item.placement.tables || "—"} tables`
           : "",
         item.allowedDateRange ? `Allowed only ${item.allowedDateRange.start} - ${item.allowedDateRange.end}` : "",
       ].filter(Boolean);

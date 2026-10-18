@@ -28,6 +28,7 @@ export type WorkAdjustments = Partial<Record<"thinning" | "sideShoots" | "sticks
 export type WorkAdjustmentSources = Partial<Record<keyof WorkAdjustments, Exclude<WorkSource, "automatic">>>;
 
 export type TablePlacement = {
+  /** Legacy planning fields; physical occupancy comes from dated husEvents. */
   primaryRow?: GreenhouseRowId;
   tables?: number;
   manual?: boolean;
@@ -290,6 +291,8 @@ export type PlacementPlan = {
   thinningDate: string;
   harvestDate: string;
   primaryRow?: GreenhouseRowId;
+  /** All actual/estimated growing zones, including the extra A block. */
+  rowIds?: GreenhouseRowId[];
   usesExtraRow: boolean;
   tables: number;
   standardTables: number;

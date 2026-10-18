@@ -262,6 +262,8 @@ export function simulateJointSowingPlan(request: JointSimulationRequest): JointS
     const row = rows.find((candidate) => candidate.id === entry.planRowId)!;
     const actual = model.actualMovements(row);
     const date = baselineThin.get(row.id);
+    // Keep the old estimate only as a comparison label. Mutable reservations
+    // are removed before search; this field never makes them immutable.
     const primaryRow = row.placement?.primaryRow ?? entry.primaryRow;
     if (actual.length) return { ...entry, releaseKnown: true };
     const tables = row.placement?.tables ?? entry.tables;
@@ -329,10 +331,6 @@ export function simulateJointSowingPlan(request: JointSimulationRequest): JointS
       if (!requestedContext.mutableIds.has(row.id)) return fail("immutableWork",
         row.sectorName + ": faktiskais vai bloķētais Moving/retināšana nav pārplānojama.",
         row.sectorName + ": actual or locked Moving/thinning cannot be replanned.", [row.id], entry.thinningDate);
-      if (request.recalculateFuturePlacements && (!model.canReassignPlannedRow(row) && entry.wateringZone !== row.placement?.primaryRow ||
-        row.placement?.tables !== undefined && row.placement.manual !== false && entry.physicalTables !== undefined && entry.physicalTables !== row.placement.tables)) return fail("immutableWork",
-        row.sectorName + ": kandidāts mainītu manuālu vai nezināmas izcelsmes izvietojumu.",
-        row.sectorName + ": the candidate would change a manual or unknown-origin placement.", [row.id], entry.thinningDate);
       if (!validDate(entry.thinningDate) || !thinningDates(context, row, "emergency").includes(entry.thinningDate) ||
         !["A", "B", "C", "D"].includes(entry.wateringZone) ||
         entry.physicalTables !== undefined && (!Number.isInteger(entry.physicalTables) || entry.physicalTables < 1 || entry.physicalTables > 39)) return fail("input",
@@ -403,9 +401,8 @@ function replanFuture(context: Context, changedRows: SowingPlanRow[]): void {
   const { result, request } = context;
   const rows = model.resetFuturePlacementRows(changedRows, context.mutableIds);
   const mutable = rows.filter((row) => context.mutableIds.has(row.id)).sort((a, b) =>
-    // Place constrained manual rows first, including future locks, so an early
-    // automatic choice does not consume the budget before discovering them.
-    Number(model.canReassignPlannedRow(a)) - Number(model.canReassignPlannedRow(b)) ||
+    // Preserve explicit work dates, then plan chronologically. Old editor row
+    // fields do not give an unfinished HUS priority over earlier sowings.
     thinningDates(context, a, "emergency").length - thinningDates(context, b, "emergency").length ||
     a.sowingDate.localeCompare(b.sowingDate) || a.id.localeCompare(b.id));
   const frozen = context.baselineReservations.filter((entry) => !context.mutableIds.has(entry.planRowId));
@@ -512,7 +509,7 @@ function futureCapacityBound(context: Context, mutable: SowingPlanRow[], frozen:
       const latest = context.request.candidatePlacements?.find((entry) => entry.planRowId === row.id)?.thinningDate ?? thinningDates(context, row, stage).at(-1);
       if (!latest || date < latest || date >= row.harvestDate) return [];
       const normal = row.placement?.tables ?? calculateGreenhouseTablePlacement(getTotalSow(row)).totalTables;
-      const minimum = stage === "normal" || row.placement?.tables !== undefined && row.placement.manual !== false ? normal :
+      const minimum = stage === "normal" ? normal :
         Array.from({ length: normal }, (_, i) => i + 1).find((count) => evaluateGreenhouseDensity(getTotalSow(row), count).feasible) ?? normal;
       return [{ id: row.id, name: row.sectorName, count: minimum }];
     });
@@ -601,15 +598,7 @@ function* expandChoices(context: Context, rows: SowingPlanRow[], mutable: Sowing
     conflict(context, "missingData", row.sowingDate, [row.id], { lv: row.sectorName + ": nav derīga augšanas galdu skaita.", en: row.sectorName + ": a valid growing-table count is missing." });
     return;
   }
-  if (request.recalculateFuturePlacements && row.placement?.primaryRow === "A" && row.placement.manual !== false && normal > 13) {
-    conflict(context, "growingCapacity", dates[0], [row.id], {
-      lv: dates[0] + ": " + row.sectorName + " vajag " + normal + " galdus A14–A26 blokā, pieejami 13.",
-      en: dates[0] + ": " + row.sectorName + " needs " + normal + " tables in A14–A26; only 13 are available.",
-    });
-    return;
-  }
-  const lockedCount = request.recalculateFuturePlacements && row.placement?.tables !== undefined && row.placement.manual !== false;
-  const counts = candidate ? [candidate.physicalTables ?? normal] : lockedCount ? [normal] : fullRowsOnly ? [Math.min(normal, 26)] : stage === "normal" ? [normal] :
+  const counts = candidate ? [candidate.physicalTables ?? normal] : fullRowsOnly ? [Math.min(normal, 26)] : stage === "normal" ? [normal] :
     [...new Set([normal, ...(request.prioritizeRequestedHus && normal > 26 ? [26] : []), ...Array.from({ length: normal }, (_, i) => normal - i)])];
   if (!counts.some((count) => evaluateGreenhouseDensity(plants, count).feasible)) {
     conflict(context, "growingCapacity", candidate?.thinningDate ?? row.sowingDate, [row.id], {
@@ -684,10 +673,6 @@ function completePlan(context: Context, rows: SowingPlanRow[], state: State): Jo
   const notices: SimulationNotice[] = [];
   if (request.recalculateFuturePlacements) for (const row of rows) {
     if (row.husEvents?.some((event) => event.eventType === "move" || event.eventType === "thinning")) continue;
-    if (row.placement && row.placement.manual === undefined && (row.placement.primaryRow !== undefined || row.placement.tables !== undefined)) notices.push({
-      lv: row.sectorName + ": izvietojuma izcelsme nav zināma; iespējamā manuālā rinda un galdu skaits saglabāti.",
-      en: row.sectorName + ": placement provenance is unknown; the possible manual row and table count are preserved.",
-    });
     if (row.adjustments?.thinning && row.adjustmentSources?.thinning === undefined) notices.push({
       lv: row.sectorName + ": retināšanas datuma izcelsme nav zināma; saglabātais datums nav automātiski pārcelts.",
       en: row.sectorName + ": thinning-date provenance is unknown; the saved date has not been automatically moved.",

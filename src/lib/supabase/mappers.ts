@@ -129,7 +129,8 @@ export function rowPlacementToRecord(row: SowingPlanRow): TablePlacementRecord |
     sowing_plan_row_id: row.id,
     primary_row: row.placement.primaryRow ?? null,
     tables: row.placement.tables ?? null,
-    manual: row.placement.manual ?? true,
+    // A calculated/legacy placement is not confirmation of actual Moving.
+    manual: row.placement.manual ?? false,
   };
 }
 

@@ -383,13 +383,14 @@ function finalScheduledRows(rows: SowingPlanRow[], config: PlannerConfig): Sowin
   return applyWorkloadBalanceProposals(rows, balanceWorkload(rows, config));
 }
 
-/** A saved row is automatic only when its provenance explicitly says so.
- * Missing provenance preserves a possible manual choice. */
+/** Legacy placement fields are planning estimates, never evidence of Moving.
+ * Only an actual event (or an explicit completed/archive lock) fixes a HUS. */
 function canReassignPlannedRow(row: SowingPlanRow): boolean {
-  return !row.placement?.primaryRow || row.placement.manual === false;
+  return !row.archivedAt && row.status !== "done" &&
+    !row.husEvents?.some((event) => event.eventType === "move" || event.eventType === "thinning");
 }
 
-/** Remove only unfinished automatic choices in a private scenario copy. */
+/** Remove unfinished row assignments in a private scenario copy. */
 export function resetFuturePlacementRows(rows: SowingPlanRow[], mutableIds: Set<string>): SowingPlanRow[] {
   return rows.map((row) => {
     if (!mutableIds.has(row.id) || row.archivedAt || row.status === "done" || row.husEvents?.some((event) => event.eventType === "move" || event.eventType === "thinning")) return { ...row };
@@ -400,7 +401,7 @@ export function resetFuturePlacementRows(rows: SowingPlanRow[], mutableIds: Set<
       delete adjustmentSources.thinning;
     }
     return { ...row, adjustments, adjustmentSources,
-      placement: row.placement ? { ...row.placement, primaryRow: canReassignPlannedRow(row) ? undefined : row.placement.primaryRow } : undefined };
+      placement: row.placement ? { ...row.placement, primaryRow: undefined, manual: false } : undefined };
   });
 }
 
@@ -609,7 +610,10 @@ function assignPhysicalGrowingPlacements(rawPlacements: RawGrowingPlacement[]): 
         });
         return;
       }
-      const [option] = placementOptionsFor(raw.row, raw.tables, active, raw.startDate, raw.endDate);
+      // A pre-Moving row saved by the old editor is not a physical reservation.
+      const plannedRow = canReassignPlannedRow(raw.row)
+        ? { ...raw.row, placement: { ...raw.row.placement, primaryRow: undefined } } : raw.row;
+      const [option] = placementOptionsFor(plannedRow, raw.tables, active, raw.startDate, raw.endDate);
 
       reservations.push({
         density: raw.density ?? option?.plantsPerTrough,
@@ -1541,7 +1545,7 @@ export function interpretHusMovingEventPlacement(entry: HusEventEntry): Interpre
       return [];
     }
 
-    if (row.to && row.toGrowingTables.length === 0) {
+    if (row.to && !growingTableSelectionRows(row.to).length) {
       return [`Moving ieraksta galamērķi "${row.to}" nevar droši interpretēt kā augšanas galdus.`];
     }
 
@@ -1596,13 +1600,27 @@ function finalActualGrowingTables(movements: ActualGrowingMovement[]): string[] 
   return actualGrowingTablesOnDate(movements, movements.at(-1)?.eventDate ?? "");
 }
 
+/** Row letters are derived from actual table addresses, never a planned row. */
+export function growingTableSelectionRows(value: string | undefined): GreenhouseRowId[] {
+  const parts = (value ?? "").trim().replace(/\s*([-–])\s*/g, "$1").split(/[,\s]+/).filter(Boolean);
+  if (!parts.length || parts.some((part) => {
+    const match = /^([ABCD])(\d{1,2})(?:[-–]([ABCD])?(\d{1,2}))?$/i.exec(part);
+    if (!match) return true;
+    const row = match[1].toUpperCase();
+    const endRow = (match[3] ?? row).toUpperCase();
+    return row !== endRow || !isGrowingTableId(`${row}${Number(match[2])}`) ||
+      Boolean(match[4] && !isGrowingTableId(`${endRow}${Number(match[4])}`));
+  })) return [];
+  return [...new Set(parts.map((part) => part[0].toUpperCase() as GreenhouseRowId))].sort();
+}
+
 function parseGrowingTableSelection(value: string | undefined): string[] {
   if (!value) {
     return [];
   }
 
   const tables: string[] = [];
-  value
+  value.replace(/\s*([-–])\s*/g, "$1")
     .split(/[,\s]+/)
     .map((part) => part.trim())
     .filter(Boolean)

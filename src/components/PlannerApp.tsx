@@ -8,7 +8,6 @@ import {
   applyHusEventDelete,
   applyHusEventSave,
   balanceWorkload,
-  calculateBoxPlan,
   calculateAvailability,
   calculatePlantBalance,
   countMainWork,
@@ -16,7 +15,6 @@ import {
   calculateThinningPlan,
   clearOptimizerWorkAdjustments,
   compareSowingRowsByDate,
-  createPlacementPlan,
   dateLabel,
   eachDate,
   formatSowingTableSelection,
@@ -26,7 +24,6 @@ import {
   getCycleDay,
   getTotalSow,
   groupMonthlyPrintRowsIntoDateGroups,
-  greenhouseRows,
   hasManualWorkMoves,
   isAllowedMove,
   defaultHusEventDate,
@@ -57,7 +54,6 @@ import {
   formatCycleDay,
   formatCycleDays,
   formatPlants,
-  formatPrintHarvestBoxes,
   formatPrintSowingPlan,
   formatPrintThinningPlan,
   formatReserveShortage,
@@ -75,8 +71,10 @@ import {
 import { compressHusPhotoForUpload } from "@/lib/image-compression";
 import { HusPhotoArchive, PhotoArchiveMetadata } from "./HusPhotoArchive";
 import { SowingSimulationPanel } from "./SowingSimulationPanel";
+import { HusPlacementDetails } from "./HusPlacementDetails";
+import { withHouseThinningPlacement } from "@/lib/greenhouse-work-placement";
 import { buildPhotoArchive, husPhotoFileUrl, photoArchiveHusTarget, type PhotoArchiveEntry, type HusMediaUploadInput, type HusPhotoDetails } from "@/lib/hus-photo-archive";
-import { buildGreenhouseOccupancyDay } from "@/lib/greenhouse-simulation";
+import { buildGreenhouseOccupancyDay, growingTableSelectionRows } from "@/lib/greenhouse-simulation";
 import {
   archiveRow,
   loadArchivedRows,
@@ -147,8 +145,8 @@ function calendarItemLabel(item: WorkItem, language: AppLanguage) {
   const placementLabel =
     item.type === "thinning" && item.placement
       ? ` · ${
-          item.placement.primaryRow
-            ? language === "lv" ? `Rinda ${item.placement.primaryRow}` : `Row ${item.placement.primaryRow}`
+          (item.placement.rowIds?.length || item.placement.primaryRow)
+            ? language === "lv" ? `Rinda ${item.placement.rowIds?.join(", ") || item.placement.primaryRow}` : `Row ${item.placement.rowIds?.join(", ") || item.placement.primaryRow}`
             : language === "lv" ? "Nav rindas" : "No row"
         } · ${item.placement.tables} ${language === "lv" ? "galdi" : "tables"}`
       : "";
@@ -188,32 +186,7 @@ export function PlannerApp() {
   }, [printLanguage]);
 
   const workItems = useMemo(
-    () =>
-      generateWorkItemsForRows(planRows, plannerConfig).map((item) => {
-        const row = planRows.find((candidate) => candidate.id === item.planRowId);
-        if (item.type !== "thinning") {
-          return item;
-        }
-
-        if (!row) {
-          return item;
-        }
-
-        const placement = createPlacementPlan(row, planRows);
-        const detailsWithoutStalePlacement = item.details.filter(
-          (detail) => !detail.trim().startsWith("Rinda ") && !detail.trim().startsWith("Nav brīvas rindas"),
-        );
-
-        return {
-          ...item,
-          placement,
-          capacityWarning: placement.warning,
-          details: [
-            ...detailsWithoutStalePlacement,
-            `${placement.primaryRow ? `Rinda ${placement.primaryRow}` : "Nav brīvas rindas"} — ${placement.tables} galdi`,
-          ],
-        };
-      }),
+    () => withHouseThinningPlacement(generateWorkItemsForRows(planRows, plannerConfig), planRows, plannerConfig),
     [planRows],
   );
   const selectedArchivedRow = archivedRows.find((row) => row.id === selectedRowId);
@@ -614,16 +587,6 @@ export function PlannerApp() {
       },
     });
     setMoveErrors((current) => ({ ...current, [item.id]: "" }));
-  }
-
-  function updatePlacement(row: SowingPlanRow, patch: NonNullable<SowingPlanRow["placement"]>) {
-    updatePlanRow(row.id, {
-      placement: {
-        ...row.placement,
-        ...patch,
-        manual: true,
-      },
-    });
   }
 
   async function importPlanFromFile(file: File) {
@@ -1260,7 +1223,6 @@ export function PlannerApp() {
           <BatchEditor
             onUpdateCycleLength={updateCycleLength}
             onUpdateDate={updateDateField}
-            onUpdatePlacement={updatePlacement}
             onUpdateRow={updatePlanRow}
             row={selectedRow}
             rows={planRows}
@@ -2778,7 +2740,7 @@ function HusEventDialog({
   const needsNote = eventType === "other";
   const cleanedMovementRows = movementRows.map((draft) => ({ from: draft.from.trim(), to: draft.to.trim() }));
   const validMovementRows = cleanedMovementRows.filter((draft) => draft.from || draft.to);
-  const movementRowsComplete = validMovementRows.length > 0 && validMovementRows.every((draft) => draft.from && draft.to);
+  const movementRowsComplete = validMovementRows.length > 0 && validMovementRows.every((draft) => draft.from && growingTableSelectionRows(draft.to).length > 0);
   const cleanedBrownRootsRows = brownRootsRows.map((draft) => ({
     location: draft.location.trim(),
     amount: draft.amount.trim() === "" ? undefined : Number(draft.amount),
@@ -2926,6 +2888,14 @@ function HusEventDialog({
                 <label>
                   {language === "lv" ? "Uz galdiem" : "To tables"}
                   <input maxLength={80} placeholder="C1-C10" value={draft.to} onChange={(event) => updateMovementRow(draft.id, { to: event.target.value })} />
+                  <span className="dialog-hint">
+                    {language === "lv" ? "Faktiskā rinda" : "Actual row"}: {growingTableSelectionRows(draft.to).join(", ") || "—"}
+                  </span>
+                  {draft.to.trim() && !growingTableSelectionRows(draft.to).length ? (
+                    <span className="dialog-error">{language === "lv"
+                      ? "Norādi faktiskos augšanas galdus: A14–A26, B1–B26, C1–C26 vai D1–D26."
+                      : "Enter actual growing tables: A14–A26, B1–B26, C1–C26 or D1–D26."}</span>
+                  ) : null}
                 </label>
                 <button
                   className="danger-action danger-action--small"
@@ -3652,14 +3622,12 @@ function HusList({
 function BatchEditor({
   onUpdateCycleLength,
   onUpdateDate,
-  onUpdatePlacement,
   onUpdateRow,
   row,
   rows,
 }: {
   onUpdateCycleLength: (row: SowingPlanRow, cycleLength: number) => void;
   onUpdateDate: (row: SowingPlanRow, field: "sowingDate" | "harvestDate", value: string) => void;
-  onUpdatePlacement: (row: SowingPlanRow, patch: NonNullable<SowingPlanRow["placement"]>) => void;
   onUpdateRow: (id: string, patch: Partial<SowingPlanRow>) => void;
   row: SowingPlanRow;
   rows: SowingPlanRow[];
@@ -3667,8 +3635,6 @@ function BatchEditor({
   const language = useAppLanguage();
   const totalSow = getTotalSow(row);
   const availability = calculateAvailability(row);
-  const placement = createPlacementPlan(row, rows);
-  const boxPlan = calculateBoxPlan(row);
 
   return (
     <section className="panel form-panel">
@@ -3785,42 +3751,7 @@ function BatchEditor({
         <span>{language === "lv" ? "Faktiski pieejams" : "Actually available"}: {availability.availablePlants.toLocaleString("lv-LV")}</span>
         <strong>{availability.label}</strong>
       </div>
-      <section className="placement-box">
-        <div>
-          <p className="eyebrow">{language === "lv" ? "Izvietojums pēc retināšanas" : "Placement after moving"}</p>
-          <strong>{placement.label}</strong>
-        </div>
-        <span>{t("total", language)} {t("plants", language).toLowerCase()}: {totalSow.toLocaleString("lv-LV")}</span>
-        <span>{printWorkTitle("thinning", language)}: {dateLabel(placement.thinningDate)}</span>
-        <span>{language === "lv" ? "Renes" : "Troughs"}: {placement.gutters}</span>
-        <span>{language === "lv" ? "Vidēji" : "Average"}: {placement.averagePlantsPerGutter.toFixed(2)} {language === "lv" ? "stādi/renē" : "plants/trough"}</span>
-        <span>{language === "lv" ? "Kastītes" : "Boxes"}: {language === "lv" ? boxPlan.label : formatPrintHarvestBoxes(row, language)}</span>
-        <label>
-          {language === "lv" ? "Rinda" : "Row"}
-          <select
-            value={placement.primaryRow ?? ""}
-            onChange={(event) =>
-              onUpdatePlacement(row, { primaryRow: event.target.value as NonNullable<SowingPlanRow["placement"]>["primaryRow"] })
-            }
-          >
-            <option value="">{t("automatic", language)}</option>
-            {greenhouseRows.map((greenhouseRow) => (
-              <option key={greenhouseRow.id} value={greenhouseRow.id}>{greenhouseRow.id}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          {language === "lv" ? "Izmantoti galdi" : "Tables used"}
-          <input
-            min="1"
-            max="39"
-            type="number"
-            value={placement.tables}
-            onChange={(event) => onUpdatePlacement(row, { tables: Number(event.target.value) })}
-          />
-        </label>
-        {placement.warning ? <p className="capacity-note">{placement.warning}</p> : null}
-      </section>
+      <HusPlacementDetails row={row} rows={rows} language={language} />
       <section className="history-box">
         <div>
           <p className="eyebrow">{t("changeHistory", language)}</p>

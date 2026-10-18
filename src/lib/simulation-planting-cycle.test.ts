@@ -70,11 +70,18 @@ describe("simulation uses the production plan's inclusive growing cycle", () => 
     expect(buildGreenhouseOccupancyDay(rows, plannerConfig, "2026-11-08")).toEqual(actualBefore);
   });
 
-  it("detects a future row conflict between the old and the later Planting date", () => {
+  it("reassigns an unconfirmed row but rejects a pinned conflict through the later Planting", () => {
     const target = { ...hus(), placement: { primaryRow: "B" as const, tables: 24, manual: true } };
-    const rows = [target, fixedIncoming("2026-11-12")];
+    const rows = [target, { ...fixedIncoming("2026-11-12"), husEvents: [
+      { id: "moving", eventType: "move" as const, eventDate: "2026-11-12", location: "A1–A3", destinationLocation: "B1–B24" },
+    ] }];
     expect(joint(rows, target.sowingDate).plans[0]).toBeDefined(); // old Planting November 11
-    const result = joint(rows, "2026-10-22"); // new Planting November 13
+    const replanned = joint(rows, "2026-10-22"); // new Planting November 13
+    expect(replanned.plans[0].proposals.find((p) => p.planRowId === target.id)?.wateringZone).not.toBe("B");
+    expect(replanned.plans[0].proposals.some((p) => p.planRowId === "Next")).toBe(false);
+    const result = joint(rows, "2026-10-22", { candidatePlacements: [
+      { planRowId: target.id, thinningDate: "2026-10-31", wateringZone: "B", physicalTables: 24 },
+    ] });
     expect(result.status).toBe("cannot");
     expect(result.plans).toEqual([]);
     expect(result.conflicts.some((entry) => entry.message.lv.includes("2026-11-12") && entry.message.lv.includes("B rinda"))).toBe(true);

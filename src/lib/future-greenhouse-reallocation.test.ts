@@ -77,11 +77,11 @@ describe("house allocation before joint search", () => {
     expect(rows[5].husEvents![0].destinationLocation).toBe("C1–C26");
   });
 
-  it.each([true, undefined])("preserves later manual or unknown-origin rows (manual=%s)", (manual) => {
+  it.each([true, undefined])("reassigns an unconfirmed later row regardless of the old manual flag (%s)", (manual) => {
     const rows = scenario();
-    rows[4].harvestDate = "2026-11-20";
+    rows[4].harvestDate = "2026-11-04";
     rows.push(later(rows, manual));
-    expect(run(rows).plan).toBeUndefined();
+    expect(run(rows).plan!.proposals.find((p) => p.planRowId === "Later")).toMatchObject({ wateringZone: "D" });
     expect(rows[5].placement).toMatchObject({ primaryRow: "C", tables: 26 });
   });
 
@@ -104,20 +104,25 @@ describe("house allocation before joint search", () => {
     expect(result.proposals[0]).toMatchObject({ wateringZone: "C", physicalTables: 24, thinningDate: "2026-10-26" });
   });
 
-  it("does not guess that an unknown-origin target row is automatic", () => {
+  it("does not postpone thinning to day 11 merely to retain an unconfirmed row", () => {
     const rows = scenario();
     rows[0].placement = { primaryRow: "B", tables: 24 };
     const result = simulateTwoHusSowing(rows, plannerConfig, [{ ...changes[0], sowingDate: "2026-10-18" }, changes[1]], "2026-10-17");
-    expect(result.proposals[0]).toMatchObject({ wateringZone: "B", cycleDay: 11 });
-    expect(result.status).toBe("conditional");
+    expect(result.proposals[0]).toMatchObject({ wateringZone: "C", cycleDay: 10 });
+    expect(result.plan!.score.emergencyDays).toBe(0);
   });
 
-  it("never squeezes a locked 24-table placement into the 13-table A block", () => {
+  it("reassigns an obsolete A estimate while rejecting an explicit 24-table A candidate", () => {
     const rows = scenario();
     rows[0].placement = { primaryRow: "A", tables: 24, manual: true };
     const result = run(rows);
-    expect(result.plan).toBeUndefined();
-    expect(result.notices.some((n) => n.lv.includes("A14–A26") && n.lv.includes("pieejami 13"))).toBe(true);
+    expect(result.proposals[0]).toMatchObject({ wateringZone: "C", physicalTables: 24 });
+    const invalid = joint(rows, { candidatePlacements: [
+      { planRowId: "HUS 8A", thinningDate: "2026-10-26", wateringZone: "A", physicalTables: 24 },
+      { planRowId: "HUS 8B", thinningDate: "2026-10-29", wateringZone: "B", physicalTables: 26 },
+    ] });
+    expect(invalid.plans).toEqual([]);
+    expect(invalid.conflicts.some((n) => n.message.lv.includes("A14–A26") && n.message.lv.includes("pieejami 13"))).toBe(true);
   });
 
   it("requires clarification for an actual Moving without a known growing destination", () => {

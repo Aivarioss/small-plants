@@ -107,16 +107,16 @@ describe("fresh planning of the entire future greenhouse", () => {
     expect(result.plans[0].occupancy.every((day) => !day.growing.overCapacity)).toBe(true);
   });
 
-  it("honours a later manual row/date and explicitly reports preserved unknown provenance", () => {
+  it("preserves a manual work date without treating old row provenance as a physical lock", () => {
     const rows = november();
     rows[5].placement = { primaryRow: "D", tables: 26, manual: true };
     rows[5].adjustments = { thinning: "2026-11-06" };
     rows[5].adjustmentSources = { thinning: "manual" };
-    rows[6].placement = { primaryRow: "C", tables: 26 }; // provenance unknown
+    rows[6].placement = { primaryRow: "C", tables: 26 }; // old estimate, not actual Moving
     const result = run(rows);
     expect(result.plans[0].proposals.find((p) => p.planRowId === "HUS 3")).toMatchObject({ thinningDate: "2026-11-06", wateringZone: "D", physicalTables: 26 });
     expect(result.plans[0].proposals.find((p) => p.planRowId === "HUS 2N")?.wateringZone).toBe("C");
-    expect(result.plans[0].notices.some((notice) => notice.en.includes("provenance is unknown"))).toBe(true);
+    expect(result.plans[0].notices.some((notice) => notice.en.includes("placement provenance is unknown"))).toBe(false);
   });
 
   it("rebuilds all other automatic HUS even when pinning an exact selected candidate", () => {

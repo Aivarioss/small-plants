@@ -21,7 +21,7 @@ describe("joint candidate validation and search budget", () => {
     expect(result.plans[0].proposals.map((p) => [p.planRowId, p.thinningDate, p.wateringZone])).toEqual([
       ["HUS 8A", "2026-10-27", "C"], ["HUS 8B", "2026-10-29", "B"],
     ]);
-    expect(result.plans[0].proposals.map((p) => p.plantingDate)).toEqual(["2026-11-11", "2026-11-13"]);
+    expect(result.plans[0].proposals.map((p) => p.plantingDate)).toEqual(["2026-11-09", "2026-11-13"]);
     for (const day of result.plans[0].occupancy) {
       expect(day.seeding.overCapacity, day.date).toBe(false);
       expect(day.seeding.conflicts, day.date).toEqual([]);

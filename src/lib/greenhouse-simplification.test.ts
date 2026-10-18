@@ -88,10 +88,10 @@ describe("actual seeding table release", () => {
 });
 
 describe("simple sowing preview over the existing engines", () => {
-  it("preserves Planting by default and retains explicit linked sowing/Planting simulation", () => {
+  it("preserves the cycle when recalculating Planting in both simulation entry points", () => {
     const row = hus();
-    expect(simulateGreenhouseSowing([row], plannerConfig, row.id, "2026-10-17", "2026-10-16").newMoveOutDate).toBe("2026-11-11");
-    expect(simulateSowingDateChange([row], plannerConfig, row.id, "2026-10-17", { movePlantingWithSowing: true }).newMoveOutDate).toBe("2026-11-08");
+    expect(simulateGreenhouseSowing([row], plannerConfig, row.id, "2026-10-17", "2026-10-16").newMoveOutDate).toBe("2026-11-08");
+    expect(simulateSowingDateChange([row], plannerConfig, row.id, "2026-10-17").newMoveOutDate).toBe("2026-11-08");
   });
 
   it("prefers a normal direct solution and preserves all records and actual occupancy", () => {
@@ -119,7 +119,7 @@ describe("simple sowing preview over the existing engines", () => {
     expect(result.requiredChanges?.some((notice) => notice.lv.includes("disinfectTables") || notice.lv.includes("previcur"))).toBe(false);
     expect(result.changedOtherWork).toContainEqual(expect.objectContaining({ planRowId: "other", type: "thinning", before: ["2026-10-22"], after: ["2026-10-20"] }));
     expect(rows).toEqual(before);
-    expect(result.scenarioRows.map((row) => row.harvestDate)).toEqual(rows.map((row) => row.harvestDate));
+    expect(result.scenarioRows.map((row) => row.harvestDate)).toEqual(["2026-11-12", other.harvestDate]);
   });
 
   it("labels sowing on an actual Moving release date as conditional work order", () => {

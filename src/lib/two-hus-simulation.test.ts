@@ -18,7 +18,7 @@ describe("two-HUS sowing preview", () => {
     expect(result.proposals.map((p) => p.thinningDate)).toEqual(["2026-10-27", "2026-10-29"]);
     expect(result.proposals.map((p) => p.wateringZone)).toEqual(["C", "B"]);
     expect(result.proposals.every((p) => p.cycleDay >= 8 && p.cycleDay <= 10)).toBe(true);
-    expect(result.proposals.map((p) => p.plantingDate)).toEqual(["2026-11-11", "2026-11-13"]);
+    expect(result.proposals.map((p) => p.plantingDate)).toEqual(["2026-11-09", "2026-11-13"]);
     expect(result.requiredChanges).toEqual([]);
     for (const day of result.plan!.occupancy) {
       expect(day.seeding.overCapacity, day.date).toBe(false);

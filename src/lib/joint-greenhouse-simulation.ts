@@ -1,6 +1,7 @@
 import { addDays, calculateSowingPlan, clearOptimizerWorkAdjustments, eachDate, generateWorkItemsForRows, getTotalSow, parseSowingTableSelection } from "./planning";
 import { calculateGreenhouseTablePlacement, evaluateGreenhouseDensity } from "./greenhouse-placement";
 import { evaluateThinningWorkload, scheduleProductionWork } from "./scheduler";
+import { calculateMoveOutDate } from "./hus-templates";
 import {
   greenhouseSimulationModel as model,
   type GreenhouseOccupancyDay, type GreenhouseOccupancyStatus, type GrowingPlacementKind,
@@ -54,7 +55,7 @@ export type JointSimulationConflict = {
 };
 export type JointPlanChange = {
   planRowId: string;
-  field: "sowingDate" | "thinningDate" | "wateringZone" | "growingTables" | "workDates";
+  field: "sowingDate" | "plantingDate" | "thinningDate" | "wateringZone" | "growingTables" | "workDates";
   workType?: WorkItem["type"];
   before?: string | number;
   after: string | number;
@@ -172,18 +173,26 @@ export function simulateJointSowingPlan(request: JointSimulationRequest): JointS
   const requestedIds = new Set(request.sowingChanges.map((change) => change.planRowId));
   for (const change of request.sowingChanges) {
     const row = request.rows.find((entry) => entry.id === change.planRowId);
-    if (!row || row.archivedAt || row.harvestDate <= request.asOfDate || !validDate(change.sowingDate) || change.sowingDate >= row.harvestDate ||
-      dateDistance(change.sowingDate, row.harvestDate) > maxHorizonDays) return fail("input",
+    if (!row || row.archivedAt || row.harvestDate <= request.asOfDate || !validDate(change.sowingDate)) return fail("input",
       "Sēšanas izmaiņai nav atrasts derīgs aktīvs HUS vai datumu periods.", "A sowing change has no valid active HUS or date interval.", [change.planRowId]);
-    if (request.recalculateFuturePlacements && (row.status === "done" || row.husEvents?.some((event) => event.eventType === "move" || event.eventType === "thinning"))) return fail("immutableWork",
+    if (change.sowingDate !== row.sowingDate && (!Number.isInteger(row.cycleLength) || row.cycleLength < 2 || row.cycleLength > maxHorizonDays)) return fail("input",
+      row.sectorName + ": nav derīga audzēšanas cikla Planting pārrēķinam.", row.sectorName + ": a valid growing cycle is required to recalculate Planting.", [row.id]);
+    if (row.status === "done" || request.recalculateFuturePlacements && row.husEvents?.some((event) => event.eventType === "move" || event.eventType === "thinning")) return fail("immutableWork",
       row.sectorName + ": faktiskais Moving vai izpildītais HUS nav pārplānojams.",
       row.sectorName + ": actual Moving or a completed HUS cannot be replanned.", [row.id]);
     if (change.sowingDate !== row.sowingDate && (locked.has(row.id) || row.sowingDate < request.asOfDate ||
       change.sowingDate < request.asOfDate || row.husEvents?.length || request.completedWork?.some((work) => work.planRowId === row.id))) return fail("immutableWork",
-      row.sectorName + ": faktiski sāktu vai bloķētu HUS sēšanu nepārceļam.", row.sectorName + ": sowing of a started or locked HUS cannot be moved.", [row.id]);
+      row.sectorName + ": faktiski sāktu vai bloķētu HUS sēšanu un Planting nepārceļam.", row.sectorName + ": sowing and Planting of a started or locked HUS cannot be moved.", [row.id]);
   }
-  const requestedEnd = request.rows.filter((row) => requestedIds.has(row.id)).map((row) => row.harvestDate).sort().at(-1)!;
-  const related = request.rows.filter((row) => !row.archivedAt && row.harvestDate > request.asOfDate && row.sowingDate <= requestedEnd);
+  // Select the horizon from the new cycles, before generating any reservation.
+  const scenarioRows = applySimulationSowingChanges(request.rows, request.sowingChanges);
+  const horizonRows = scenarioRows.map((row) => request.allowOtherSowingChanges !== false && !request.recalculateFuturePlacements &&
+    !requestedIds.has(row.id) && !row.archivedAt && row.status !== "done" && !locked.has(row.id) && !row.husEvents?.length &&
+    !request.completedWork?.some((work) => work.planRowId === row.id) && row.sowingDate > request.asOfDate &&
+    Number.isInteger(row.cycleLength) && row.cycleLength >= 2 && row.cycleLength <= maxHorizonDays
+    ? { ...row, harvestDate: [row.harvestDate, calculateMoveOutDate(addDays(row.sowingDate, 3), row.cycleLength)].sort().at(-1)! } : row);
+  const requestedEnd = scenarioRows.filter((row) => requestedIds.has(row.id)).map((row) => row.harvestDate).sort().at(-1)!;
+  const related = horizonRows.filter((row) => !row.archivedAt && row.harvestDate > request.asOfDate && row.sowingDate <= requestedEnd);
   const relatedIds = new Set(related.map((row) => row.id));
   // A related HUS may stay longer than the requested HUS. Include later frozen
   // reservations through its Planting too, rather than hiding a future collision.
@@ -192,7 +201,7 @@ export function simulateJointSowingPlan(request: JointSimulationRequest): JointS
   // the first selected HUS's horizon. Never hide a later affected cycle.
   if (request.recalculateFuturePlacements) {
     for (;;) {
-      const extended = request.rows.filter((row) => !row.archivedAt && row.harvestDate > request.asOfDate && row.sowingDate <= end)
+      const extended = horizonRows.filter((row) => !row.archivedAt && row.harvestDate > request.asOfDate && row.sowingDate <= end)
         .map((row) => row.harvestDate).sort().at(-1)!;
       if (extended === end) break;
       end = extended;
@@ -200,7 +209,8 @@ export function simulateJointSowingPlan(request: JointSimulationRequest): JointS
   }
   if (dateDistance(request.asOfDate, end) > maxHorizonDays) return fail(request.recalculateFuturePlacements ? "searchLimit" : "input",
     "Kopīgās simulācijas periods pārsniedz 90 dienas.", "The joint simulation horizon exceeds 90 days.");
-  const rows = request.rows.filter((row) => !row.archivedAt && row.harvestDate > request.asOfDate && row.sowingDate <= end)
+  const contextIds = new Set(horizonRows.filter((row) => !row.archivedAt && row.harvestDate > request.asOfDate && row.sowingDate <= end).map((row) => row.id));
+  const rows = request.rows.filter((row) => contextIds.has(row.id))
     .slice().sort((a, b) => a.sowingDate.localeCompare(b.sowingDate) || a.id.localeCompare(b.id));
   if (rows.length > maxContextRows) return fail("searchLimit",
     "Pārklājošajā periodā ir vairāk par 80 HUS; sašaurini simulācijas periodu.",
@@ -286,7 +296,7 @@ export function simulateJointSowingPlan(request: JointSimulationRequest): JointS
   for (const change of request.sowingChanges) if (change.sowingDate !== rows.find((row) => row.id === change.planRowId)!.sowingDate && !mutableIds.has(change.planRowId)) {
     return fail("immutableWork", "Pieprasītajam HUS nav pārvietojama retināšanas datuma.", "The requested HUS has no movable thinning date.", [change.planRowId]);
   }
-  const changedRows = applySowingChanges(rows, request.sowingChanges);
+  const changedRows = applySimulationSowingChanges(rows, request.sowingChanges);
   if (!validWorkWindows(context, changedRows)) return result;
   if (request.recalculateFuturePlacements) for (const row of changedRows.filter((row) => requestedIds.has(row.id))) {
     if (!canMove(row)) return fail("immutableWork", row.sectorName + ": retināšanas izpildes statuss nav droši pārplānojams; precizē faktisko Moving vai bloķējumu.",
@@ -363,9 +373,9 @@ export function simulateJointSowingPlan(request: JointSimulationRequest): JointS
           break outer;
         }
         const sowingDate = addDays(row.sowingDate, offset);
-        if (sowingDate < request.asOfDate || sowingDate >= row.harvestDate) continue;
+        if (sowingDate < request.asOfDate || !Number.isInteger(row.cycleLength) || row.cycleLength < 2 || row.cycleLength > maxHorizonDays) continue;
         result.search.sowingScenarios++;
-        const scenario = applySowingChanges(changedRows, [{ planRowId: row.id, sowingDate }]);
+        const scenario = applySimulationSowingChanges(changedRows, [{ planRowId: row.id, sowingDate }]);
         if (!validWorkWindows(context, scenario, false)) continue;
         result.plans = bestPlans([...result.plans, ...search(context, scenario, "sowingCompromise")], context);
       }
@@ -790,9 +800,10 @@ function completePlan(context: Context, rows: SowingPlanRow[], state: State): Jo
   for (const proposal of proposals) for (const type of ["sideShoots", "sticks"] as const) {
     const before = context.baselineWork.filter((item) => item.planRowId === proposal.planRowId && item.type === type).map((item) => item.date).sort().join(", ");
     const after = workItems.filter((item) => item.planRowId === proposal.planRowId && item.type === type).map((item) => item.date).sort().join(", ");
-    if (before !== after) changes.push({ planRowId: proposal.planRowId, field: "workDates", workType: type, before, after, requiresApproval: true,
-      reason: { lv: proposal.sectorName + ": jaunajai sēšanai pielāgots vēl neizpildīts automātisks darbs (" + type + "); vajadzīga saskaņošana.",
-        en: proposal.sectorName + ": pending automatic work (" + type + ") is adjusted to the new sowing date; confirmation is required." } });
+    if (before !== after) changes.push({ planRowId: proposal.planRowId, field: "workDates", workType: type, before, after,
+      requiresApproval: !context.requestedIds.has(proposal.planRowId),
+      reason: { lv: proposal.sectorName + ": jaunajam sēšanas un Planting ciklam pielāgots vēl neizpildīts automātisks darbs (" + type + ").",
+        en: proposal.sectorName + ": pending automatic work (" + type + ") follows the new sowing and Planting cycle." } });
   }
   for (const change of changes.filter((entry) => entry.requiresApproval)) notices.push(change.reason);
   const score = {
@@ -813,7 +824,7 @@ function completePlan(context: Context, rows: SowingPlanRow[], state: State): Jo
 }
 
 function workFor(context: Context, rows: SowingPlanRow[], choices: Choice[]): WorkItem[] {
-  const seedLinked: WorkItem["type"][] = ["sowing", "removeFilm", "addAgrofilm", "removeAgrofilm", "animals"];
+  const seedLinked: WorkItem["type"][] = ["sowing", "removeFilm", "addAgrofilm", "removeAgrofilm", "animals", "rings", "harvest", "sprayTables"];
   let work = context.baselineWork.map((item) => ({ ...item }));
   for (const row of rows) {
     if (row.sowingDate === context.rows.find((entry) => entry.id === row.id)!.sowingDate) continue;
@@ -846,7 +857,7 @@ function changesFor(context: Context, proposals: JointHusProposal[], reservation
       if (before !== after) {
         if (context.request.recalculateFuturePlacements && !context.requestedIds.has(original.id)) {
           requiresApproval = true;
-          const labels = { sowingDate: ["sēšana", "sowing"], thinningDate: ["retināšana", "thinning"], wateringZone: ["augšanas rinda", "growing row"], growingTables: ["augšanas galdi", "growing tables"], workDates: ["darbs", "work"] };
+          const labels = { sowingDate: ["sēšana", "sowing"], plantingDate: ["Planting", "Planting"], thinningDate: ["retināšana", "thinning"], wateringZone: ["augšanas rinda", "growing row"], growingTables: ["augšanas galdi", "growing tables"], workDates: ["darbs", "work"] };
           reason = { lv: `${original.sectorName}: ${labels[field][0]} ${before ?? "nav norādīts"} → ${after}.`,
             en: `${original.sectorName}: ${labels[field][1]} ${before ?? "unspecified"} → ${after}.` };
         }
@@ -854,10 +865,14 @@ function changesFor(context: Context, proposals: JointHusProposal[], reservation
       }
     };
     add("sowingDate", original.sowingDate, proposal.sowingDate, context.requestedIds.has(original.id) ? {
-      lv: "Lietotāja pieprasītais sēšanas scenārijs; Planting paliek " + original.harvestDate + ".",
-      en: "User-requested sowing scenario; Planting remains " + original.harvestDate + ".",
-    } : { lv: original.sectorName + ": sēšanu piedāvāts pārcelt uz " + proposal.sowingDate + " tikai kā pēdējo kompromisu; nepieciešams lietotāja apstiprinājums. Planting nemainās.",
-      en: original.sectorName + ": sowing on " + proposal.sowingDate + " is a last-resort compromise requiring user approval. Planting is unchanged." }, !context.requestedIds.has(original.id));
+      lv: "Lietotāja pieprasītais sēšanas scenārijs; " + original.cycleLength + " dienu cikla Planting: " + proposal.plantingDate + ".",
+      en: "User-requested sowing scenario; Planting for the " + original.cycleLength + "-day cycle: " + proposal.plantingDate + ".",
+    } : { lv: original.sectorName + ": sēšana " + proposal.sowingDate + " ir pēdējais kompromiss ar apstiprinājumu; saglabājot ciklu, Planting: " + proposal.plantingDate + ".",
+      en: original.sectorName + ": sowing on " + proposal.sowingDate + " is a last-resort compromise requiring user approval; preserving the cycle gives Planting on " + proposal.plantingDate + "." }, !context.requestedIds.has(original.id));
+    add("plantingDate", original.harvestDate, proposal.plantingDate, {
+      lv: original.sectorName + ": Planting " + original.harvestDate + " → " + proposal.plantingDate + ", saglabājot " + original.cycleLength + " dienu ciklu.",
+      en: original.sectorName + ": Planting " + original.harvestDate + " → " + proposal.plantingDate + ", preserving the " + original.cycleLength + "-day cycle.",
+    }, !context.requestedIds.has(original.id));
     const oldThin = context.baselineThin.get(original.id)!;
     const freedFor = context.rows.filter((row) => row.id !== original.id && row.sowingDate > proposal.thinningDate && row.sowingDate <= oldThin).map((row) => row.sectorName);
     const handoff = reservations.filter((entry) => entry.planRowId !== original.id && entry.endDate === proposal.thinningDate &&
@@ -972,10 +987,12 @@ function validWorkWindows(context: Context, rows: SowingPlanRow[], report = true
   }
   return true;
 }
-function applySowingChanges(rows: SowingPlanRow[], changes: JointSimulationRequest["sowingChanges"]): SowingPlanRow[] {
+/** Pure scenario transformation; callers validate that the changed HUS is movable. */
+export function applySimulationSowingChanges(rows: SowingPlanRow[], changes: JointSimulationRequest["sowingChanges"]): SowingPlanRow[] {
   return rows.map((row) => {
     const change = changes.find((entry) => entry.planRowId === row.id);
-    return change ? { ...row, sowingDate: change.sowingDate } : row;
+    return change && change.sowingDate !== row.sowingDate
+      ? { ...row, sowingDate: change.sowingDate, harvestDate: calculateMoveOutDate(change.sowingDate, row.cycleLength) } : row;
   });
 }
 function compareVectors(a: number[], b: number[]): number {

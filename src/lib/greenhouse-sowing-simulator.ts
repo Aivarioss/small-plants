@@ -1,11 +1,11 @@
 import { type GreenhouseSimulationAlternative, type SimulationNotice, type SowingDateSimulationResult } from "./greenhouse-simulation";
-import { simulateJointSowingPlan, type JointPlanChange, type JointSimulationPlan, type JointSimulationResult, type JointHusProposal, type JointSimulationRequest } from "./joint-greenhouse-simulation";
+import { applySimulationSowingChanges, simulateJointSowingPlan, type JointPlanChange, type JointSimulationPlan, type JointSimulationResult, type JointHusProposal, type JointSimulationRequest } from "./joint-greenhouse-simulation";
 import { generateWorkItemsForRows } from "./planning";
 import { printWorkTitle } from "./localization";
 import type { PlannerConfig, SowingPlanRow } from "./types";
 
 /** Presentation adapter over the house allocation and existing joint engine.
- * It chooses one preview and never persists it. Planting remains fixed. */
+ * It chooses one preview and never persists it. Sowing changes preserve cycles. */
 export function simulateGreenhouseSowing(
   rows: SowingPlanRow[], config: PlannerConfig, targetId: string, sowingDate: string, asOfDate: string,
 ): SowingDateSimulationResult {
@@ -13,12 +13,15 @@ export function simulateGreenhouseSowing(
   if (!original) throw new Error("HUS nav atrasts simulācijai.");
   const joint = previewJoint({ rows, config, asOfDate, sowingChanges: [{ planRowId: targetId, sowingDate }] });
   const failureNotices = conflictNotices(joint);
+  const scenarioRows = joint.conflicts.some((entry) => entry.code === "input" || entry.code === "immutableWork") ? rows.slice()
+    : applySimulationSowingChanges(rows, [{ planRowId: targetId, sowingDate }]);
+  const scenarioTarget = scenarioRows.find((row) => row.id === targetId)!;
   const direct: SowingDateSimulationResult = { targetPlanRowId: targetId, targetSectorName: original.sectorName,
     currentSowingDate: original.sowingDate, newSowingDate: sowingDate,
-    currentMoveOutDate: original.harvestDate, newMoveOutDate: original.harvestDate,
+    currentMoveOutDate: original.harvestDate, newMoveOutDate: scenarioTarget.harvestDate,
     status: joint.status, notices: failureNotices, warnings: failureNotices.map((notice) => notice.lv),
     explanation: failureNotices[0]?.lv ?? "", alternatives: [], changedOtherWork: [], occupancy: [],
-    scenarioRows: rows.map((row) => row.id === targetId ? { ...row, sowingDate } : row), originalRowsUnchanged: joint.originalRowsUnchanged };
+    scenarioRows, originalRowsUnchanged: joint.originalRowsUnchanged };
   const plan = joint.plans[0];
   const target = plan?.proposals.find((entry) => entry.planRowId === targetId);
   const requiredChanges = plan ? describeJointOtherChanges(rows, plan, [targetId]) : [];
@@ -45,11 +48,11 @@ export function simulateGreenhouseSowing(
           before: baselineWork.filter((item) => item.planRowId === change.planRowId && item.type === type).map((item) => item.date),
           after: plan.workItems.filter((item) => item.planRowId === change.planRowId && item.type === type).map((item) => item.date) }] as const;
       })).values()];
-    return { ...direct, status, recommendation, alternatives: [recommendation], requiredChanges, changedOtherWork,
+    return { ...direct, status, newMoveOutDate: target.plantingDate, recommendation, alternatives: [recommendation], requiredChanges, changedOtherWork,
       notices, warnings: notices.map((notice) => notice.lv), occupancy: plan.occupancy, originalRowsUnchanged: joint.originalRowsUnchanged,
       scenarioRows: rows.map((row) => {
         const proposal = plan.proposals.find((entry) => entry.planRowId === row.id);
-        return proposal ? { ...row, sowingDate: proposal.sowingDate, adjustments: { ...row.adjustments, thinning: proposal.thinningDate },
+        return proposal ? { ...row, sowingDate: proposal.sowingDate, harvestDate: proposal.plantingDate, adjustments: { ...row.adjustments, thinning: proposal.thinningDate },
           placement: { ...row.placement, primaryRow: proposal.wateringZone, tables: proposal.physicalTables } } : row;
       }) };
   }
@@ -88,7 +91,7 @@ export function simulateTwoHusSowing(rows: SowingPlanRow[], config: PlannerConfi
 
 function describeJointOtherChanges(rows: SowingPlanRow[], plan: JointSimulationPlan, requestedIds: string[]): SimulationNotice[] {
   const labels: Record<JointPlanChange["field"], SimulationNotice> = {
-    sowingDate: { lv: "sēšana", en: "sowing" }, thinningDate: { lv: "retināšana", en: "thinning" },
+    sowingDate: { lv: "sēšana", en: "sowing" }, plantingDate: { lv: "Planting", en: "Planting" }, thinningDate: { lv: "retināšana", en: "thinning" },
     wateringZone: { lv: "augšanas rinda", en: "growing row" }, growingTables: { lv: "augšanas galdi", en: "growing tables" }, workDates: { lv: "darbs", en: "work" },
   };
   return plan.changes.filter((change) => !requestedIds.includes(change.planRowId)).map((change) => {

@@ -33,7 +33,7 @@ describe("house allocation before joint search", () => {
     expect(result.proposals.map((p) => [p.thinningDate, p.wateringZone, p.physicalTables])).toEqual([
       ["2026-10-26", "C", 24], ["2026-10-29", "B", 26],
     ]);
-    expect(result.proposals.map((p) => p.plantingDate)).toEqual(["2026-11-11", "2026-11-13"]);
+    expect(result.proposals.map((p) => p.plantingDate)).toEqual(["2026-11-08", "2026-11-11"]);
     expect(result.plan!.occupancy.find((d) => d.date === "2026-10-20")!.seeding.usedTables).toBe(6);
     expect(result.plan!.occupancy.find((d) => d.date === "2026-11-05")!.growing.usedTables).toBe(52);
     expect(result.proposals[0].physicalTables).toBe(24); // C still reserves 26.

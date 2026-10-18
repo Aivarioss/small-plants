@@ -18,6 +18,7 @@ import {
   type PlacementDensityClass,
 } from "./greenhouse-placement";
 import { evaluateThinningWorkload, scheduleProductionWork } from "./scheduler";
+import { calculateMoveOutDate } from "./hus-templates";
 import type { GreenhouseRowId, HusEventEntry, PlannerConfig, SowingPlanRow, WorkItem, WorkType } from "./types";
 
 export const SEEDING_TABLE_CAPACITY = 13;
@@ -291,7 +292,7 @@ export function simulateSowingDateChange(
   config: PlannerConfig,
   targetPlanRowId: string,
   newSowingDate: string,
-  options: { movePlantingWithSowing?: boolean; allowSameDaySeedingRelease?: boolean } = {},
+  options: { allowSameDaySeedingRelease?: boolean } = {},
 ): SowingDateSimulationResult {
   const originalRowsSnapshot = JSON.stringify(rows);
   const target = rows.find((row) => row.id === targetPlanRowId);
@@ -307,7 +308,7 @@ export function simulateSowingDateChange(
 
     return clearOptimizerWorkAdjustments({
       ...row,
-      harvestDate: options.movePlantingWithSowing ? addDays(newSowingDate, row.cycleLength - 1) : row.harvestDate,
+      harvestDate: newSowingDate === row.sowingDate ? row.harvestDate : calculateMoveOutDate(newSowingDate, row.cycleLength),
       sowingDate: newSowingDate,
     });
   });

@@ -48,7 +48,7 @@ describe("greenhouse occupancy and sowing-date simulation", () => {
 
     expect(result.currentSowingDate).toBe("2026-10-13");
     expect(result.newSowingDate).toBe("2026-10-06");
-    expect(result.newMoveOutDate).toBe("2026-11-04");
+    expect(result.newMoveOutDate).toBe("2026-10-28");
     expect(JSON.stringify(rows)).toBe(before);
     expect(result.originalRowsUnchanged).toBe(true);
   });

@@ -21,7 +21,7 @@ describe("joint simulation presentation", () => {
     expect(summary).toContain("HUS 8B");
     expect(summary).toContain("27.10.2026");
     expect(summary).toContain("29.10.2026");
-    expect(summary).toContain("11.11.2026");
+    expect(summary).toContain("09.11.2026");
     expect(summary).toContain("13.11.2026");
     expect(html).not.toContain("<details open");
     expect(summary).not.toContain(language === "lv" ? "darbu slodze" : "workload");
@@ -34,6 +34,14 @@ describe("joint simulation presentation", () => {
     expect(html).not.toContain("Abus HUS var sēt");
     expect(html).not.toContain("Abi HUS pārbaudīti kopā");
     expect(html).not.toContain("<article");
+  });
+
+  it.each(["lv", "en"] as const)("shows the single-HUS Planting change without opening details (%s)", (language) => {
+    const result = simulateGreenhouseSowing(rows, plannerConfig, rows[0].id, "2026-10-18", "2026-10-17");
+    const html = renderToStaticMarkup(<SimulationResultView language={language} result={result} />);
+    const summary = html.split("<details")[0];
+    expect(summary).toContain("Planting: 11.11.2026 → 09.11.2026");
+    expect(html).not.toContain("<details open");
   });
 
   it("retains the single-HUS entry point and disables joint mode with fewer than two HUS", () => {

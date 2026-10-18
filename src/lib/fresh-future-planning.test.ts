@@ -30,7 +30,7 @@ describe("fresh planning of the entire future greenhouse", () => {
     expect(result.status).toBe("can");
     expect(result.plans).toHaveLength(1);
     expect(result.plans[0].proposals.map((p) => [p.planRowId, p.thinningDate, p.cycleDay, p.wateringZone, p.plantingDate])).toEqual([
-      ["HUS 8A", "2026-10-27", 10, "C", "2026-11-11"], ["HUS 8B", "2026-10-29", 10, "B", "2026-11-13"],
+      ["HUS 8A", "2026-10-27", 10, "C", "2026-11-09"], ["HUS 8B", "2026-10-29", 10, "B", "2026-11-13"],
     ]);
     // Previously valid automatic choices are neither locks nor tie-breakers.
     rows[0].placement!.primaryRow = "D";
@@ -49,7 +49,8 @@ describe("fresh planning of the entire future greenhouse", () => {
     expect(result.recommendation).toMatchObject({ wateringZone: "C", cycleDay: 10 });
     expect(result.requiredChanges?.some((notice) => notice.lv.includes("HUS 8B: augšanas rinda C → B"))).toBe(true);
     expect(result.requiredChanges?.some((notice) => notice.lv.includes("HUS 3: augšanas rinda C → D"))).toBe(true);
-    expect(result.scenarioRows.map((row) => row.harvestDate)).toEqual(rows.map((row) => row.harvestDate));
+    expect(result.scenarioRows[0].harvestDate).toBe("2026-11-09");
+    expect(result.scenarioRows.slice(1).map((row) => row.harvestDate)).toEqual(rows.slice(1).map((row) => row.harvestDate));
   });
 
   it("removes overlapping November automatic reservations, counts each HUS once, and releases on Planting day", () => {
@@ -70,7 +71,7 @@ describe("fresh planning of the entire future greenhouse", () => {
     }
     expect(plan.proposals.find((p) => p.planRowId === "HUS 3")?.wateringZone).toBe("D");
     expect(plan.proposals.find((p) => p.planRowId === "HUS 2N")?.wateringZone).toBe("C");
-    expect(plan.notices.some((n) => n.lv.includes("vispirms Planting (HUS 8A)"))).toBe(true);
+    expect(plan.occupancy.find((day) => day.date === "2026-11-09")!.growing.rows.some((row) => row.planRowId === "HUS 8A")).toBe(false);
     expect(plan.occupancy.every((day) => !day.growing.overCapacity && !day.seeding.overCapacity)).toBe(true);
     expect(rows).toEqual(before);
     expect(buildGreenhouseOccupancyDay(rows, plannerConfig, "2026-11-12")).toEqual(house);
@@ -129,11 +130,11 @@ describe("fresh planning of the entire future greenhouse", () => {
 
   it("uses day 11 only after proving four regular-window HUS cannot fit three long rows", () => {
     const rows = november();
-    rows[6].sowingDate = "2026-11-01";
+    rows[6].sowingDate = "2026-10-30";
     const result = run(rows);
     expect(result.status).toBe("conditional");
     expect(result.plans[0].score.emergencyDays).toBe(1);
-    expect(result.plans[0].proposals.find((p) => p.planRowId === "HUS 2N")).toMatchObject({ cycleDay: 11, thinningDate: "2026-11-11", wateringZone: "C" });
+    expect(result.plans[0].proposals.find((p) => p.planRowId === "HUS 2N")).toMatchObject({ cycleDay: 11, thinningDate: "2026-11-09", wateringZone: "C" });
     expect(result.search.stages).toEqual(["normal", "compromise", "emergency"]);
   });
 

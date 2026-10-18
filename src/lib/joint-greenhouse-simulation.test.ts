@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { plannerConfig } from "./demo-data";
+import { calculateMoveOutDate } from "./hus-templates";
 import { addDays, generateWorkItemsForRows } from "./planning";
 import { buildGreenhouseOccupancyDay, greenhouseSimulationModel } from "./greenhouse-simulation";
 import { simulateJointSowingPlan, type JointSimulationRequest, type JointSimulationPlan } from "./joint-greenhouse-simulation";
@@ -31,7 +32,7 @@ function expectPhysicalPlan(plan: JointSimulationPlan) {
 }
 
 describe("joint HUS simulation", () => {
-  it("plans the synthetic October scenario together while preserving all Planting dates", () => {
+  it("plans the synthetic October scenario together while preserving growing cycles", () => {
     // Synthetic, not a production export. HUS 9 Planting = Nov 4, its D26
     // reservation starts Oct 21 and is locked. New HUS counts are 3656/3656/900.
     // HUS 6/7 actual placements follow the user's C24 and B26+A13 example.
@@ -52,7 +53,7 @@ describe("joint HUS simulation", () => {
     for (const plan of result.plans) {
       expectPhysicalPlan(plan);
       expect(plan.proposals.map((entry) => entry.planRowId).sort()).toEqual([a.id, b.id, c.id].sort());
-      for (const proposal of plan.proposals) expect(proposal.plantingDate).toBe(rows.find((row) => row.id === proposal.planRowId)!.harvestDate);
+      for (const proposal of plan.proposals) expect(proposal.plantingDate).toBe(calculateMoveOutDate(proposal.sowingDate, rows.find((row) => row.id === proposal.planRowId)!.cycleLength));
       expect(plan.workItems.find((item) => item.planRowId === nine.id && item.type === "thinning")?.date).toBe("2026-10-21");
     }
     expect(rows).toEqual(before);
@@ -155,7 +156,10 @@ describe("joint HUS simulation", () => {
     expect(change).toMatchObject({ before: "2026-10-25", after: "2026-10-28", requiresApproval: true });
     expect(change?.reason.en).toContain("user approval");
     expect(result.plans[0].status).toBe("conditional");
-    expect(result.plans[0].proposals.find((proposal) => proposal.planRowId === other.id)?.plantingDate).toBe(other.harvestDate);
+    expect(result.plans[0].proposals.find((proposal) => proposal.planRowId === other.id)?.plantingDate).toBe("2026-11-19");
+    expect(result.plans[0].changes).toContainEqual(expect.objectContaining({ planRowId: other.id, field: "plantingDate", before: other.harvestDate, after: "2026-11-19", requiresApproval: true }));
+    expect(result.plans[0].occupancy.find((day) => day.date === "2026-11-18")!.growing.rows.some((row) => row.planRowId === other.id)).toBe(true);
+    expect(result.plans[0].occupancy.find((day) => day.date === "2026-11-19")!.growing.rows.some((row) => row.planRowId === other.id)).toBe(false);
     expect(result.plans[0].changes.some((entry) => entry.field === "workDates")).toBe(true);
     expect(other.sowingDate).toBe("2026-10-25");
     expectPhysicalPlan(result.plans[0]);
@@ -238,7 +242,7 @@ describe("joint HUS simulation", () => {
     const other = { ...hus("Related", "2026-11-02"), placement: { primaryRow: "C" as const, tables: 24, manual: true } };
     const future = { ...hus("Later", "2026-11-12"), placement: { primaryRow: "C" as const, tables: 26, manual: true },
       adjustments: { thinning: "2026-11-19" } };
-    const result = run([target, other, future], { lockedPlanRowIds: [future.id] });
+    const result = run([target, other, future], { lockedPlanRowIds: [future.id], allowOtherSowingChanges: false });
     expect(result.plans[0]).toBeDefined();
     for (const plan of result.plans) {
       expect(plan.proposals.find((entry) => entry.planRowId === other.id)?.wateringZone).not.toBe("C");

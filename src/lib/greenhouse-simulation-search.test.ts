@@ -128,12 +128,12 @@ describe("solution-seeking HUS simulation", () => {
     expect(result.alternatives.every((option) => option.physicalTables === option.normalTables)).toBe(true);
   });
 
-  it("does not change the existing occupancy calculation, including unassigned seeding data", () => {
+  it("does not mutate house occupancy and counts reservations without assigned A numbers", () => {
     const rows = [target, blocker("C", "C")];
     const before = buildGreenhouseOccupancyDay(rows, plannerConfig, "2026-10-27");
     simulate(rows);
     expect(buildGreenhouseOccupancyDay(rows, plannerConfig, "2026-10-27")).toEqual(before);
-    expect(before.seeding.incomplete).toBe(true);
+    expect(before.seeding).toMatchObject({ incomplete: false, usedTables: 3, freeTables: 10 });
     expect(before.growing.capacity).toBe(91);
     expect(before.seeding.capacity).toBe(13);
   });
@@ -141,7 +141,7 @@ describe("solution-seeking HUS simulation", () => {
   it("preserves the actual C24 + B26/A13 capacity and recorded seeding tables", () => {
     const actual = (id: string, sowingDate: string, move: string, end: string, destinationLocation: string): SowingPlanRow => ({
       ...target, id, sectorName: id, sowingDate, harvestDate: end,
-      husEvents: [{ id: id + "-moving", eventType: "move", eventDate: move, destinationLocation }],
+      husEvents: [{ id: id + "-moving", eventType: "move", eventDate: move, location: "A1–A3", destinationLocation }],
     });
     const hus6 = actual("HUS 6", "2026-09-29", "2026-10-07", "2026-10-21", "C1–C24");
     const hus7 = actual("HUS 7", "2026-10-06", "2026-10-14", "2026-10-28", "B1–B26\nA14–A26");

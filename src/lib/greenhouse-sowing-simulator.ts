@@ -4,6 +4,12 @@ import { generateWorkItemsForRows } from "./planning";
 import { printWorkTitle } from "./localization";
 import type { PlannerConfig, SowingPlanRow } from "./types";
 
+/** Choice list only. The engine still needs all rows as occupancy constraints. */
+export function selectableSowingSimulationRows(rows: SowingPlanRow[]): SowingPlanRow[] {
+  return rows.filter((row) => !row.archivedAt && row.status !== "done" &&
+    !row.husEvents?.some((event) => event.eventType === "move" || event.eventType === "thinning"));
+}
+
 /** Presentation adapter over the house allocation and existing joint engine.
  * It chooses one preview and never persists it. Sowing changes preserve cycles. */
 export function simulateGreenhouseSowing(

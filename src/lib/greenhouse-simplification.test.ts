@@ -47,6 +47,7 @@ describe("actual seeding table release", () => {
     expect(snapshot(row, "2026-10-09").seeding.unknownRows).toEqual([]);
     expect(model.seedingOccupancy([row], model.growingPlacements([row]), "2026-10-09").usedTables).toBe(0);
     const partial = { ...row, husEvents: [moving("A1")] };
+    expect(snapshot(partial, "2026-10-09").seeding).toMatchObject({ usedTables: 2, freeTables: 11, incomplete: true });
     expect(model.seedingOccupancy([partial], model.growingPlacements([partial]), "2026-10-09").usedTables).toBe(2);
   });
 

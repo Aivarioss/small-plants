@@ -261,12 +261,12 @@ export function buildGreenhouseOccupancyDay(
   const datedRows = rows.map((row) => ({ ...row, husEvents: row.husEvents?.filter((event) => event.eventDate <= date) }));
   const finalRows = finalScheduledRows(datedRows, config);
   const placements = growingPlacements(finalRows);
-  const seeding = seedingOccupancy(finalRows, placements, date);
+  const seeding = simulationSeedingOccupancy(finalRows, placements, date);
   const growing = growingOccupancy(placements, date);
   const warnings = [
     ...seeding.unknownRows.map((row) =>
-      row.reason === "missingSowingTables"
-        ? `${row.sectorName}: nav norādīti sēšanas galdi.`
+      (row.reason === "unknownCount" || row.reason === "missingSowingTables")
+        ? `${row.sectorName}: nav zināms nepieciešamais sēšanas galdu skaits.`
         : `${row.sectorName}: nav droši zināms sēšanas galdu atbrīvošanas datums.`
     ),
     ...seeding.conflicts.map((conflict) => `${conflict.table}: sēšanas galda konflikts (${conflict.sectorNames.join(", ")}).`),
@@ -527,53 +527,6 @@ function growingOccupancyRowForDate(placement: GrowingPlacement, date: string): 
     warnings: placement.warnings,
   };
 }
-
-function seedingOccupancy(rows: SowingPlanRow[], placements: GrowingPlacement[], date: string): GreenhouseSeedingOccupancy {
-  const active = simulationSeedingLifecycles(rows, placements, true).filter((entry) => entry.start <= date && date <= entry.end);
-  const sowingRows = groupedSeedingRows(active, rows).filter((row) => row.tables.length > 0);
-  const unknownRows = [...new Map(active.flatMap((entry): GreenhouseSeedingOccupancy["unknownRows"] => {
-    const reason = entry.count === undefined ? "missingSowingTables" : !entry.releaseKnown ? "unknownRelease" : undefined;
-    return reason ? [{ planRowId: entry.planRowId, sectorName: entry.sectorName, reason }] : [];
-  }).map((entry) => [entry.planRowId, entry])).values()];
-  const tableOccupancy = tableOccupancyFor(sowingRows);
-  const conflicts = tableOccupancy.filter((table) => table.planRowIds.length > 1);
-  const occupiedTableIds = tableOccupancy.map((table) => table.table);
-  const usedTables = occupiedTableIds.length;
-  const freeTableIds = Array.from({ length: SEEDING_TABLE_CAPACITY }, (_, index) => `A${index + 1}`).filter(
-    (table) => !occupiedTableIds.includes(table),
-  );
-
-  return {
-    capacity: SEEDING_TABLE_CAPACITY,
-    conflicts,
-    freeTableIds,
-    freeTables: Math.max(0, SEEDING_TABLE_CAPACITY - usedTables),
-    incomplete: unknownRows.length > 0,
-    overCapacity: usedTables > SEEDING_TABLE_CAPACITY || conflicts.length > 0,
-    rows: sowingRows,
-    unknownRows,
-    occupiedTableIds,
-    tableOccupancy,
-    usedTables,
-  };
-}
-
-function tableOccupancyFor(rows: GreenhouseSeedingOccupancy["rows"]): GreenhouseSeedingOccupancy["tableOccupancy"] {
-  const byTable = new Map<string, { planRowIds: string[]; sectorNames: string[]; table: string }>();
-
-  rows.forEach((row) => {
-    row.tables.forEach((table) => {
-      const current = byTable.get(table) ?? { planRowIds: [], sectorNames: [], table };
-      current.planRowIds.push(row.planRowId);
-      current.sectorNames.push(row.sectorName);
-      byTable.set(table, current);
-    });
-  });
-
-  return Array.from(byTable.values()).sort((left, right) => Number(left.table.slice(1)) - Number(right.table.slice(1)));
-}
-
-
 
 function assignPhysicalGrowingPlacements(rawPlacements: RawGrowingPlacement[]): GrowingPlacement[] {
   const reservations: GrowingPlacement[] = [];
@@ -968,7 +921,7 @@ type SimulationSeedingLifecycle = {
   plannedRelease?: boolean;
 };
 
-function simulationSeedingLifecycles(rows: SowingPlanRow[], reservations: GrowingPlacement[], recordedTablesOnly = false, asOfDate = "9999-12-31"): SimulationSeedingLifecycle[] {
+function simulationSeedingLifecycles(rows: SowingPlanRow[], reservations: GrowingPlacement[], asOfDate = "9999-12-31"): SimulationSeedingLifecycle[] {
   return rows.filter((row) => !row.archivedAt).flatMap((row) => {
     const placement = reservations.find((entry) => entry.planRowId === row.id);
     const plants = getTotalSow(row);
@@ -976,7 +929,7 @@ function simulationSeedingLifecycles(rows: SowingPlanRow[], reservations: Growin
     const plan = validCount ? calculateSowingPlan(plants) : undefined;
     const tables = parseSowingTableSelection(row.sowingTables);
     const hasActual = row.husEvents?.some((event) => event.eventDate <= asOfDate && (event.eventType === "move" || event.eventType === "thinning"));
-    const count = recordedTablesOnly ? tables.length || undefined : plan ? Math.max(tables.length, plan.fullTables + Number(plan.hasPartialTable)) : hasActual && tables.length ? tables.length : undefined;
+    const count = plan ? Math.max(tables.length, plan.fullTables + Number(plan.hasPartialTable)) : hasActual && tables.length ? tables.length : undefined;
     const last = addDays(row.harvestDate, -1);
     const plannedEnd = placement?.plannedStartDate ?? placement?.startDate;
     const events = (row.husEvents ?? []).filter((event) => event.eventType === "move" || event.eventType === "thinning")
@@ -1087,7 +1040,7 @@ function bitCount(bits: number): number {
 }
 
 function simulationSeedingOccupancy(rows: SowingPlanRow[], placements: GrowingPlacement[], date: string, allowSameDayPlannedRelease = false): GreenhouseSeedingOccupancy {
-  const active = simulationSeedingLifecycles(rows, placements, false, date).filter((entry) => entry.start <= date &&
+  const active = simulationSeedingLifecycles(rows, placements, date).filter((entry) => entry.start <= date &&
     date <= entry.end && !(allowSameDayPlannedRelease && entry.plannedRelease && date === entry.end));
   const tableOccupancy = Array.from({ length: SEEDING_TABLE_CAPACITY }, (_, index) => "A" + (index + 1)).map((table) => {
     const owners = active.filter((entry) => entry.tables.includes(table));

@@ -72,6 +72,7 @@ import { compressHusPhotoForUpload } from "@/lib/image-compression";
 import { HusPhotoArchive, PhotoArchiveMetadata } from "./HusPhotoArchive";
 import { SowingSimulationPanel } from "./SowingSimulationPanel";
 import { HusPlacementDetails } from "./HusPlacementDetails";
+import { SeedingCapacityView } from "./SeedingCapacityView";
 import { withHouseThinningPlacement } from "@/lib/greenhouse-work-placement";
 import { buildPhotoArchive, husPhotoFileUrl, photoArchiveHusTarget, type PhotoArchiveEntry, type HusMediaUploadInput, type HusPhotoDetails } from "@/lib/hus-photo-archive";
 import { buildGreenhouseOccupancyDay, growingTableSelectionRows } from "@/lib/greenhouse-simulation";
@@ -3352,42 +3353,14 @@ function GreenhousePanel({
       </div>
 
       <div className="greenhouse-stats">
-        <strong>{language === "lv" ? "Sēšanas galdi" : "Seeding tables"}: {snapshot.seeding.usedTables}/13</strong>
+        <strong>{language === "lv" ? "Sēšanas galdi" : "Seeding tables"}: {snapshot.seeding.unknownRows.some((row) => row.reason === "unknownCount" || row.reason === "missingSowingTables") ? language === "lv" ? "vismaz " : "at least " : ""}{snapshot.seeding.usedTables}/13</strong>
         <strong>{language === "lv" ? "Augšanas galdi rezervēti" : "Growing tables reserved"}: {snapshot.growing.usedTables}/91</strong>
         <strong>{language === "lv" ? "Fiziski aizņemti" : "Physically occupied"}: {snapshot.growing.physicalUsedTables}/91</strong>
         <strong>{language === "lv" ? "Brīvi augšanai" : "Free for growing"}: {snapshot.growing.freeTables}</strong>
       </div>
 
       <div className="greenhouse-grid">
-        <article className="greenhouse-row">
-          <div>
-            <strong>A1-A13</strong>
-            <span>{snapshot.seeding.freeTables}/13 {language === "lv" ? "brīvi" : "free"}</span>
-          </div>
-          <p>
-            {language === "lv" ? "Aizņemti" : "Occupied"}:{" "}
-            {snapshot.seeding.occupiedTableIds.length > 0 ? snapshot.seeding.occupiedTableIds.join(", ") : "—"}
-          </p>
-          <p>
-            {language === "lv" ? "Brīvi" : "Free"}:{" "}
-            {snapshot.seeding.freeTableIds.length > 0 ? snapshot.seeding.freeTableIds.join(", ") : "—"}
-          </p>
-          {snapshot.seeding.rows.length > 0 ? (
-            snapshot.seeding.rows.map((row) => (
-              <p key={row.planRowId}>
-                {row.sectorName} — {row.tables.join(", ")} · {row.tableCount || "?"} {t("tables", language).toLowerCase()}
-              </p>
-            ))
-          ) : (
-            <p>{language === "lv" ? "Nav sēšanas šajā datumā" : "No seeding on this date"}</p>
-          )}
-          {snapshot.seeding.unknownRows.length > 0 ? (
-            <p className="capacity-note">
-              {language === "lv" ? "Nepilnīgi dati" : "Incomplete data"}:{" "}
-              {snapshot.seeding.unknownRows.map((row) => row.sectorName).join(", ")}
-            </p>
-          ) : null}
-        </article>
+        <SeedingCapacityView occupancy={snapshot.seeding} language={language} />
         {snapshot.growing.rows.map((row) => (
           <article className="greenhouse-row" key={row.planRowId}>
             <div>

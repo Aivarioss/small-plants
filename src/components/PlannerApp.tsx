@@ -108,6 +108,9 @@ const navItems: Array<{ id: MainView; labelKey: "plan" | "calendar" | "allHus" |
   { id: "hus", labelKey: "allHus" },
 ];
 
+// Photo recognition is deferred; document viewing/upload and manual entry stay available.
+const planPhotoImportEnabled = false;
+
 const viewModes: Array<{ id: ViewMode; label: Record<AppLanguage, string> }> = [
   { id: "month", label: { lv: "Mēnesis", en: "Month" } },
   { id: "tenDays", label: { lv: "10 dienas", en: "10 days" } },
@@ -1200,21 +1203,23 @@ function SowingPlanPanel({
           <h2>{t("plan", language)}</h2>
         </div>
         <div className="button-row">
-          <label className="file-action">
-            {t("importPlan", language)}
-            <input
-              accept="image/png,image/jpeg"
-              capture="environment"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) {
-                  onImportFile(file);
-                  event.target.value = "";
-                }
-              }}
-              type="file"
-            />
-          </label>
+          {planPhotoImportEnabled ? (
+            <label className="file-action">
+              {t("importPlan", language)}
+              <input
+                accept="image/png,image/jpeg"
+                capture="environment"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) {
+                    onImportFile(file);
+                    event.target.value = "";
+                  }
+                }}
+                type="file"
+              />
+            </label>
+          ) : null}
           {hasDemoRows ? (
             <button className="secondary-action" type="button" onClick={onDeleteDemo}>
               {t("deleteDemoData", language)}

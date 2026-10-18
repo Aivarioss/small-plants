@@ -211,52 +211,9 @@ button {
   max-width: 440px;
 }
 
-.calendar-controls button,
-.calendar-actions summary {
+.calendar-controls button {
   border-color: var(--border);
   background: var(--surface);
-}
-
-.calendar-actions {
-  position: relative;
-}
-
-.calendar-actions summary {
-  display: grid;
-  min-height: 42px;
-  cursor: pointer;
-  list-style: none;
-  place-items: center;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--green-dark);
-  font-weight: 800;
-  white-space: nowrap;
-}
-
-.calendar-actions summary::-webkit-details-marker {
-  display: none;
-}
-
-.calendar-actions div {
-  position: absolute;
-  z-index: 5;
-  right: 0;
-  display: grid;
-  min-width: min(260px, 82vw);
-  gap: 6px;
-  margin-top: 6px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #ffffff;
-  box-shadow: var(--shadow);
-  padding: 8px;
-}
-
-.calendar-actions div button {
-  width: 100%;
-  justify-content: start;
-  text-align: left;
 }
 
 .calendar-view-toggle {
@@ -302,10 +259,6 @@ button {
 .calendar-day.is-overloaded {
   border-color: var(--red);
   background: var(--red-soft);
-}
-
-.calendar-day.has-capacity-warning {
-  box-shadow: inset 0 0 0 2px #9a6500;
 }
 
 .calendar-day__number {
@@ -1907,7 +1860,6 @@ textarea {
   .main-nav button,
   .segmented button,
   .calendar-controls button,
-  .calendar-actions summary,
   .primary-action {
     min-height: 40px;
     padding: 0 8px;
@@ -1919,15 +1871,8 @@ textarea {
     max-width: none;
   }
 
-  .calendar-actions {
+  .calendar-print-button {
     grid-column: 1 / -1;
-  }
-
-  .calendar-actions div {
-    left: 0;
-    right: auto;
-    width: min(100%, 300px);
-    min-width: 0;
   }
 
   .calendar-view-toggle {
@@ -2219,4 +2164,23 @@ textarea {
   .month-print-table td {
     padding: 1mm 1.2mm;
   }
+}
+
+.calendar-history-note,
+.calendar-history-label {
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.work-chip.calendar-history-item,
+.agenda-work.calendar-history-item {
+  border-left-style: dashed;
+  color: #52645b;
+  background: #f3f5f2;
+}
+
+.work-card--history {
+  border-left-style: dashed;
+  background: #f8faf7;
 }

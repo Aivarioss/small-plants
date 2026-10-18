@@ -7,13 +7,11 @@ import {
   addDays,
   applyHusEventDelete,
   applyHusEventSave,
-  balanceWorkload,
   calculateAvailability,
   calculatePlantBalance,
   countMainWork,
   calculateSowingPlan,
   calculateThinningPlan,
-  clearOptimizerWorkAdjustments,
   compareSowingRowsByDate,
   dateLabel,
   eachDate,
@@ -73,6 +71,7 @@ import { HusPhotoArchive, PhotoArchiveMetadata } from "./HusPhotoArchive";
 import { SowingSimulationPanel } from "./SowingSimulationPanel";
 import { HusPlacementDetails } from "./HusPlacementDetails";
 import { SeedingCapacityView } from "./SeedingCapacityView";
+import { buildCalendarHistory, type CalendarWorkItem } from "@/lib/calendar-history";
 import { withHouseThinningPlacement } from "@/lib/greenhouse-work-placement";
 import { buildPhotoArchive, husPhotoFileUrl, photoArchiveHusTarget, type PhotoArchiveEntry, type HusMediaUploadInput, type HusPhotoDetails } from "@/lib/hus-photo-archive";
 import { buildGreenhouseOccupancyDay, growingTableSelectionRows } from "@/lib/greenhouse-simulation";
@@ -100,7 +99,6 @@ import type {
   SowingPlanRow,
   ViewMode,
   WorkItem,
-  WorkloadBalanceProposal,
 } from "@/lib/types";
 
 const navItems: Array<{ id: MainView; labelKey: "plan" | "calendar" | "allHus" | "greenhouse" }> = [
@@ -179,7 +177,6 @@ export function PlannerApp() {
   const [planDocumentMessage, setPlanDocumentMessage] = useState("");
   const [planDocumentViewerOpen, setPlanDocumentViewerOpen] = useState(false);
   const [husPhotoViewer, setHusPhotoViewer] = useState<HusPhotoEntry | null>(null);
-  const [balancePreview, setBalancePreview] = useState<WorkloadBalanceProposal[] | null>(null);
   const rowSaveChainsRef = useRef(new Map<string, Promise<SowingPlanRow>>());
 
   useEffect(() => {
@@ -194,7 +191,12 @@ export function PlannerApp() {
   const photoArchiveEntries = useMemo(() => buildPhotoArchive(planRows, archivedRows), [planRows, archivedRows]);
   const selectedRow = planRows.find((row) => row.id === selectedRowId) ?? selectedArchivedRow ?? planRows[0];
   const hasDemoRows = planRows.some((row) => row.source === "demo");
-  const selectedDayItems = workItems
+  const today = localTodayIso();
+  const calendarHistory = useMemo(
+    () => buildCalendarHistory(workItems, planRows, archivedRows, today),
+    [workItems, planRows, archivedRows, today],
+  );
+  const selectedDayItems = calendarHistory.items
     .filter((item) => item.date === selectedDate)
     .sort((a, b) => a.sectorName.localeCompare(b.sectorName, "lv"));
   const calendarDays = getCalendarDays(anchorDate, viewMode);
@@ -485,44 +487,6 @@ export function PlannerApp() {
 
       setRepositoryMessage(error instanceof Error ? error.message : "Neizdevās dzēst Hus Supabase");
       await reloadRows("Dzēšana neizdevās. Supabase dati pārlādēti.");
-    }
-  }
-
-  async function persistRowDiff(previousRows: SowingPlanRow[], nextRows: SowingPlanRow[]) {
-    setRepositoryMessage("Saglabā Supabase");
-    const previousById = new Map(previousRows.map((row) => [row.id, row]));
-    const nextById = new Map(nextRows.map((row) => [row.id, row]));
-
-    try {
-      await Promise.all(
-        nextRows.map(async (row) => {
-          const previous = previousById.get(row.id);
-          if (!previous) {
-            const saved = await sowingPlanRepository.create(row);
-            setPlanRows((current) => current.map((candidate) => (candidate.id === row.id ? saved : candidate)));
-            return;
-          }
-
-          if (rowsDiffer(previous, row)) {
-            await persistRowUpdate(previous, row);
-          }
-        }),
-      );
-
-      await Promise.all(
-        previousRows
-          .filter((row) => !nextById.has(row.id) && row.source !== "demo")
-          .map((row) => sowingPlanRepository.delete(row)),
-      );
-
-      setRepositoryMessage("Supabase saglabāts");
-    } catch (error) {
-      if (error instanceof SowingPlanApiConflictError) {
-        await reloadRows("Kāda rinda mainīta citur. Dati pārlādēti; pārbaudi jaunāko versiju.");
-        return;
-      }
-
-      setRepositoryMessage(error instanceof Error ? error.message : "Neizdevās saglabāt Supabase");
     }
   }
 
@@ -897,98 +861,6 @@ export function PlannerApp() {
     }
   }
 
-  function previewWorkloadBalance() {
-    setBalancePreview(balanceWorkload(planRows, plannerConfig));
-  }
-
-  function confirmWorkloadBalance() {
-    if (!balancePreview) {
-      return;
-    }
-
-    const nextRows = planRows.map((row) => {
-      const proposals = balancePreview.filter((proposal) => proposal.planRowId === row.id);
-      if (proposals.length === 0) {
-        return row;
-      }
-
-      const adjustments = { ...row.adjustments };
-      proposals.forEach((proposal) => {
-        if (proposal.toDates.length === 0) {
-          return;
-        }
-
-        adjustments[proposal.type] = proposal.toDates.length === 1 ? proposal.toDates[0] : proposal.toDates;
-      });
-
-      return {
-        ...row,
-        adjustments,
-        adjustmentSources: {
-          ...row.adjustmentSources,
-          ...Object.fromEntries(proposals.map((proposal) => [proposal.type, "optimizer"])),
-        },
-        changeHistory: [
-          ...(row.changeHistory ?? []),
-          ...proposals.map((proposal) =>
-            historyEntry(
-              proposal.title,
-              formatDateRange(proposal.fromDates),
-              formatDateRange(proposal.toDates),
-              "Darbi izlīdzināti kalendārā",
-            ),
-          ),
-        ],
-      };
-    });
-
-    setPlanRows(nextRows);
-    void persistRowDiff(planRows, nextRows);
-    setBalancePreview(null);
-  }
-
-  function recalculateAutomaticPlan() {
-    const nextRows = planRows.map((row) => {
-      const next = clearOptimizerWorkAdjustments(row);
-      if (next === row) {
-        return row;
-      }
-
-      return {
-        ...next,
-        changeHistory: [
-          ...(next.changeHistory ?? []),
-          historyEntry(
-            "Darbu plāns pārrēķināts",
-            formatAdjustmentSummary(row.adjustments),
-            formatAdjustmentSummary(next.adjustments),
-            "Notīrīti algoritma iesaldētie darba datumi",
-          ),
-        ],
-      };
-    });
-    const changedRows = nextRows.filter((row, index) => rowsDiffer(planRows[index], row));
-
-    if (changedRows.length === 0) {
-      setRepositoryMessage("Plāns jau tiek rēķināts automātiski");
-      return;
-    }
-
-    const confirmed = window.confirm(
-      `Pārrēķināt darbu plānu no ${planRows.length} esošajām Hus rindām ar jauno scheduler algoritmu?\n\n` +
-        "Tas nedzēsīs Hus/sēšanas datus vai manuāli pārceltos datumus. Tiks notīrīti tikai algoritma iesaldētie datumi.",
-    );
-
-    if (!confirmed) {
-      return;
-    }
-
-    setBalancePreview(null);
-    setPlanRows(nextRows);
-    void persistRowDiff(planRows, nextRows);
-    setRepositoryMessage(`Pārrēķina ${changedRows.length} Hus algoritma iesaldētos darba datumus`);
-  }
-
   return (
     <LanguageContext.Provider value={printLanguage}>
     <main className="app-shell">
@@ -1091,27 +963,16 @@ export function PlannerApp() {
 
       {activeView === "calendar" ? (
         <>
-          <CapacityAlerts
-            items={workItems}
-            onOpen={(date) => {
-              setSelectedDate(date);
-              setActiveView("greenhouse");
-            }}
-          />
           <section className="layout-grid">
             <CalendarPanel
               anchorDate={anchorDate}
-              balancePreview={balancePreview}
               calendarDays={calendarDays}
-              onApplyBalance={confirmWorkloadBalance}
-              onCancelBalance={() => setBalancePreview(null)}
-              onPreviewBalance={previewWorkloadBalance}
-              onRecalculatePlan={recalculateAutomaticPlan}
               onSelectDate={setSelectedDate}
               onSetAnchorDate={setAnchorDate}
               selectedDate={selectedDate}
               viewMode={viewMode}
-              workItems={workItems}
+              workItems={calendarHistory.items}
+              missingHistoryRows={calendarHistory.missingHistoryRows}
               onSetViewMode={setViewMode}
             />
             <DayDetails
@@ -1119,7 +980,7 @@ export function PlannerApp() {
               items={selectedDayItems}
               onMove={moveWork}
               onMoveRange={moveFlexibleWorkRange}
-              rows={planRows}
+              rows={calendarHistory.rows}
               selectedDate={selectedDate}
             />
           </section>
@@ -1127,9 +988,10 @@ export function PlannerApp() {
             <MonthlyPrintPlan
               onStartChange={setAnchorDate}
               printLanguage={printLanguage}
-              rows={planRows}
+              rows={calendarHistory.rows}
               startDate={printPlanStartDate(anchorDate, viewMode)}
-              workItems={workItems}
+              workItems={calendarHistory.items}
+              archivedRowIds={calendarHistory.rows.filter((row) => row.archivedAt).map((row) => row.id)}
             />
           </div>
         </>
@@ -1917,25 +1779,6 @@ function ImportReviewPanel({
   );
 }
 
-function CapacityAlerts({ items, onOpen }: { items: WorkItem[]; onOpen: (date: string) => void }) {
-  const language = useAppLanguage();
-  const warnings = items.filter((item) => item.capacityWarning);
-
-  if (warnings.length === 0) {
-    return null;
-  }
-
-  return (
-    <section className="capacity-alerts no-print">
-      {warnings.map((item) => (
-        <button key={item.id} type="button" onClick={() => onOpen(item.date)}>
-          ⚠ {item.sectorName} {printWorkTitle("thinning", language)} {shortDate(item.date)} {language === "lv" ? "jāpārbauda galdu noslodze" : "table load needs checking"}
-        </button>
-      ))}
-    </section>
-  );
-}
-
 function WorksheetView({
   onArchive,
   onEdit,
@@ -2454,14 +2297,16 @@ function rowFromArchiveSnapshot(row: SowingPlanRow, snapshot: ArchiveSnapshot): 
   };
 }
 
-function MonthlyPrintPlan({
+export function MonthlyPrintPlan({
   onStartChange,
+  archivedRowIds = [],
   printLanguage,
   rows,
   startDate,
   workItems,
 }: {
   onStartChange: (date: string) => void;
+  archivedRowIds?: string[];
   printLanguage: AppLanguage;
   rows: SowingPlanRow[];
   startDate: string;
@@ -2471,7 +2316,9 @@ function MonthlyPrintPlan({
     workItems.filter((item) => item.date >= startDate),
     rows,
     printLanguage,
-  );
+  ).map((item) => archivedRowIds.includes(item.planRowId)
+    ? { ...item, notes: `${printLanguage === "lv" ? "Arhīvs · Vēsturiskais plāns" : "Archive · Historical plan"} · ${item.notes}` }
+    : item);
   const groups = groupMonthlyPrintRowsIntoDateGroups(items);
 
   return (
@@ -3072,14 +2919,11 @@ function importFieldLabel(field: ImportFieldKey, language: AppLanguage): string 
   return labels[language][field];
 }
 
-function CalendarPanel({
+export function CalendarPanel({
   anchorDate,
-  balancePreview,
   calendarDays,
-  onApplyBalance,
-  onCancelBalance,
-  onPreviewBalance,
-  onRecalculatePlan,
+  missingHistoryRows = [],
+  language: languageOverride,
   onSelectDate,
   onSetAnchorDate,
   onSetViewMode,
@@ -3088,20 +2932,18 @@ function CalendarPanel({
   workItems,
 }: {
   anchorDate: string;
-  balancePreview: WorkloadBalanceProposal[] | null;
   calendarDays: ReturnType<typeof getCalendarDays>;
-  onApplyBalance: () => void;
-  onCancelBalance: () => void;
-  onPreviewBalance: () => void;
-  onRecalculatePlan: () => void;
+  missingHistoryRows?: SowingPlanRow[];
+  language?: AppLanguage;
   onSelectDate: (date: string) => void;
   onSetAnchorDate: (date: string) => void;
   onSetViewMode: (mode: ViewMode) => void;
   selectedDate: string;
   viewMode: ViewMode;
-  workItems: WorkItem[];
+  workItems: CalendarWorkItem[];
 }) {
-  const language = useAppLanguage();
+  const contextLanguage = useAppLanguage();
+  const language = languageOverride ?? contextLanguage;
   const rangeDays = calendarDays.filter((day) => day.inCurrentRange);
 
   return (
@@ -3128,25 +2970,22 @@ function CalendarPanel({
           <button type="button" onClick={() => onSetAnchorDate(shiftAnchor(anchorDate, viewMode, 1))}>
             →
           </button>
-          <details className="calendar-actions">
-            <summary>{t("planActions", language)}</summary>
-            <div>
-              <button type="button" onClick={onRecalculatePlan}>
-                {t("recalculatePlan", language)}
-              </button>
-              <button type="button" onClick={onPreviewBalance}>
-                {language === "lv" ? "Izlīdzināt darbus" : "Balance work"}
-              </button>
-              <button type="button" onClick={() => window.print()}>
-                {t("printWorkPlan", language)}
-              </button>
-            </div>
-          </details>
+          <button className="calendar-print-button" type="button" onClick={() => window.print()}>
+            {t("printWorkPlan", language)}
+          </button>
         </div>
       </div>
 
-      {balancePreview ? (
-        <BalancePreview proposals={balancePreview} onApply={onApplyBalance} onCancel={onCancelBalance} />
+      <p className="calendar-history-note">
+        {language === "lv"
+          ? "Pagātnes un arhivēto HUS darbi ir tikai lasīšanai. Arhīvs rāda saglabāto plānu, nevis darbu izpildes apstiprinājumu."
+          : "Past work and archived HUS work are read-only. The archive shows the saved plan, not confirmation of completed work."}
+      </p>
+      {missingHistoryRows.length > 0 ? (
+        <p className="calendar-history-note">
+          {language === "lv" ? "Nav saglabātas pilnas darbu vēstures: " : "Complete work history is unavailable for: "}
+          {missingHistoryRows.map((row) => `${row.sectorName} (${shortDate(row.sowingDate)})`).join(", ")}
+        </p>
       ) : null}
 
       <div className="segmented calendar-view-toggle" aria-label={t("calendarViewMode", language)}>
@@ -3171,9 +3010,8 @@ function CalendarPanel({
           ))}
           {calendarDays.map((day) => {
             const dayItems = workItems.filter((item) => item.date === day.isoDate);
-            const mainWorkload = countMainWork(dayItems, day.isoDate);
+            const mainWorkload = countMainWork(dayItems.filter((item) => !item.calendarReadOnly), day.isoDate);
             const overloaded = mainWorkload > 1;
-            const hasCapacityWarning = dayItems.some((item) => item.capacityWarning);
 
             return (
               <button
@@ -3182,7 +3020,6 @@ function CalendarPanel({
                   day.inCurrentRange ? "" : "is-muted",
                   day.isoDate === selectedDate ? "is-selected" : "",
                   overloaded ? "is-overloaded" : "",
-                  hasCapacityWarning ? "has-capacity-warning" : "",
                 ].join(" ")}
                 key={day.isoDate}
                 onClick={() => onSelectDate(day.isoDate)}
@@ -3191,8 +3028,8 @@ function CalendarPanel({
                 <span className="calendar-day__number">{day.dayNumber}</span>
                 <span className="calendar-day__items">
                   {dayItems.slice(0, 3).map((item) => (
-                    <span className={`work-chip work-chip--${item.color}`} key={item.id}>
-                      {calendarItemLabel(item, language)}
+                    <span className={`work-chip work-chip--${item.color}${item.calendarReadOnly ? " calendar-history-item" : ""}`} key={item.calendarKey} title={calendarItemLabel(item, language)}>
+                      {item.calendarArchived ? language === "lv" ? "Arhīvs · " : "Archive · " : ""}{calendarItemLabel(item, language)}
                     </span>
                   ))}
                 </span>
@@ -3207,7 +3044,7 @@ function CalendarPanel({
             const dayItems = workItems
               .filter((item) => item.date === day.isoDate)
               .sort((a, b) => printWorkTitle(a.type, language).localeCompare(printWorkTitle(b.type, language), "lv") || a.sectorName.localeCompare(b.sectorName, "lv"));
-            const mainWorkload = countMainWork(dayItems, day.isoDate);
+            const mainWorkload = countMainWork(dayItems.filter((item) => !item.calendarReadOnly), day.isoDate);
             const overloaded = mainWorkload > 1;
 
             return (
@@ -3228,8 +3065,8 @@ function CalendarPanel({
                 <span className="agenda-day__items">
                   {dayItems.length === 0 ? <span className="empty-state">{t("noWork", language)}</span> : null}
                   {dayItems.map((item) => (
-                    <span className={`agenda-work work-chip--${item.color}`} key={item.id}>
-                      <strong>{printWorkTitle(item.type, language)}</strong>
+                    <span className={`agenda-work work-chip--${item.color}${item.calendarReadOnly ? " calendar-history-item" : ""}`} key={item.calendarKey}>
+                      <strong>{item.calendarArchived ? language === "lv" ? "Arhīvs · " : "Archive · " : ""}{printWorkTitle(item.type, language)}</strong>
                       <span>{item.sectorName} · {item.plantCount.toLocaleString("lv-LV")}</span>
                     </span>
                   ))}
@@ -3243,8 +3080,9 @@ function CalendarPanel({
   );
 }
 
-function DayDetails({
+export function DayDetails({
   errors,
+  language: languageOverride,
   items,
   onMove,
   onMoveRange,
@@ -3252,13 +3090,15 @@ function DayDetails({
   selectedDate,
 }: {
   errors: Record<string, string>;
-  items: WorkItem[];
+  items: CalendarWorkItem[];
+  language?: AppLanguage;
   onMove: (item: WorkItem, date: string) => void;
   onMoveRange: (item: WorkItem, startDate: string, endDate: string) => void;
   rows: SowingPlanRow[];
   selectedDate: string;
 }) {
-  const language = useAppLanguage();
+  const contextLanguage = useAppLanguage();
+  const language = languageOverride ?? contextLanguage;
   const rowsById = new Map(rows.map((row) => [row.id, row]));
 
   return (
@@ -3268,59 +3108,15 @@ function DayDetails({
           <p className="eyebrow">{t("dayWork", language)}</p>
           <h2>{dateLabel(selectedDate)}</h2>
         </div>
-        {countMainWork(items, selectedDate) > 1 ? <span className="overload-badge">{t("overload", language)}</span> : null}
+        {countMainWork(items.filter((item) => !item.calendarReadOnly), selectedDate) > 1 ? <span className="overload-badge">{t("overload", language)}</span> : null}
       </div>
       <div className="work-list">
         {items.length === 0 ? <p className="empty-state">{language === "lv" ? "Šajā dienā nav ieplānotu darbu." : "No work is planned for this day."}</p> : null}
         {items.map((item) => (
-          <WorkItemCard errors={errors} item={item} key={item.id} onMove={onMove} onMoveRange={onMoveRange} row={rowsById.get(item.planRowId)} />
+          <WorkItemCard errors={errors} item={item} key={item.calendarKey} onMove={onMove} onMoveRange={onMoveRange} row={rowsById.get(item.planRowId)} readOnly={item.calendarReadOnly} archived={item.calendarArchived} language={language} />
         ))}
       </div>
     </aside>
-  );
-}
-
-function BalancePreview({
-  onApply,
-  onCancel,
-  proposals,
-}: {
-  onApply: () => void;
-  onCancel: () => void;
-  proposals: WorkloadBalanceProposal[];
-}) {
-  const language = useAppLanguage();
-
-  return (
-    <section className="balance-preview">
-      <div>
-        <strong>{t("balancePreview", language)}</strong>
-        <p>
-          {proposals.length === 0
-            ? t("noBetterBalance", language)
-            : t("scheduleWillSaveAfterConfirm", language)}
-        </p>
-      </div>
-      {proposals.length > 0 ? (
-        <ul>
-          {proposals.map((proposal) => (
-            <li key={`${proposal.planRowId}-${proposal.type}`}>
-              {printWorkTitle(proposal.type, language)} {proposal.sectorName}: {formatDateRange(proposal.fromDates)} →{" "}
-              {formatDateRange(proposal.toDates)}
-              {proposal.warning ? <strong> {proposal.warning}</strong> : null}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      <div className="button-row">
-        <button className="primary-action" disabled={proposals.length === 0} type="button" onClick={onApply}>
-          {t("confirm", language)}
-        </button>
-        <button className="secondary-action" type="button" onClick={onCancel}>
-          {t("cancel", language)}
-        </button>
-      </div>
-    </section>
   );
 }
 
@@ -3419,33 +3215,50 @@ function WorkItemCard({
   onMove,
   onMoveRange,
   row,
+  readOnly = false,
+  archived = false,
+  language: languageOverride,
 }: {
   errors: Record<string, string>;
   item: WorkItem;
   onMove: (item: WorkItem, date: string) => void;
   onMoveRange: (item: WorkItem, startDate: string, endDate: string) => void;
   row?: SowingPlanRow;
+  readOnly?: boolean;
+  archived?: boolean;
+  language?: AppLanguage;
 }) {
-  const language = useAppLanguage();
+  const contextLanguage = useAppLanguage();
+  const language = languageOverride ?? contextLanguage;
   const workDates = item.scheduleKind === "flexible" ? flexibleItemDates(item) : [item.date];
   const rangeStart = workDates[0] ?? item.date;
   const rangeEnd = workDates.at(-1) ?? item.date;
   const details = localizedWorkDetails(item, row, language);
 
   return (
-    <article className={`work-card work-card--${item.color}`}>
+    <article className={`work-card work-card--${item.color}${readOnly ? " work-card--history" : ""}`}>
       <div>
         <strong>{printWorkTitle(item.type, language)}</strong>
         <span>
           {item.sectorName} · {formatPlants(item.plantCount, language)} · {formatCycleDay(item.cycleDay, language)}
         </span>
       </div>
+      {readOnly ? (
+        <p className="calendar-history-label">
+          {archived
+            ? language === "lv" ? "Arhivēts HUS · Vēsturiskais plāns · Tikai lasīšanai" : "Archived HUS · Historical plan · Read-only"
+            : language === "lv" ? "Vēsturiskais plāns · Tikai lasīšanai" : "Historical plan · Read-only"}
+          {row ? ` · ${language === "lv" ? "Cikls" : "Cycle"}: ${shortDate(row.sowingDate)}–${shortDate(row.harvestDate)}` : ""}
+        </p>
+      ) : null}
       <ul>
         {details.map((detail) => (
           <li key={detail}>{detail}</li>
         ))}
       </ul>
-      {item.fixed ? (
+      {readOnly ? (
+        <small>{dateLabel(item.date)}</small>
+      ) : item.fixed ? (
         <small>{t("fixedDate", language)}</small>
       ) : item.scheduleKind === "flexible" ? (
         <div className="range-fields">
@@ -3482,8 +3295,8 @@ function WorkItemCard({
           />
         </label>
       )}
-      {item.capacityWarning ? <p className="capacity-note">{item.capacityWarning}</p> : null}
-      {errors[item.id] ? <p className="form-error">{errors[item.id]}</p> : null}
+      {!readOnly && item.capacityWarning ? <p className="capacity-note">{item.capacityWarning}</p> : null}
+      {!readOnly && errors[item.id] ? <p className="form-error">{errors[item.id]}</p> : null}
     </article>
   );
 }
@@ -3921,16 +3734,6 @@ function sanitizeAdjustmentSources(row: SowingPlanRow): SowingPlanRow["adjustmen
   return entries.length > 0 ? (Object.fromEntries(entries) as SowingPlanRow["adjustmentSources"]) : undefined;
 }
 
-function rowsDiffer(previous: SowingPlanRow, next: SowingPlanRow): boolean {
-  return JSON.stringify(rowComparable(previous)) !== JSON.stringify(rowComparable(next));
-}
-
-function rowComparable(row: SowingPlanRow): Omit<SowingPlanRow, "updatedAt"> {
-  const comparable = { ...row };
-  delete comparable.updatedAt;
-  return comparable;
-}
-
 function adjustmentValueToDates(value: string | string[] | undefined): string[] {
   if (!value) {
     return [];
@@ -3941,30 +3744,6 @@ function adjustmentValueToDates(value: string | string[] | undefined): string[] 
 
 function formatAdjustmentValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? formatDateRange(value) : value ?? "";
-}
-
-function formatAdjustmentSummary(adjustments: SowingPlanRow["adjustments"]): string {
-  const parts = Object.entries(adjustments ?? {})
-    .map(([type, value]) => `${workTypeLabel(type)}: ${formatAdjustmentValue(value)}`)
-    .filter((value) => value.trim().length > 0);
-
-  return parts.length > 0 ? parts.join("; ") : "Nav saglabātu pārcēlumu";
-}
-
-function workTypeLabel(type: string): string {
-  if (type === "thinning") {
-    return "Retināšana";
-  }
-
-  if (type === "sideShoots") {
-    return "Pazares";
-  }
-
-  if (type === "sticks") {
-    return "Kociņi";
-  }
-
-  return type;
 }
 
 function getCalendarDays(anchorDate: string, viewMode: ViewMode) {

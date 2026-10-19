@@ -66,6 +66,7 @@ import {
 import { compressHusPhotoForUpload } from "@/lib/image-compression";
 import { HusPhotoArchive, PhotoArchiveMetadata } from "./HusPhotoArchive";
 import { SowingSimulationPanel } from "./SowingSimulationPanel";
+import { GreenhouseStatisticsPanel } from "./GreenhouseStatisticsPanel";
 import { HusEntryDialog } from "./HusEntryDialog";
 import { persistHusEntries } from "@/lib/hus-entry-save";
 import { HusPlacementDetails } from "./HusPlacementDetails";
@@ -162,6 +163,7 @@ export function PlannerApp() {
   const [activeView, setActiveView] = useState<MainView>("sowingPlan");
   const [husListMode, setHusListMode] = useState<"active" | "archive">("active");
   const [archiveTab, setArchiveTab] = useState<"hus" | "photos">("hus");
+  const [houseTab, setHouseTab] = useState<"occupancy" | "statistics">("occupancy");
   const [viewMode, setViewMode] = useState<ViewMode>("month");
   const [printLanguage, setPrintLanguage] = useState<AppLanguage>(() => readStoredLanguage());
   const [anchorDate, setAnchorDate] = useState(() => localTodayIso());
@@ -1069,11 +1071,32 @@ export function PlannerApp() {
       ) : null}
 
       {activeView === "greenhouse" ? (
-        <GreenhousePanel
-          date={selectedDate}
-          onDateChange={setSelectedDate}
-          rows={planRows}
-        />
+        <>
+          <div className="segmented house-tabs" role="tablist" aria-label={printLanguage === "lv" ? "Stādu mājas skati" : "Plant house views"}
+            onKeyDown={(event) => {
+              if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+              event.preventDefault();
+              const next = event.key === "Home" ? "occupancy" : event.key === "End" ? "statistics" : houseTab === "occupancy" ? "statistics" : "occupancy";
+              setHouseTab(next);
+              document.getElementById(`house-${next}-tab`)?.focus();
+            }}>
+            <button id="house-occupancy-tab" role="tab" aria-selected={houseTab === "occupancy"} aria-controls="house-panel"
+              tabIndex={houseTab === "occupancy" ? 0 : -1} className={houseTab === "occupancy" ? "is-active" : ""}
+              type="button" onClick={() => setHouseTab("occupancy")}>{printLanguage === "lv" ? "Noslodze un simulācija" : "Occupancy and simulation"}</button>
+            <button id="house-statistics-tab" role="tab" aria-selected={houseTab === "statistics"} aria-controls="house-panel"
+              tabIndex={houseTab === "statistics" ? 0 : -1} className={houseTab === "statistics" ? "is-active" : ""}
+              type="button" onClick={() => setHouseTab("statistics")}>{printLanguage === "lv" ? "Statistika" : "Statistics"}</button>
+          </div>
+          <div id="house-panel" role="tabpanel" aria-labelledby={`house-${houseTab}-tab`}>
+            {houseTab === "occupancy" ? <GreenhousePanel date={selectedDate} onDateChange={setSelectedDate} rows={planRows} />
+              : <GreenhouseStatisticsPanel rows={planRows} archivedRows={archivedRows} today={today} language={printLanguage}
+                onViewPhoto={setHusPhotoViewer} onOpenHus={(id) => {
+                  setSelectedRowId(id);
+                  setHusListMode(planRows.some((row) => row.id === id) ? "active" : "archive");
+                  setActiveView("worksheet");
+                }} />}
+          </div>
+        </>
       ) : null}
 
       {activeView === "worksheet" && selectedRow ? (

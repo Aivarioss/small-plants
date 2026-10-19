@@ -9,8 +9,11 @@ import {
   standardHusTemplates,
   updateDraftCycleLength,
   updateDraftMoveOutDate,
+  updateDraftSowingDate,
+  updateRowSowingDate,
 } from "./hus-templates";
 import { generateWorkItemsForRows } from "./planning";
+import { buildGreenhouseOccupancyDay } from "./greenhouse-simulation";
 import { plannerConfig } from "./demo-data";
 import type { SowingPlanDraft, SowingPlanRow } from "./types";
 
@@ -84,6 +87,24 @@ describe("Hus templates", () => {
     expect(deriveCycleLength("2026-10-01", "2026-10-23")).toBe(23);
   });
 
+  it.each(["length", "moveOut"] as const)("keeps the entered draft cycle when changing sowing in %s mode", (cycleMode) => {
+    const original = { ...draft, cycleMode };
+    const next = updateDraftSowingDate(original, "2026-10-18");
+
+    expect(next.cycleLength).toBe("22");
+    expect(next.harvestDate).toBe("2026-11-08");
+    expect(original.sowingDate).toBe("2026-09-29");
+    expect(original.harvestDate).toBe("2026-10-20");
+  });
+
+  it("preserves a custom cycle derived from a manually entered Planting date", () => {
+    const custom = updateDraftMoveOutDate({ ...draft, sowingDate: "2026-10-01" }, "2026-10-25");
+    const next = updateDraftSowingDate(custom, "2026-10-18");
+
+    expect(next.cycleLength).toBe("25");
+    expect(next.harvestDate).toBe("2026-11-11");
+  });
+
   it("supports non-standard Hus values", () => {
     const next = applyHusTemplateToDraft(draft, "Hus X");
 
@@ -119,5 +140,51 @@ describe("Hus templates", () => {
     const withoutGreenhouseRequired = { ...row, greenhouseRequiredPlants: undefined };
 
     expect(generateWorkItemsForRows([row], plannerConfig)).toEqual(generateWorkItemsForRows([withoutGreenhouseRequired], plannerConfig));
+  });
+});
+
+describe("existing HUS sowing date changes", () => {
+  function row(cycleLength = 23): SowingPlanRow {
+    return {
+      id: "sowing-date-regression", sectorName: "Hus 8A", variety: "Synthetic",
+      sowingDate: "2026-10-20", harvestDate: calculateMoveOutDate("2026-10-20", cycleLength),
+      cycleLength, requiredPlants: 3557, extraPlants: 0, sectorType: 26,
+      plantsPerBox: 30, correction: 0, source: "user",
+    };
+  }
+
+  it.each([
+    [21, "2026-10-18", "2026-11-07"],
+    [22, "2026-10-18", "2026-11-08"],
+    [23, "2026-10-18", "2026-11-09"],
+    [21, "2026-10-25", "2026-11-14"],
+    [22, "2026-10-25", "2026-11-15"],
+    [23, "2026-10-25", "2026-11-16"],
+    [28, "2026-12-20", "2027-01-16"],
+  ] as const)("preserves a %i-day cycle when sowing moves to %s", (cycleLength, sowingDate, harvestDate) => {
+    const original = row(cycleLength);
+    const before = structuredClone(original);
+    const updated = { ...original, ...updateRowSowingDate(original, sowingDate) };
+    const work = generateWorkItemsForRows([updated], plannerConfig);
+
+    expect(updated.cycleLength).toBe(cycleLength);
+    expect(updated.harvestDate).toBe(harvestDate);
+    expect(deriveCycleLength(updated.sowingDate, updated.harvestDate)).toBe(cycleLength);
+    expect(work.find((item) => item.type === "sowing")?.date).toBe(sowingDate);
+    expect(work.find((item) => item.type === "harvest")?.date).toBe(harvestDate);
+    expect(work.find((item) => item.type === "sprayTables")?.date).toBe(harvestDate);
+    expect(original).toEqual(before);
+  });
+
+  it("releases growing tables on recalculated Planting rather than the previous date", () => {
+    const original = row();
+    const updated = { ...original, ...updateRowSowingDate(original, "2026-10-18") };
+    const work = generateWorkItemsForRows([updated], plannerConfig);
+
+    expect(original.harvestDate).toBe("2026-11-11");
+    expect(work.find((item) => item.type === "rings")?.date).toBe("2026-11-08");
+    expect(buildGreenhouseOccupancyDay([updated], plannerConfig, "2026-11-08").growing.rows.some((entry) => entry.planRowId === original.id)).toBe(true);
+    expect(buildGreenhouseOccupancyDay([updated], plannerConfig, "2026-11-09").growing.rows.some((entry) => entry.planRowId === original.id)).toBe(false);
+    expect(buildGreenhouseOccupancyDay([original], plannerConfig, "2026-11-09").growing.rows.some((entry) => entry.planRowId === original.id)).toBe(true);
   });
 });

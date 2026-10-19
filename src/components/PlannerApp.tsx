@@ -39,6 +39,7 @@ import {
   updateDraftCycleLength,
   updateDraftMoveOutDate,
   updateDraftSowingDate,
+  updateRowSowingDate,
 } from "@/lib/hus-templates";
 import {
   importCandidateToSowingPlanRow,
@@ -458,7 +459,7 @@ export function PlannerApp() {
   function updateDateField(row: SowingPlanRow, field: "sowingDate" | "harvestDate", value: string) {
     const patch: Partial<SowingPlanRow> =
       field === "sowingDate"
-        ? { sowingDate: value, cycleLength: deriveCycleLength(value, row.harvestDate), weekNumber: getIsoWeek(value) }
+        ? { ...updateRowSowingDate(row, value), weekNumber: getIsoWeek(value) }
         : { harvestDate: value, cycleLength: deriveCycleLength(row.sowingDate, value) };
 
     if (field === "sowingDate" && hasManualWorkMoves(row)) {

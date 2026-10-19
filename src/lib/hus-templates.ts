@@ -1,4 +1,4 @@
-import type { SectorType, SowingPlanDraft } from "./types";
+import type { SectorType, SowingPlanDraft, SowingPlanRow } from "./types";
 import { addDays, daysBetween } from "./planning";
 
 export type HusTemplate = {
@@ -54,14 +54,6 @@ export function applyHusTemplateToDraft(draft: SowingPlanDraft, hus: string): So
 }
 
 export function updateDraftSowingDate(draft: SowingPlanDraft, sowingDate: string): SowingPlanDraft {
-  if (draft.cycleMode === "moveOut") {
-    return {
-      ...draft,
-      sowingDate,
-      cycleLength: String(deriveCycleLength(sowingDate, draft.harvestDate)),
-    };
-  }
-
   return {
     ...draft,
     sowingDate,
@@ -91,6 +83,17 @@ export function updateDraftMoveOutDate(draft: SowingPlanDraft, harvestDate: stri
 // 23-day cycle moves out 22 calendar days after sowing.
 export function calculateMoveOutDate(sowingDate: string, cycleLength: number): string {
   return addDays(sowingDate, Math.max(1, cycleLength) - 1);
+}
+
+export function updateRowSowingDate(
+  row: Pick<SowingPlanRow, "cycleLength">,
+  sowingDate: string,
+): Pick<SowingPlanRow, "sowingDate" | "harvestDate" | "cycleLength"> {
+  return {
+    sowingDate,
+    cycleLength: row.cycleLength,
+    harvestDate: calculateMoveOutDate(sowingDate, row.cycleLength),
+  };
 }
 
 export function deriveCycleLength(sowingDate: string, moveOutDate: string): number {

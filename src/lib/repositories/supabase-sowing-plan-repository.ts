@@ -145,7 +145,7 @@ async function saveRowAtomically(row: SowingPlanRow, operation: "create" | "upda
     p_change_history: rowChangeHistoryToRecords(row),
   });
   if (error) {
-    if (error.code === "40001") throw new SowingPlanConflictError();
+    if (["PT409", "40001"].includes(error.code)) throw new SowingPlanConflictError();
     if (error.code === "P0002") throw new SowingPlanNotFoundError();
     if (error.code === "55000") throw new SowingPlanArchivedError();
     if (error.code === "PGRST202" || error.code === "42883") {
@@ -210,7 +210,7 @@ async function changeArchiveState(id: string, operation: "archive" | "restore", 
     p_snapshot: operation === "archive" ? buildArchiveSnapshot(row, activeRows, plannerConfig, archivedAt, note?.trim() || undefined) : null,
   });
   if (error) {
-    if (["40001", "23505", "40P01", "55P03"].includes(error.code)) throw new SowingPlanConflictError();
+    if (["PT409", "40001", "23505", "40P01", "55P03"].includes(error.code)) throw new SowingPlanConflictError();
     if (error.code === "P0002") throw new SowingPlanNotFoundError();
     if (["PGRST202", "42883"].includes(error.code)) {
       throw new SupabasePersistenceError("Arhīva operācija nav sagatavota datubāzē; nepieciešama change_sowing_plan_archive migrācija", error);
@@ -338,7 +338,7 @@ export async function importPlanBatch(batch: PlanImportBatch): Promise<string[]>
     // This retry may have timed out waiting for an earlier request's receipt.
     // Aborting the retry says nothing about the original transaction's outcome.
     if (["55P03", "40P01"].includes(result.error.code)) throw new WriteOutcomeError("unknown", ids);
-    if (["40001", "23505"].includes(result.error.code)) throw new SowingPlanConflictError();
+    if (["PT409", "40001", "23505"].includes(result.error.code)) throw new SowingPlanConflictError();
     throw new SupabasePersistenceError(["PGRST202", "42883"].includes(result.error.code)
       ? "Imports nav saglabāts; nepieciešama import_sowing_plan_rows migrācija" : "Neizdevās atomiski saglabāt importu", result.error);
   }

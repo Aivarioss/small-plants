@@ -49,6 +49,22 @@ describe.skipIf(process.env.SMALL_PLANTS_LOCAL_INTEGRATION !== "1")("real local 
     }
   });
 
+  it("returns PT409 over real PostgREST instead of retrying a stale version", async () => {
+    const input = makeRow("non-retryable conflict");
+    input.sectorName = `LOCAL CONFLICT ${input.id}`;
+    const created = await repo.create(input);
+    const client = createSupabaseServerClient();
+    const stored = await client.from("sowing_plan_rows").select("*").eq("id", created.id).single();
+    expect(stored.error).toBeNull();
+    const response = await client.rpc("save_sowing_plan_row", {
+      p_operation: "update", p_row: stored.data, p_expected_updated_at: "2000-01-01T00:00:00Z",
+      p_work_adjustments: [], p_table_placement: null, p_plant_corrections: [], p_hus_events: [], p_change_history: [],
+    }).abortSignal(AbortSignal.timeout(3000));
+    expect(response.status).toBe(409);
+    expect(response.error?.code).toBe("PT409");
+    expect((await repo.load()).find(row => row.id === created.id)?.updatedAt).toBe(created.updatedAt);
+  });
+
   it("creates, edits several fields, and reloads the actual persisted row", async () => {
     row = await repo.create(makeRow("main"));
     row = await repo.update({ ...row, variety: "Edited", requiredPlants: 3600, extraPlants: 90 });

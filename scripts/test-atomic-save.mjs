@@ -10,8 +10,9 @@ after(async () => { await db.close(); });
 const schema = (await readFile(new URL("../supabase/schema.sql", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 const migration = (await readFile(new URL("../supabase/migrations/20261024160132_atomic_sowing_plan_save.sql", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 const archiveMigration = (await readFile(new URL("../supabase/migrations/20261024172817_atomic_archive_state.sql", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
+const conflictMigration = (await readFile(new URL("../supabase/migrations/20261025155944_non_retryable_hus_conflicts.sql", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 const importMigration = (await readFile(new URL("../supabase/migrations/20261024180627_atomic_plan_import.sql", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
-assert.ok(schema.includes(migration) && schema.includes(archiveMigration) && schema.endsWith(importMigration), "Fresh schema and prepared upgrades must agree");
+assert.ok(schema.includes(migration) && schema.includes(archiveMigration) && schema.includes(importMigration) && schema.endsWith(conflictMigration), "Fresh schema and prepared upgrades must agree");
 await db.exec("create role anon; create role authenticated; create role service_role;");
 // gen_random_uuid is built in to Postgres. The production schema also enables pgcrypto,
 // which is not bundled in this WASM test runtime. All tables, triggers and function SQL are unchanged.
@@ -49,6 +50,8 @@ async function reset() {
 
 test("prepared upgrade is repeatable and RPC is restricted to the existing server role", async () => {
   await db.exec(migration);
+  await db.exec(conflictMigration);
+  await db.exec(conflictMigration);
   const result = await db.query("select has_function_privilege('anon', p.oid, 'execute') as anon, has_function_privilege('authenticated', p.oid, 'execute') as authenticated, has_function_privilege('service_role', p.oid, 'execute') as server from pg_proc p where proname='save_sowing_plan_row'");
   assert.deepEqual(result.rows, [{ anon: false, authenticated: false, server: true }]);
 });
@@ -61,7 +64,7 @@ test("editing a cycle keeps Moving, its linked loss, retained photo ID and exact
   assert.equal(s.hus_events[0].value.plant_correction_id, lossId);
   assert.equal(s.plant_corrections[0].value.amount, -10);
   assert.equal(s.hus_photos[0].value.id, photoId);
-  await assert.rejects(save(original, "update", v), { code: "40001" });
+  await assert.rejects(save(original, "update", v), { code: "PT409" });
 });
 test("failed work, placement, loss, event and history writes roll back the entire edit", async () => {
   const invalid = [
@@ -91,11 +94,11 @@ test("two edits with one version cannot silently overwrite each other", async ()
     save({ row: { ...base, extra_plants: 300 } }, "update", v),
   ]);
   assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
-  assert.equal(results.find((r) => r.status === "rejected").reason.code, "40001");
+  assert.equal(results.find((r) => r.status === "rejected").reason.code, "PT409");
 });
 test("archived, missing and unversioned edits are rejected before any data changes", async () => {
   await reset();
-  await assert.rejects(save(original, "update"), { code: "40001" });
+  await assert.rejects(save(original, "update"), { code: "PT409" });
   await assert.rejects(save({ row: { ...base, id: uid(99) }, work: [], losses: [], events: [] }, "update", await version()), { code: "P0002" });
   await db.query("update sowing_plan_rows set archived_at=now(), archive_snapshot='{}'::jsonb where id=$1", [rowId]);
   const before = await state();
@@ -145,6 +148,7 @@ async function archiveSetup(restore = false) {
 
 test("archive upgrade is repeatable and RPC is server-only", async () => {
   await db.exec(archiveMigration);
+  await db.exec(conflictMigration);
   const result = await db.query("select has_function_privilege('anon', p.oid, 'execute') as anon, has_function_privilege('authenticated', p.oid, 'execute') as authenticated, has_function_privilege('service_role', p.oid, 'execute') as server from pg_proc p where proname='change_sowing_plan_archive'");
   assert.deepEqual(result.rows, [{ anon: false, authenticated: false, server: true }]);
 });
@@ -198,12 +202,12 @@ test("stale target, changed context, new active rows and missing versions reject
     for (const bad of [{ version: "2000-01-01T00:00:00Z" }, { version: null }, { context: [] },
       { context: ctx.map(r => ({ ...r, updated_at: "2000-01-01T00:00:00Z" })) },
       { context: ctx.map(r => ({ id: r.id })) }, { context: [...ctx, ctx[0]] }]) {
-      await assert.rejects(archiveChange(op, bad), { code: "40001" });
+      await assert.rejects(archiveChange(op, bad), { code: "PT409" });
       assert.deepEqual(await state(), before);
     }
     await save({ row: { ...base, id: uid(30), hus: "New concurrent HUS" }, work: [], losses: [], events: [] }, "create");
     const withNewRow = await state();
-    await assert.rejects(archiveChange(op, { context: ctx }), { code: "40001" });
+    await assert.rejects(archiveChange(op, { context: ctx }), { code: "PT409" });
     assert.deepEqual(await state(), withNewRow);
   }
 });
@@ -249,12 +253,12 @@ test("repeated archive or restore with old state cannot reapply freezes", async 
   const ctx = await context();
   await archiveChange("archive");
   const archived = await state();
-  await assert.rejects(archiveChange("archive", { version: v, context: ctx }), { code: "40001" });
+  await assert.rejects(archiveChange("archive", { version: v, context: ctx }), { code: "PT409" });
   assert.deepEqual(await state(), archived);
   const archivedVersion = await version();
   await archiveChange("restore", { freeze: [] });
   const restored = await state();
-  await assert.rejects(archiveChange("restore", { version: archivedVersion, freeze: [] }), { code: "40001" });
+  await assert.rejects(archiveChange("restore", { version: archivedVersion, freeze: [] }), { code: "PT409" });
   assert.deepEqual(await state(), restored);
 });
 
@@ -307,7 +311,7 @@ test("late child failure and stale replacement roll back every imported row", as
   await assert.rejects(importBatch([
     batchItem({ ...base, id: uid(0), hus: "New" }),
     batchItem(base, "update", "2000-01-01T00:00:00Z"),
-  ]), { code: "40001" });
+  ]), { code: "PT409" });
   assert.deepEqual(await state(), before);
   await assert.rejects(importBatch([
     batchItem({ ...base, id: uid(30), hus: "First" }),
@@ -343,4 +347,10 @@ test("import rejects normalized duplicate cycles and repeated target IDs atomica
   await assert.rejects(importBatch([duplicate,duplicate]), { code: "22023" });
   assert.deepEqual(await state(), before);
   assert.deepEqual(await receipts(), []);
+});
+
+test("domain conflicts cannot trigger PostgREST 14 serialization retries", async () => {
+ const result = await db.query("select pg_get_functiondef(oid) as definition from pg_proc where proname in ('save_sowing_plan_row', 'change_sowing_plan_archive')");
+ assert.equal(result.rows.length, 2);
+ for (const row of result.rows) { assert.ok(row.definition.includes("PT409")); assert.ok(!row.definition.includes("40001")); }
 });

@@ -1,11 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { importPlanBatch } from "./supabase-sowing-plan-repository";
+import { importPlanBatch, SowingPlanConflictError } from "./supabase-sowing-plan-repository";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { demoPlanRows } from "@/lib/demo-data";
 vi.mock("@/lib/supabase/server", () => ({ createSupabaseServerClient: vi.fn() }));
 const row = { ...demoPlanRows[0], source: "user" as const, id: "11111111-1111-4111-8111-111111111111", updatedAt: "2026-10-01T00:00:00Z" };
 beforeEach(() => vi.clearAllMocks());
 describe("atomic import repository", () => {
+  it("returns PT409 as a known conflict without replaying a rejected import", async () => {
+    const client = { rpc: vi.fn().mockResolvedValue({ data: null, error: { code: "PT409" } }), from: vi.fn() };
+    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
+    await expect(importPlanBatch({ id: "batch", items: [{ row, operation: "update" }] })).rejects.toBeInstanceOf(SowingPlanConflictError);
+    expect(client.rpc).toHaveBeenCalledTimes(1);
+    expect(client.from).not.toHaveBeenCalled();
+  });
   it("sends create and replacement, including all history, through one RPC", async () => {
     const other = { ...row, id: "22222222-2222-4222-8222-222222222222" };
     const client = { rpc: vi.fn().mockResolvedValue({ data: [row.id, other.id], error: null }), from: vi.fn() };

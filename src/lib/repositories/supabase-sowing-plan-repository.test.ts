@@ -28,6 +28,24 @@ const baseRecord = {
 };
 
 describe("supabase sowing plan repository", () => {
+  it("returns non-retryable PT409 field conflicts without reading or writing again", async () => {
+    const client = { rpc: vi.fn().mockResolvedValue({ data: null, error: { code: "PT409" } }), from: vi.fn() };
+    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
+    await expect(createSupabaseSowingPlanRepository().update(recordToSowingPlanRow({ ...baseRecord, sector_type: 26, status: "planned", source: "user" }))).rejects.toBeInstanceOf(SowingPlanConflictError);
+    expect(client.rpc).toHaveBeenCalledTimes(1);
+    expect(client.from).not.toHaveBeenCalled();
+  });
+
+  it.each(["archive", "restore"] as const)("returns non-retryable PT409 %s conflicts without partial fallback", async operation => {
+    const row = { ...baseRecord, archived_at: operation === "restore" ? "2026-10-01T10:00:00Z" : null };
+    const client = { rpc: vi.fn().mockResolvedValue({ data: null, error: { code: "PT409" } }), from: vi.fn()
+      .mockReturnValueOnce(selectSingleByIdResult(row))
+      .mockReturnValueOnce(selectOrderResult({ data: operation === "restore" ? [] : [row], error: null })) };
+    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
+    await expect(createSupabaseSowingPlanRepository()[operation](row.id)).rejects.toBeInstanceOf(SowingPlanConflictError);
+    expect(client.rpc).toHaveBeenCalledTimes(1);
+    expect(client.from).toHaveBeenCalledTimes(2);
+  });
   beforeEach(() => {
     vi.clearAllMocks();
   });

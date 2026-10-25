@@ -1,3 +1,4 @@
+import { WriteOutcomeError } from "@/lib/write-outcome";
 import { NextResponse, type NextRequest } from "next/server";
 import { hasValidSession } from "@/lib/auth/session";
 import {
@@ -85,6 +86,7 @@ async function parseBody(request: NextRequest): Promise<ArchiveRequestBody | nul
 }
 
 function errorResponse(error: unknown): NextResponse {
+  if (error instanceof WriteOutcomeError) return NextResponse.json({ error: error.message, writeStatus: error.writeStatus, ids: error.ids }, { status: error.writeStatus === "committed" ? 202 : 503 });
   if (error instanceof SowingPlanConflictError) {
     return NextResponse.json({ error: error.message }, { status: 409 });
   }
@@ -98,5 +100,5 @@ function errorResponse(error: unknown): NextResponse {
   }
 
   console.error("HUS archive API error", error);
-  return NextResponse.json({ error: error instanceof Error ? error.message : "HUS archive operation failed." }, { status: 500 });
+  return NextResponse.json({ writeStatus: "failed", error: error instanceof Error ? error.message : "HUS archive operation failed." }, { status: 500 });
 }

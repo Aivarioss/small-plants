@@ -1,3 +1,5 @@
+import { WriteOutcomeError } from "@/lib/write-outcome";
+import type { PlanImportBatch } from "./types";
 import type { SowingPlanRow } from "@/lib/types";
 import type { SowingPlanRepository } from "./types";
 
@@ -15,6 +17,13 @@ export const apiSowingPlanRepository: SowingPlanRepository = {
   update: updateRow,
 };
 
+export async function loadWorkspaceRows(): Promise<SowingPlanRow[]> {
+  const response = await fetch("/api/sowing-plan/workspace", { cache: "no-store" });
+  const result = await response.json().catch(() => null) as { rows?: SowingPlanRow[]; error?: string } | null;
+  if (!response.ok || !Array.isArray(result?.rows)) throw new Error(result?.error ?? "Neizdevās ielādēt pilno plānu.");
+  return result.rows;
+}
+
 export async function loadArchivedRows(): Promise<SowingPlanRow[]> {
   const response = await fetch("/api/hus-archive", {
     cache: "no-store",
@@ -29,14 +38,7 @@ export async function loadArchivedRows(): Promise<SowingPlanRow[]> {
 }
 
 export async function archiveRow(id: string, note?: string): Promise<SowingPlanRow> {
-  const response = await fetch("/api/hus-archive", {
-    body: JSON.stringify({ id, note }),
-    headers: {
-      "Content-Type": "application/json",
-    },
-    method: "POST",
-  });
-  const result = await parseWriteResponse(response);
+  const result = await writeRequest("/api/hus-archive", "POST", { id, note }, [id]);
 
   if (!result.row) {
     throw new Error("Serveris neatgrieza arhivēto Hus rindu.");
@@ -46,14 +48,7 @@ export async function archiveRow(id: string, note?: string): Promise<SowingPlanR
 }
 
 export async function restoreArchivedRow(id: string): Promise<SowingPlanRow> {
-  const response = await fetch("/api/hus-archive", {
-    body: JSON.stringify({ id }),
-    headers: {
-      "Content-Type": "application/json",
-    },
-    method: "PATCH",
-  });
-  const result = await parseWriteResponse(response);
+  const result = await writeRequest("/api/hus-archive", "PATCH", { id }, [id]);
 
   if (!result.row) {
     throw new Error("Serveris neatgrieza atjaunoto Hus rindu.");
@@ -84,43 +79,39 @@ async function updateRow(row: SowingPlanRow): Promise<SowingPlanRow> {
 }
 
 async function deleteRow(row: SowingPlanRow): Promise<void> {
-  const response = await fetch("/api/sowing-plan", {
-    body: JSON.stringify({ expectedUpdatedAt: row.updatedAt, id: row.id }),
-    headers: {
-      "Content-Type": "application/json",
-    },
-    method: "DELETE",
-  });
-  await parseWriteResponse(response);
+  const result = await writeRequest("/api/sowing-plan", "DELETE", { expectedUpdatedAt: row.updatedAt, id: row.id }, [row.id]);
+  if (result.ok !== true) throw new WriteOutcomeError("unknown", [row.id]);
 }
 
-async function writeRow(method: "POST" | "PATCH", body: unknown): Promise<SowingPlanRow> {
-  const response = await fetch("/api/sowing-plan", {
-    body: JSON.stringify(body),
-    headers: {
-      "Content-Type": "application/json",
-    },
-    method,
-  });
-  const result = await parseWriteResponse(response);
-
-  if (!result.row) {
-    throw new Error("Serveris neatgrieza saglabāto Hus rindu.");
-  }
-
+async function writeRow(method: "POST" | "PATCH", body: { row: SowingPlanRow; expectedUpdatedAt?: string }): Promise<SowingPlanRow> {
+  const result = await writeRequest("/api/sowing-plan", method, body, [body.row.id]);
+  if (!result.row) throw new WriteOutcomeError("unknown", [body.row.id]);
   return result.row;
 }
 
-async function parseWriteResponse(response: Response): Promise<{ row?: SowingPlanRow; error?: string }> {
-  const result = (await response.json().catch(() => null)) as { row?: SowingPlanRow; error?: string } | null;
-
-  if (response.status === 409) {
-    throw new SowingPlanApiConflictError(result?.error);
+export async function submitPlanImport(batch: PlanImportBatch): Promise<string[]> {
+  const expected = batch.items.map(item => item.row.id);
+  const result = await writeRequest("/api/sowing-plan/batch", "POST", batch, expected, true);
+  if (!result.ids || result.ids.length !== expected.length || expected.some(id => !result.ids!.includes(id))) {
+    throw new WriteOutcomeError("unknown", expected);
   }
+  return result.ids;
+}
 
+async function writeRequest(url: string, method: string, body: unknown, ids: string[], receiptOnly = false): Promise<{ row?: SowingPlanRow; ids?: string[]; ok?: boolean }> {
+  let response: Response;
+  try { response = await fetch(url, { body: JSON.stringify(body), headers: { "Content-Type": "application/json" }, method }); }
+  catch { throw new WriteOutcomeError("unknown", ids); }
+  const result = await response.json().catch(() => null) as { row?: SowingPlanRow; ids?: string[]; ok?: boolean; error?: string; writeStatus?: string } | null;
+  if (result?.writeStatus === "unknown" || (result?.writeStatus === "committed" && !receiptOnly)) {
+    throw new WriteOutcomeError(result.writeStatus === "committed" ? "committed" : "unknown", ids);
+  }
+  if (response.status === 409) throw new SowingPlanApiConflictError(result?.error);
+  if (!result) throw new WriteOutcomeError("unknown", ids);
   if (!response.ok) {
-    throw new Error(result?.error ?? "Neizdevās saglabāt Supabase plānu.");
+    if (response.status >= 500 && result.writeStatus !== "failed") throw new WriteOutcomeError("unknown", ids);
+    throw new Error(result.error ?? "Neizdevās saglabāt Supabase plānu.");
   }
-
-  return result ?? {};
+  if (receiptOnly && result.writeStatus !== "committed") throw new WriteOutcomeError("unknown", ids);
+  return result;
 }

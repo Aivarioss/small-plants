@@ -16,3 +16,8 @@ export type RemoteSowingPlanRepository = {
   archive: (id: string, note?: string) => Promise<SowingPlanRow>;
   restore: (id: string) => Promise<SowingPlanRow>;
 };
+
+export type PlanImportBatch = {
+  id: string;
+  items: { operation: "create" | "update"; row: SowingPlanRow }[];
+};

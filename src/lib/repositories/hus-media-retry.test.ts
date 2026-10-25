@@ -16,7 +16,9 @@ function mediaStore() {
   const upload = vi.fn().mockResolvedValue({ error: null });
   const remove = vi.fn().mockResolvedValue({ error: null });
   const client = {
-    storage: { from: vi.fn().mockReturnValue({ upload, remove }) },
+    storage: { from: vi.fn().mockReturnValue({ upload, remove,
+      download: vi.fn(async () => ({ data: new Blob(["saved image"]), error: null })),
+    }) },
     from: vi.fn((table: string) => {
       if (table === "sowing_plan_rows" || table === "hus_events") {
         const query = { eq: vi.fn().mockReturnThis(), maybeSingle: async () => ({ data: { id: table === "hus_events" ? eventId : rowId }, error: null }) };

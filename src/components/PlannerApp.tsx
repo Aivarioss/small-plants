@@ -1,6 +1,11 @@
 "use client";
 
 import Image from "next/image";
+import { writeAndRefresh, loadPlanWorkspace } from "@/lib/write-outcome";
+import { createWorkspaceReadOrder, SupersededWorkspaceReadError } from "@/lib/workspace-read-order";
+import { createHusMediaPublication } from "@/lib/hus-media-publication";
+import type { PlanImportBatch } from "@/lib/repositories/types";
+import { HusList } from "@/components/HusList";
 import { createContext, FormEvent, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { plannerConfig } from "@/lib/demo-data";
 import {
@@ -11,7 +16,6 @@ import {
   countMainWork,
   calculateSowingPlan,
   calculateThinningPlan,
-  compareSowingRowsByDate,
   dateLabel,
   eachDate,
   formatSowingTableSelection,
@@ -68,7 +72,8 @@ import { HusPhotoArchive, PhotoArchiveMetadata } from "./HusPhotoArchive";
 import { SowingSimulationPanel } from "./SowingSimulationPanel";
 import { GreenhouseStatisticsPanel } from "./GreenhouseStatisticsPanel";
 import { HusEntryDialog } from "./HusEntryDialog";
-import { persistHusEntries } from "@/lib/hus-entry-save";
+import { enqueueRowSave } from "@/lib/row-save-queue";
+import { createHusEntrySaveOperation, persistHusEntries } from "@/lib/hus-entry-save";
 import { HusPlacementDetails } from "./HusPlacementDetails";
 import { SeedingCapacityView } from "./SeedingCapacityView";
 import { buildCalendarHistory, type CalendarWorkItem } from "@/lib/calendar-history";
@@ -76,8 +81,9 @@ import { withHouseThinningPlacement } from "@/lib/greenhouse-work-placement";
 import { buildPhotoArchive, husPhotoFileUrl, photoArchiveHusTarget, type PhotoArchiveEntry, type HusMediaUploadInput } from "@/lib/hus-photo-archive";
 import { buildGreenhouseOccupancyDay } from "@/lib/greenhouse-simulation";
 import {
+  submitPlanImport,
   archiveRow,
-  loadArchivedRows,
+  loadWorkspaceRows,
   restoreArchivedRow,
   SowingPlanApiConflictError,
 } from "@/lib/repositories/api-sowing-plan-repository";
@@ -180,7 +186,16 @@ export function PlannerApp() {
   const [planDocumentMessage, setPlanDocumentMessage] = useState("");
   const [planDocumentViewerOpen, setPlanDocumentViewerOpen] = useState(false);
   const [husPhotoViewer, setHusPhotoViewer] = useState<HusPhotoEntry | null>(null);
+  const importRunRef = useRef(false);
+  const pendingImportRef = useRef<PlanImportBatch | null>(null);
+  const planWriteBusyRef = useRef(false);
+  const writesPausedRef = useRef(true);
+  const [needsRefresh, setNeedsRefresh] = useState(false);
   const rowSaveChainsRef = useRef(new Map<string, Promise<SowingPlanRow>>());
+  const workspaceReadOrderRef = useRef(createWorkspaceReadOrder());
+  const husMediaPublicationRef = useRef(createHusMediaPublication());
+  const refreshBusyRef = useRef(false);
+  const [refreshBusy, setRefreshBusy] = useState(false);
 
   useEffect(() => {
     writeStoredLanguage(printLanguage);
@@ -205,21 +220,29 @@ export function PlannerApp() {
   const calendarDays = getCalendarDays(anchorDate, viewMode);
   useEffect(() => {
     let cancelled = false;
+    const readOrder = workspaceReadOrderRef.current;
 
     async function loadRows() {
       try {
-        const loadedRows = await sowingPlanRepository.load();
-        if (cancelled) {
+        const snapshot = await readOrder.read(() => loadPlanWorkspace(loadWorkspaceRows), snapshot => {
+          if (cancelled) return;
+          setPlanRows(snapshot.active);
+          setArchivedRows(snapshot.archived);
+          setSelectedRowId(snapshot.active[0]?.id ?? "");
+        });
+        if (cancelled || !snapshot.isCurrent()) {
           return;
         }
 
-        setPlanRows(loadedRows);
-        setSelectedRowId(loadedRows[0]?.id ?? "");
+        writesPausedRef.current = false;
+        setNeedsRefresh(false);
         setRepositoryMessage("Supabase aktīvs");
         setRepositoryError("");
       } catch (error) {
-        if (!cancelled) {
+        if (!cancelled && !(error instanceof SupersededWorkspaceReadError)) {
           const message = error instanceof Error ? error.message : "Neizdevās ielādēt Supabase plānu";
+          writesPausedRef.current = true;
+          setNeedsRefresh(true);
           setRepositoryMessage(message);
           setRepositoryError(message);
         }
@@ -229,28 +252,7 @@ export function PlannerApp() {
     void loadRows();
     return () => {
       cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadArchive() {
-      try {
-        const loadedRows = await loadArchivedRows();
-        if (!cancelled) {
-          setArchivedRows(loadedRows);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setRepositoryError(error instanceof Error ? error.message : "Neizdevās ielādēt HUS arhīvu");
-        }
-      }
-    }
-
-    void loadArchive();
-    return () => {
-      cancelled = true;
+      readOrder.invalidate();
     };
   }, []);
 
@@ -285,15 +287,70 @@ export function PlannerApp() {
     };
   }, [importPreviewUrl]);
 
-  async function reloadRows(message = "Supabase pārlādēts") {
-    const loadedRows = await sowingPlanRepository.load();
-    setPlanRows(loadedRows);
-    setSelectedRowId((current) => (loadedRows.some((row) => row.id === current) ? current : loadedRows[0]?.id ?? ""));
-    setRepositoryMessage(message);
+  async function refreshWorkspace() {
+    return workspaceReadOrderRef.current.read(() => loadPlanWorkspace(loadWorkspaceRows), snapshot => {
+      setPlanRows(snapshot.active);
+      setArchivedRows(snapshot.archived);
+      setSelectedRowId(current => [...snapshot.active, ...snapshot.archived].some(row => row.id === current) ? current : snapshot.active[0]?.id ?? "");
+    });
+  }
+
+  async function mutateWorkspace<T>(write: () => Promise<T>): Promise<T> {
+    const end = workspaceReadOrderRef.current.beginMutation();
+    try { return await write(); }
+    finally { end(); }
+  }
+
+  function canWritePlan() {
+    if (writesPausedRef.current || planWriteBusyRef.current || importRunRef.current || pendingImportRef.current) {
+      setRepositoryError("Pirms turpināšanas pārlādē datus vai pabeidz iepriekšējā importa pārbaudi.");
+      return false;
+    }
+    return true;
+  }
+
+  async function completePlanWrite<T>(write: () => Promise<T>, verify?: (snapshot: Awaited<ReturnType<typeof refreshWorkspace>>) => boolean) {
+    planWriteBusyRef.current = true;
+    writesPausedRef.current = true;
+    try {
+      const result = await writeAndRefresh(() => mutateWorkspace(write), refreshWorkspace, verify,
+        () => Promise.all(rowSaveChainsRef.current.values()));
+      if (result.refreshSuperseded || (result.snapshot && !result.snapshot.isCurrent())) {
+        if (writesPausedRef.current) setNeedsRefresh(true);
+        return result;
+      }
+      const paused = !result.refreshed || result.writeStatus === "unknown";
+      writesPausedRef.current = paused;
+      setNeedsRefresh(paused);
+      const message = result.writeStatus === "committed"
+        ? result.refreshed ? "Saglabāts; dati pārlādēti." : "Saglabāts. Datu pārlāde neizdevās; saglabāšanu neatkārto, pārlādē datus."
+        : result.writeStatus === "unknown" ? "Saglabāšanas rezultāts nav apstiprināts. Pārlādē datus un pārbaudi rezultātu."
+        : result.error instanceof Error ? result.error.message : "Neizdevās saglabāt datus.";
+      setRepositoryMessage(message);
+      setRepositoryError(result.writeStatus === "committed" && result.refreshed ? "" : message);
+      return result;
+    } finally { planWriteBusyRef.current = false; }
+  }
+
+  async function retryWorkspaceRefresh() {
+    if (refreshBusyRef.current) return;
+    refreshBusyRef.current = true;
+    setRefreshBusy(true);
+    try {
+      const snapshot = await refreshWorkspace();
+      if (!snapshot.isCurrent()) return;
+      writesPausedRef.current = false;
+      setNeedsRefresh(false);
+      setRepositoryError("");
+      setRepositoryMessage("Aktīvais plāns un arhīvs pārlādēti. Pārbaudi saglabāto rezultātu.");
+    } catch (error) {
+      if (!(error instanceof SupersededWorkspaceReadError)) setRepositoryError("Datu pārlāde neizdevās. Mēģini pārlādēt vēlreiz; saglabāšanu neatkārto.");
+    } finally { refreshBusyRef.current = false; setRefreshBusy(false); }
   }
 
   async function addPlanRow(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!canWritePlan()) return;
     const requiredPlants = Number(draft.requiredPlants);
     const greenhouseRequiredPlants = Number(draft.greenhouseRequiredPlants);
     const extraPlants = Number(draft.extraPlants);
@@ -325,136 +382,120 @@ export function PlannerApp() {
 
     setRepositoryMessage("Saglabā Supabase");
     setRepositoryError("");
-    try {
-      const savedRow = await sowingPlanRepository.create(row);
-      setPlanRows((current) => [savedRow, ...current]);
-      setSelectedRowId(savedRow.id);
-      setSelectedDate(savedRow.sowingDate);
-      setAnchorDate(savedRow.sowingDate);
+    const result = await completePlanWrite(() => sowingPlanRepository.create(row), snapshot => snapshot.active.some(candidate => candidate.id === row.id));
+    if (result.writeStatus === "committed") {
+      setSelectedRowId(row.id);
+      setSelectedDate(row.sowingDate);
+      setAnchorDate(row.sowingDate);
       setDraft(initialDraft);
       setActiveView("worksheet");
-      setRepositoryMessage("Supabase saglabāts");
-      setRepositoryError("");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Neizdevās izveidot Hus Supabase";
-      setRepositoryMessage(message);
-      setRepositoryError(message);
+    }
+  }
+
+  async function recoverRowSave(error: unknown, confirmed: SowingPlanRow, mediaCheckpoint: number): Promise<void> {
+    writesPausedRef.current = true;
+    setNeedsRefresh(true);
+    const message = error instanceof SowingPlanApiConflictError
+      ? "Šis Hus ir mainīts citur. Pārbaudi jaunāko versiju pirms atkārtotas izmaiņas."
+      : error instanceof Error ? error.message : "Neizdevās saglabāt Hus Supabase";
+    setRepositoryMessage(message);
+    setRepositoryError(message);
+    try {
+      const snapshot = await refreshWorkspace();
+      if (snapshot.isCurrent()) {
+        writesPausedRef.current = false;
+        setNeedsRefresh(false);
+      }
+    } catch (recoveryError) {
+      if (recoveryError instanceof SupersededWorkspaceReadError) return;
+      setPlanRows((current) => current.map((row) => row.id === confirmed.id
+        ? husMediaPublicationRef.current.acknowledge(row, confirmed, mediaCheckpoint) : row));
+      writesPausedRef.current = true;
+      setNeedsRefresh(true);
     }
   }
 
   function updatePlanRow(id: string, patch: Partial<SowingPlanRow>, options?: { resetSchedule?: boolean }) {
+    if (!canWritePlan()) return;
     const previous = planRows.find((row) => row.id === id);
     if (!previous) {
       return;
     }
+    const mediaCheckpoint = husMediaPublicationRef.current.checkpoint(id);
 
-    const next = { ...previous, ...patch };
-    const persistedRow = {
-      ...next,
-      adjustments: options?.resetSchedule ? undefined : sanitizeAdjustments(next),
-      adjustmentSources: options?.resetSchedule ? undefined : sanitizeAdjustmentSources(next),
-      changeHistory: appendChangeHistory(previous, next, patch, options?.resetSchedule),
+    const applyPatch = (base: SowingPlanRow): SowingPlanRow => {
+      const next = { ...base, ...patch };
+      return {
+        ...next,
+        adjustments: options?.resetSchedule ? undefined : sanitizeAdjustments(next),
+        adjustmentSources: options?.resetSchedule ? undefined : sanitizeAdjustmentSources(next),
+        changeHistory: appendChangeHistory(base, next, patch, options?.resetSchedule),
+      };
     };
-
-    setPlanRows((current) => current.map((row) => (row.id === id ? persistedRow : row)));
-    void persistRowUpdate(previous, persistedRow);
-  }
-
-  function persistRowUpdate(previous: SowingPlanRow, next: SowingPlanRow): Promise<SowingPlanRow> {
+    workspaceReadOrderRef.current.invalidate();
+    setPlanRows((current) => current.map((row) => row.id === id ? applyPatch(row) : row));
     setRepositoryMessage("Saglabā Supabase");
     setRepositoryError("");
-    const baseline = rowSaveChainsRef.current.get(previous.id) ?? Promise.resolve(previous);
-    const operation = baseline
-      .then((latestSavedRow) =>
-        sowingPlanRepository.update({
-          ...next,
-          updatedAt: latestSavedRow.updatedAt ?? previous.updatedAt,
-        }),
-      )
-      .then((savedRow) => {
-        setPlanRows((current) => current.map((row) => (row.id === savedRow.id ? savedRow : row)));
-        setRepositoryMessage("Supabase saglabāts");
-        setRepositoryError("");
-        return savedRow;
-      })
-      .catch(async (error) => {
-        rowSaveChainsRef.current.delete(previous.id);
-        const message = error instanceof Error ? error.message : "Neizdevās saglabāt Hus Supabase";
-        if (error instanceof SowingPlanApiConflictError) {
-          setRepositoryMessage("Šis Hus ir mainīts citur. Dati pārlādēti; pārbaudi jaunāko versiju pirms atkārtotas izmaiņas.");
-          setRepositoryError("Šis Hus ir mainīts citur. Dati pārlādēti; pārbaudi jaunāko versiju pirms atkārtotas izmaiņas.");
-          await reloadRows("Šis Hus ir mainīts citur. Pārbaudi jaunāko versiju.");
-          return previous;
-        }
-
-        setRepositoryMessage(message);
-        setRepositoryError(message);
-        await reloadRows(message).catch(() => {
-          setPlanRows((current) => current.map((row) => (row.id === previous.id ? previous : row)));
-        });
-        return previous;
-      });
-
-    rowSaveChainsRef.current.set(previous.id, operation);
-    return operation;
+    void enqueueRowSave(rowSaveChainsRef.current, previous,
+      (latest) => mutateWorkspace(() => sowingPlanRepository.update(applyPatch(latest))), {
+        recover: (error, confirmed) => recoverRowSave(error, confirmed, mediaCheckpoint),
+        saved: (savedRow) => {
+          workspaceReadOrderRef.current.invalidate();
+          setPlanRows((current) => current.map((row) => row.id === savedRow.id
+            ? husMediaPublicationRef.current.acknowledge(row, savedRow, mediaCheckpoint) : row));
+          setRepositoryMessage("Supabase saglabāts");
+          setRepositoryError("");
+        },
+        failed: async (error) => {
+          const message = error instanceof SowingPlanApiConflictError
+            ? "Šis Hus ir mainīts citur. Pārbaudi jaunāko versiju pirms atkārtotas izmaiņas."
+            : error instanceof Error ? error.message : "Neizdevās saglabāt Hus Supabase";
+          setRepositoryMessage(message);
+          setRepositoryError(message);
+        },
+      }).catch(() => { /* The queue reports the failure and cancels dependent edits. */ });
   }
 
   async function saveWorksheetHusEntries(rowId: string, entries: HusEventEntry[]): Promise<void> {
+    if (!canWritePlan()) throw new Error("Pirms turpināšanas pārlādē datus.");
     setRepositoryMessage("Saglabā HUS ierakstu");
     setRepositoryError("");
     const previous = planRows.find((row) => row.id === rowId);
     if (!previous || previous.archivedAt) throw new Error("HUS nav aktīvs. / HUS is not active.");
-    const baseline = rowSaveChainsRef.current.get(rowId) ?? Promise.resolve(previous);
-    const operation = baseline.catch(() => previous)
-      .then(() => persistHusEntries(rowId, entries, sowingPlanRepository))
-      .then((saved) => {
-        setPlanRows((current) => current.map((row) => row.id === rowId ? saved : row));
-        setRepositoryMessage("Supabase saglabāts");
-        setRepositoryError("");
-        return saved;
-      }).catch((error) => {
-        if (rowSaveChainsRef.current.get(rowId) === operation) rowSaveChainsRef.current.delete(rowId);
-        setRepositoryError(error instanceof Error ? error.message : "Neizdevās saglabāt HUS ierakstu.");
-        throw error;
+    const mediaCheckpoint = husMediaPublicationRef.current.checkpoint(rowId);
+    await enqueueRowSave(rowSaveChainsRef.current, previous,
+      () => mutateWorkspace(() => persistHusEntries(rowId, entries, sowingPlanRepository)), {
+        recover: (error, confirmed) => recoverRowSave(error, confirmed, mediaCheckpoint),
+        saved: (saved) => {
+          workspaceReadOrderRef.current.invalidate();
+          setPlanRows((current) => current.map((row) => row.id === rowId
+            ? husMediaPublicationRef.current.acknowledge(row, saved, mediaCheckpoint) : row));
+          setRepositoryMessage("Supabase saglabāts");
+          setRepositoryError("");
+        },
+        failed: async (error) => {
+          setRepositoryError(error instanceof Error ? error.message : "Neizdevās saglabāt HUS ierakstu.");
+        },
       });
-    rowSaveChainsRef.current.set(rowId, operation);
-    await operation;
   }
 
   async function archivePlanRow(row: SowingPlanRow, note?: string) {
-    setRepositoryMessage("Arhivē Hus");
-    setRepositoryError("");
-    try {
-      await rowSaveChainsRef.current.get(row.id);
-      const archived = await archiveRow(row.id, note);
-      await reloadRows("Hus arhivēts");
-      setArchivedRows((current) => [archived, ...current.filter((candidate) => candidate.id !== archived.id)]);
-      setSelectedRowId((current) => (current === row.id ? "" : current));
+    if (!canWritePlan()) return;
+    const result = await completePlanWrite(() => archiveRow(row.id, note), snapshot => snapshot.archived.some(candidate => candidate.id === row.id));
+    if (result.writeStatus === "committed") {
+      setSelectedRowId("");
       setActiveView("hus");
       setHusListMode("archive");
-      setRepositoryMessage("Hus arhivēts");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Neizdevās arhivēt Hus";
-      setRepositoryMessage(message);
-      setRepositoryError(message);
     }
   }
 
   async function restorePlanRow(row: SowingPlanRow) {
-    setRepositoryMessage("Atjauno Hus");
-    setRepositoryError("");
-    try {
-      const restored = await restoreArchivedRow(row.id);
-      setArchivedRows((current) => current.filter((candidate) => candidate.id !== restored.id));
-      setPlanRows((current) => [...current.filter((candidate) => candidate.id !== restored.id), restored]);
-      setSelectedRowId(restored.id);
+    if (!canWritePlan()) return;
+    const result = await completePlanWrite(() => restoreArchivedRow(row.id), snapshot => snapshot.active.some(candidate => candidate.id === row.id));
+    if (result.writeStatus === "committed") {
+      setSelectedRowId(row.id);
       setActiveView("worksheet");
       setHusListMode("active");
-      setRepositoryMessage("Hus atjaunots");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Neizdevās atjaunot Hus";
-      setRepositoryMessage(message);
-      setRepositoryError(message);
     }
   }
 
@@ -482,40 +523,19 @@ export function PlannerApp() {
   }
 
   function deletePlanRow(id: string) {
-    const row = planRows.find((candidate) => candidate.id === id);
-    if (row && !window.confirm(`Dzēst rindu "${row.sectorName}"?`)) {
+    if (!canWritePlan()) return;
+    const row = planRows.find(candidate => candidate.id === id);
+    if (!row || !window.confirm(`Dzēst rindu "${row.sectorName}"?`)) return;
+    if (row.source === "demo") {
+      workspaceReadOrderRef.current.invalidate();
+      setPlanRows(current => current.filter(candidate => candidate.id !== id));
       return;
     }
-
-    const remaining = planRows.filter((row) => row.id !== id);
-    setPlanRows(remaining);
-    setSelectedRowId(remaining[0]?.id ?? "");
-    if (remaining.length === 0) {
-      setActiveView("sowingPlan");
-    }
-
-    if (row && row.source !== "demo") {
-      void deleteRowFromSupabase(row);
-    }
-  }
-
-  async function deleteRowFromSupabase(row: SowingPlanRow) {
-    setRepositoryMessage("Dzēš Supabase");
-    try {
-      await sowingPlanRepository.delete(row);
-      setRepositoryMessage("Supabase saglabāts");
-    } catch (error) {
-      if (error instanceof SowingPlanApiConflictError) {
-        await reloadRows("Šis Hus ir mainīts citur. Dzēšana apturēta; pārbaudi jaunāko versiju.");
-        return;
-      }
-
-      setRepositoryMessage(error instanceof Error ? error.message : "Neizdevās dzēst Hus Supabase");
-      await reloadRows("Dzēšana neizdevās. Supabase dati pārlādēti.");
-    }
+    void completePlanWrite(() => sowingPlanRepository.delete(row), snapshot => ![...snapshot.active, ...snapshot.archived].some(candidate => candidate.id === id));
   }
 
   function deleteDemoRows() {
+    workspaceReadOrderRef.current.invalidate();
     const remaining = planRows.filter((row) => row.source !== "demo");
     setPlanRows(remaining);
     setSelectedRowId(remaining[0]?.id ?? "");
@@ -580,6 +600,7 @@ export function PlannerApp() {
   }
 
   async function importPlanFromFile(file: File) {
+    if (pendingImportRef.current || planWriteBusyRef.current || importRunRef.current) return;
     setImportBusy(true);
     setImportMessage("");
     setImportResult(null);
@@ -654,6 +675,7 @@ export function PlannerApp() {
     rowId: string,
     input: HusMediaUploadInput,
   ) {
+    const endMutation = workspaceReadOrderRef.current.beginMutation();
     setRepositoryMessage(printLanguage === "lv" ? "Saglabā HUS fotogrāfijas" : "Saving HUS photos");
     setRepositoryError("");
     const beforeCount = countHusMediaTarget([...planRows, ...archivedRows], rowId, input.eventId);
@@ -689,11 +711,14 @@ export function PlannerApp() {
 
       const update = (candidate: SowingPlanRow) =>
         candidate.id === rowId ? mergeHusMedia(candidate, result.note, result.photos ?? [], result.notes) : candidate;
+      endMutation();
+      husMediaPublicationRef.current.changed(rowId);
       setPlanRows((current) => current.map(update));
       setArchivedRows((current) => current.map(update));
       setRepositoryMessage(printLanguage === "lv" ? "HUS ieraksts saglabāts" : "HUS entry saved");
       setRepositoryError("");
     } catch (error) {
+      endMutation();
       if (isFetchFailure(error) && !input.uploadId) {
         const recovered = await reconcileHusMediaAfterFetchFailure(rowId, input.eventId, beforeCount);
         if (recovered) {
@@ -710,15 +735,13 @@ export function PlannerApp() {
       setRepositoryMessage(message);
       setRepositoryError(message);
       throw error;
-    }
+    } finally { endMutation(); }
   }
 
   async function reconcileHusMediaAfterFetchFailure(rowId: string, eventId: string | undefined, beforeCount: number): Promise<boolean> {
     try {
-      const [activeRows, archiveRows] = await Promise.all([sowingPlanRepository.load(), loadArchivedRows()]);
-      setPlanRows(activeRows);
-      setArchivedRows(archiveRows);
-      const afterCount = countHusMediaTarget([...activeRows, ...archiveRows], rowId, eventId);
+      const snapshot = await refreshWorkspace();
+      const afterCount = countHusMediaTarget([...snapshot.active, ...snapshot.archived], rowId, eventId);
       return afterCount > beforeCount;
     } catch {
       return false;
@@ -726,6 +749,7 @@ export function PlannerApp() {
   }
 
   async function deleteHusPhoto(photo: HusPhotoEntry) {
+    const endMutation = workspaceReadOrderRef.current.beginMutation();
     setRepositoryMessage(printLanguage === "lv" ? "Dzēš HUS foto" : "Deleting HUS photo");
     setRepositoryError("");
 
@@ -737,6 +761,8 @@ export function PlannerApp() {
       }
 
       const update = (candidate: SowingPlanRow) => removeHusPhoto(candidate, photo.id);
+      endMutation();
+      husMediaPublicationRef.current.changed(photo.sowingPlanRowId);
       setPlanRows((current) => current.map(update));
       setArchivedRows((current) => current.map(update));
       setHusPhotoViewer(null);
@@ -750,13 +776,15 @@ export function PlannerApp() {
             : "Photo deleted",
       );
     } catch (error) {
+      endMutation();
       const message = error instanceof Error ? error.message : printLanguage === "lv" ? "Neizdevās dzēst foto." : "Could not delete photo.";
       setRepositoryMessage(message);
       setRepositoryError(message);
-    }
+    } finally { endMutation(); }
   }
 
   function updateImportCandidate(id: string, field: ImportFieldKey, value: string) {
+    if (pendingImportRef.current || planWriteBusyRef.current || importRunRef.current) return;
     setImportResult((current) => {
       if (!current) {
         return current;
@@ -799,6 +827,7 @@ export function PlannerApp() {
   }
 
   function updateImportCandidateSelection(id: string, selected: boolean) {
+    if (pendingImportRef.current || planWriteBusyRef.current || importRunRef.current) return;
     setImportResult((current) =>
       current
         ? {
@@ -812,6 +841,7 @@ export function PlannerApp() {
   }
 
   function updateImportCandidateDuplicateAction(id: string, duplicateAction: NonNullable<PlanImportCandidate["duplicateAction"]>) {
+    if (pendingImportRef.current || planWriteBusyRef.current || importRunRef.current) return;
     setImportResult((current) =>
       current
         ? {
@@ -825,66 +855,48 @@ export function PlannerApp() {
   }
 
   async function confirmProductionPlanImport() {
-    if (!importResult) {
-      return;
-    }
-
-    const selectedCandidates = importResult.candidates.filter((candidate) => candidate.selected);
-    const importableCandidates = selectedCandidates.filter(
-      (candidate) => !candidate.duplicateOf || candidate.duplicateAction === "replace",
-    );
-    const validationErrors = importableCandidates.flatMap((candidate) =>
-      importCandidateValidationErrors(candidate).map((error) => `${candidate.fields.sectorName.value || candidate.id}: ${error}`),
-    );
-
-    if (validationErrors.length > 0) {
-      setImportMessage(`Importu nevar apstiprināt: ${validationErrors.join(" ")}`);
-      return;
-    }
-
-    if (importableCandidates.length === 0) {
-      setImportMessage("Nav izvēlētas jaunas vai atjaunojamas rindas.");
-      return;
-    }
-
-    setRepositoryMessage("Importē Supabase");
+    if (importRunRef.current || planWriteBusyRef.current || (!pendingImportRef.current && !canWritePlan())) return;
+    if (!importResult && !pendingImportRef.current) return;
+    importRunRef.current = true;
     setImportBusy(true);
-
     try {
-      for (const candidate of importableCandidates) {
-        const existingRow = candidate.duplicateOf ? planRows.find((row) => row.id === candidate.duplicateOf) : undefined;
-        const row = importCandidateToSowingPlanRow(candidate, {
-          existingRow,
-          id: crypto.randomUUID(),
-          now: new Date().toISOString(),
-          plantsPerBox: plannerConfig.defaultPlantsPerBox,
-        });
-
-        if (existingRow) {
-          await sowingPlanRepository.update(row);
-        } else {
-          await sowingPlanRepository.create(row);
-        }
+      if (!pendingImportRef.current && importResult) {
+        await Promise.all(rowSaveChainsRef.current.values());
+        const fresh = await sowingPlanRepository.load();
+        const candidates = importResult.candidates.filter(candidate => candidate.selected && (!candidate.duplicateOf || candidate.duplicateAction === "replace"));
+        const errors = candidates.flatMap(candidate => importCandidateValidationErrors(candidate));
+        if (!candidates.length || errors.length) throw new Error(errors.join(" ") || "Nav izvēlētu importa rindu.");
+        pendingImportRef.current = { id: crypto.randomUUID(), items: candidates.map(candidate => {
+          const existingRow = candidate.duplicateOf ? fresh.find(row => row.id === candidate.duplicateOf) : undefined;
+          if (candidate.duplicateOf && !existingRow) throw new Error("Importā aizvietojamais HUS vairs nav aktīvs. Pārskati importu.");
+          return { operation: existingRow ? "update" : "create", row: importCandidateToSowingPlanRow(candidate, {
+            existingRow, id: crypto.randomUUID(), now: new Date().toISOString(), plantsPerBox: plannerConfig.defaultPlantsPerBox,
+          }) };
+        }) };
       }
-
-      const skippedDuplicates = selectedCandidates.length - importableCandidates.length;
-      await reloadRows(
-        skippedDuplicates > 0
-          ? `Imports pabeigts: ${importableCandidates.length} rindas, ${skippedDuplicates} dublikāti izlaisti`
-          : `Imports pabeigts: ${importableCandidates.length} rindas`,
-      );
-      setImportResult(null);
-      setImportMessage("Foto imports saglabāts Supabase.");
-      setActiveView("sowingPlan");
+      const batch = pendingImportRef.current!;
+      // Repeat an uncertain request only with the same operation ID and exact rows.
+      const result = await completePlanWrite(() => submitPlanImport(batch));
+      if (result.writeStatus === "committed") {
+        pendingImportRef.current = null;
+        setImportResult(null);
+        setImportMessage(result.refreshed ? "Viss imports saglabāts; dati pārlādēti." : "Viss imports saglabāts. Nepieciešama tikai datu pārlāde.");
+        setActiveView("sowingPlan");
+      } else if (result.writeStatus === "failed") {
+        pendingImportRef.current = null;
+        if (result.snapshot) setImportResult(current => current ? { ...current, candidates: markImportDuplicates(current.candidates, result.snapshot!.active) } : current);
+        setImportMessage("Imports nav saglabāts. Pārskati rindas un dublikātus.");
+      } else if (result.writeStatus === "not_started") {
+        setImportMessage("Šis importa mēģinājums nav sākts. Pārbaudi iepriekšējās izmaiņas un atkārto to pašu importu.");
+      } else {
+        setImportMessage("Importa rezultāts nav apstiprināts. Atkārtoti apstiprinot, droši pārbaudīsim to pašu importu.");
+      }
     } catch (error) {
-      if (error instanceof SowingPlanApiConflictError) {
-        await reloadRows("Kāds Hus tika mainīts citur. Pārbaudi jaunāko versiju un mēģini importu vēlreiz.");
-      }
-      setImportMessage(error instanceof Error ? error.message : "Neizdevās saglabāt foto importu Supabase.");
-      setRepositoryMessage(error instanceof Error ? error.message : "Neizdevās saglabāt foto importu Supabase");
-    } finally {
-      setImportBusy(false);
-    }
+      setImportMessage(error instanceof Error ? error.message : "Neizdevās sagatavot importu.");
+      await refreshWorkspace().catch(error => {
+        if (!(error instanceof SupersededWorkspaceReadError)) { writesPausedRef.current = true; setNeedsRefresh(true); }
+      });
+    } finally { importRunRef.current = false; setImportBusy(false); }
   }
 
   return (
@@ -908,10 +920,14 @@ export function PlannerApp() {
         </div>
       </header>
 
+      {needsRefresh ? <section className="repository-error no-print" role="status">
+        <p>{printLanguage === "lv" ? "Pirms turpināšanas atjauno datu skatu." : "Refresh the data before continuing."}</p>
+        <button type="button" disabled={refreshBusy} onClick={() => void retryWorkspaceRefresh()}>{printLanguage === "lv" ? "Pārlādēt datus" : "Refresh data"}</button>
+      </section> : null}
       {repositoryError ? (
         <section className="repository-error no-print" role="alert">
           <div>
-            <strong>{printLanguage === "lv" ? "Neizdevās saglabāt Supabase" : "Could not save Supabase data"}</strong>
+            <strong>{printLanguage === "lv" ? "Datu stāvoklis" : "Data status"}</strong>
             <code>{repositoryError}</code>
           </div>
           <div className="button-row">
@@ -1057,6 +1073,8 @@ export function PlannerApp() {
           </>
         ) : (
         <HusList
+          language={printLanguage}
+          today={today}
           onOpen={(id) => {
             setSelectedRowId(id);
             setActiveView("worksheet");
@@ -1295,6 +1313,7 @@ function SowingPlanPanel({
       {importMessage ? <p className="import-note">{importMessage}</p> : null}
       {importResult ? (
         <ImportReviewPanel
+          busy={importBusy}
           importResult={importResult}
           onChange={onImportCandidateChange}
           onConfirm={onImportConfirm}
@@ -1716,12 +1735,14 @@ function HusPhotoViewer({
 }
 
 function ImportReviewPanel({
+  busy,
   importResult,
   onChange,
   onConfirm,
   onDuplicateActionChange,
   onSelectionChange,
 }: {
+  busy: boolean;
   importResult: PlanImportResult;
   onChange: (id: string, field: ImportFieldKey, value: string) => void;
   onConfirm: () => void;
@@ -1820,7 +1841,7 @@ function ImportReviewPanel({
           <span>
             {t("importSelected", language)} {selectedCount}; {language === "lv" ? "saglabās" : "will save"} {importableCount}
           </span>
-          <button className="primary-action" disabled={importableCount === 0} onClick={onConfirm} type="button">
+          <button className="primary-action" disabled={busy || importableCount === 0} onClick={onConfirm} type="button">
             {language === "lv" ? "Apstiprināt importu" : "Confirm import"}
           </button>
         </div>
@@ -1862,6 +1883,8 @@ export function WorksheetView({
   const [editingEvent, setEditingEvent] = useState<HusEventEntry | null>(null);
   const [mediaBusy, setMediaBusy] = useState(false);
   const [mediaError, setMediaError] = useState("");
+  const [photoRetryPending, setPhotoRetryPending] = useState(false);
+  const photoSaveRef = useRef<{ rowId: string; operation: ReturnType<typeof createHusEntrySaveOperation> } | null>(null);
   const archiveSnapshot = readOnly ? row.archiveSnapshot : undefined;
   const viewRow = archiveSnapshot ? rowFromArchiveSnapshot(row, archiveSnapshot) : row;
   const husNotes = [...(viewRow.husNotes ?? [])].sort(
@@ -1903,14 +1926,26 @@ export function WorksheetView({
   }
 
   async function saveEventPhotos(entry: HusEventEntry, files: File[]) {
-    if (files.length === 0) {
+    if (files.length === 0 || photoSaveRef.current) {
       return;
     }
+    photoSaveRef.current = { rowId: row.id, operation: createHusEntrySaveOperation({
+      entries: [], media: [{ eventId: entry.id, files }],
+    }) };
+    setPhotoRetryPending(true);
+    await retryEventPhotos();
+  }
 
+  async function retryEventPhotos() {
+    const pending = photoSaveRef.current;
+    if (!pending) return;
     setMediaBusy(true);
     setMediaError("");
     try {
-      await onUploadHusMedia(row.id, { eventId: entry.id, files });
+      await pending.operation.save({ saveEvents: async () => {},
+        upload: (input) => onUploadHusMedia(pending.rowId, input) });
+      photoSaveRef.current = null;
+      setPhotoRetryPending(false);
     } catch (error) {
       setMediaError(error instanceof Error ? error.message : printLanguage === "lv" ? "Neizdevās saglabāt foto." : "Could not save photo.");
     } finally {
@@ -2076,7 +2111,7 @@ export function WorksheetView({
                         {printLanguage === "lv" ? "Pievienot foto" : "Add photo"}
                         <input
                           accept="image/jpeg,image/png"
-                          disabled={mediaBusy}
+                          disabled={mediaBusy || photoRetryPending}
                           multiple
                           onChange={(event) => {
                             const files = Array.from(event.target.files ?? []);
@@ -2114,6 +2149,10 @@ export function WorksheetView({
             )}
           </section>
           {mediaError ? <p className="dialog-error" role="alert">{mediaError}</p> : null}
+          {photoRetryPending ? <button type="button" className="secondary-action" disabled={mediaBusy}
+            onClick={() => void retryEventPhotos()}>
+            {printLanguage === "lv" ? "Atkārtot foto saglabāšanu" : "Retry photo save"}
+          </button> : null}
           <div className="work-list">
             {chronologicalWorkItems.map((item) => (
               <article className={`hus-work-row work-card--${item.color}`} key={item.id}>
@@ -2880,106 +2919,6 @@ function WorkItemCard({
 
 function flexibleItemDates(item: WorkItem): string[] {
   return [item.date];
-}
-
-function HusList({
-  mode,
-  onModeChange,
-  onOpen,
-  rows,
-}: {
-  mode: "active" | "archive";
-  onModeChange: (mode: "active" | "archive") => void;
-  onOpen: (id: string) => void;
-  rows: SowingPlanRow[];
-}) {
-  const language = useAppLanguage();
-  const groupedRows = Array.from(
-    rows.reduce((groups, row) => {
-      const group = groups.get(row.sectorName) ?? [];
-      group.push(row);
-      groups.set(row.sectorName, group);
-      return groups;
-    }, new Map<string, SowingPlanRow[]>()),
-  )
-    .map(([sectorName, group]) => ({
-      sectorName,
-      cycles: group.slice().sort((a, b) =>
-        mode === "archive"
-          ? (b.archivedAt ?? "").localeCompare(a.archivedAt ?? "")
-          : b.sowingDate.localeCompare(a.sowingDate),
-      ),
-    }))
-    .sort((a, b) =>
-      mode === "archive"
-        ? (b.cycles[0].archivedAt ?? "").localeCompare(a.cycles[0].archivedAt ?? "") ||
-          a.sectorName.localeCompare(b.sectorName, "lv", { numeric: true })
-        : compareSowingRowsByDate(a.cycles[0], b.cycles[0]),
-    );
-
-  return (
-    <section className="panel">
-      <div className="panel-header">
-        <div>
-          <p className="eyebrow">Hus</p>
-          <h2>{t("worksheet", language)}</h2>
-        </div>
-        <div className="segmented segmented--compact">
-          <button className={mode === "active" ? "is-active" : ""} type="button" onClick={() => onModeChange("active")}>
-            {language === "lv" ? "Aktīvie" : "Active"}
-          </button>
-          <button className={mode === "archive" ? "is-active" : ""} type="button" onClick={() => onModeChange("archive")}>
-            {language === "lv" ? "Arhīvs" : "Archive"}
-          </button>
-        </div>
-      </div>
-      <div className="batch-list">
-        {rows.length === 0 ? (
-          <p className="empty-state">
-            {mode === "archive"
-              ? language === "lv" ? "Arhīvā vēl nav HUS ciklu." : "No archived HUS cycles yet."
-              : language === "lv" ? "Hus ierakstu vēl nav." : "No Hus records yet."}
-          </p>
-        ) : null}
-        {groupedRows.map(({ cycles, sectorName }) => {
-          const row = cycles[0];
-          const totalSow = getTotalSow(row);
-          const balance = calculatePlantBalance(row);
-
-          return (
-            <article className="hus-card" key={sectorName}>
-              <button className="batch-row" onClick={() => onOpen(row.id)} type="button">
-                <span>
-                  <strong>{sectorName}</strong>
-                  <small>
-                    {row.variety} · {dateLabel(row.sowingDate)} - {dateLabel(row.harvestDate)}
-                  </small>
-                </span>
-                <span>{formatPlants(totalSow, language)}</span>
-                <span>{formatCycleDays(row.cycleLength, language)}</span>
-                {mode === "archive" ? (
-                  <span>
-                    {language === "lv" ? "Arhivēts" : "Archived"} {row.archivedAt ? shortDate(row.archivedAt.slice(0, 10)) : "—"} ·{" "}
-                    {language === "lv" ? "Faktiski" : "Actual"} {formatPlants(balance.actualPlants, language)}
-                  </span>
-                ) : null}
-                <span>{t("openWorksheet", language)}</span>
-              </button>
-              {cycles.length > 1 ? (
-                <div className="previous-cycles">
-                  {cycles.slice(1).map((cycle) => (
-                    <button key={cycle.id} type="button" onClick={() => onOpen(cycle.id)}>
-                      {shortDate(cycle.sowingDate)} - {shortDate(cycle.harvestDate)}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </article>
-          );
-        })}
-      </div>
-    </section>
-  );
 }
 
 function BatchEditor({

@@ -88,6 +88,7 @@ async function save(input: SaveHusMediaInput): Promise<SavedHusMedia> {
   const uploadedPaths: string[] = [];
   const storage = client.storage.from(HUS_PHOTO_BUCKET);
   const createdNoteIds: string[] = [];
+  let metadataWriteStarted = false;
 
   try {
     let note: HusNoteEntry | undefined;
@@ -146,6 +147,20 @@ async function save(input: SaveHusMediaInput): Promise<SavedHusMedia> {
           existing.content_type !== file.type || existing.file_size_bytes !== file.size) {
           throw new Error("Upload id already belongs to a different photo.");
         }
+        // A previous response can be lost, or an old client may have removed the object.
+        // Metadata alone is not proof that the image exists.
+        const downloaded = await storage.download(existing.storage_path);
+        if (downloaded.error || !downloaded.data) {
+          const status = String(downloaded.error?.statusCode ?? "");
+          if (status !== "404" && downloaded.error?.message !== "Object not found") {
+            throw new HusMediaPersistenceError("Neizdevās pārbaudīt saglabāto HUS foto; mēģini vēlreiz", downloaded.error);
+          }
+          const restored = await storage.upload(existing.storage_path, Buffer.from(await file.arrayBuffer()), {
+            contentType: file.type, upsert: false,
+          });
+          if (restored.error) throw new HusMediaPersistenceError("Neizdevās atjaunot HUS foto failu", restored.error);
+          // This file already has a DB reference: never add it to compensating cleanup.
+        }
         reusedPhotos.push(recordToHusPhoto(existing));
         continue;
       }
@@ -157,10 +172,15 @@ async function save(input: SaveHusMediaInput): Promise<SavedHusMedia> {
       });
 
       if (upload.error) {
-        throw new HusMediaPersistenceError("Neizdevās augšupielādēt HUS fotogrāfiju", upload.error);
+        // A prior attempt may have uploaded this stable path before its metadata write failed.
+        // Never overwrite an unknown object; only reuse it if its bytes match this submission.
+        const previous = uploadId ? await storage.download(storagePath) : undefined;
+        if (!previous?.data || !buffer.equals(Buffer.from(await previous.data.arrayBuffer()))) {
+          throw new HusMediaPersistenceError("Neizdevās augšupielādēt HUS fotogrāfiju", upload.error);
+        }
+      } else {
+        uploadedPaths.push(storagePath);
       }
-
-      uploadedPaths.push(storagePath);
       photoRecords.push({
         id: stablePhotoId ?? crypto.randomUUID(),
         content_type: file.type as HusPhotoRecord["content_type"],
@@ -176,6 +196,7 @@ async function save(input: SaveHusMediaInput): Promise<SavedHusMedia> {
 
     let photos: HusPhotoEntry[] = reusedPhotos;
     if (photoRecords.length > 0) {
+      metadataWriteStarted = true;
       const insertPhotos = await client.from("hus_photos").insert(photoRecords).select("*");
       if (insertPhotos.error) {
         throw new HusMediaPersistenceError("Neizdevās saglabāt HUS fotogrāfiju metadatus", insertPhotos.error);
@@ -196,6 +217,13 @@ async function save(input: SaveHusMediaInput): Promise<SavedHusMedia> {
       photos,
     };
   } catch (error) {
+    // A failed/lost response does not prove that the DB transaction rolled back.
+    // Retain both files and notes once insertion was attempted; retries use stable IDs.
+    // Unreferenced files can be reconciled later, but deleting a committed image is irreversible.
+    // Stable upload IDs are shared by overlapping retries. Another request may
+    // already reference our files/notes even before this request writes metadata.
+    // Leave cleanup to delayed reconciliation; request-local state cannot prove ownership.
+    if (uploadId || metadataWriteStarted) throw error;
     if (uploadedPaths.length > 0) {
       await storage.remove(uploadedPaths).catch(() => undefined);
     }
@@ -326,8 +354,9 @@ function recordToHusPhoto(record: HusPhotoRecord): HusPhotoEntry {
 
 function createStoragePath(rowId: string, file: File, stableId?: string): string {
   const extension = file.type === "image/png" ? ".png" : ".jpg";
+  if (stableId) return `hus/${rowId}/${stableId}${extension}`;
   const date = new Date().toISOString().slice(0, 10);
-  return `hus/${rowId}/${date}-${stableId ?? crypto.randomUUID()}${extension}`;
+  return `hus/${rowId}/${date}-${crypto.randomUUID()}${extension}`;
 }
 
 function supabaseErrorSummary(error: unknown): string {

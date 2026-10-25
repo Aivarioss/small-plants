@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createSupabaseSowingPlanRepository, SowingPlanConflictError } from "./supabase-sowing-plan-repository";
+import { createSupabaseSowingPlanRepository, loadWorkspaceRowsFromSupabase, SowingPlanConflictError } from "./supabase-sowing-plan-repository";
+import { recordToSowingPlanRow } from "@/lib/supabase/mappers";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 vi.mock("@/lib/supabase/server", () => ({
@@ -31,1025 +32,186 @@ describe("supabase sowing plan repository", () => {
     vi.clearAllMocks();
   });
 
-  it("loads existing rows when plant_corrections relation is not available yet", async () => {
-    const client = {
-      from: vi
-        .fn()
-        .mockReturnValueOnce(selectOrderResult({
-          data: null,
-          error: {
-            code: "PGRST200",
-            message: "Could not find a relationship between 'sowing_plan_rows' and 'plant_corrections' in the schema cache",
-          },
-        }))
-        .mockReturnValueOnce(selectOrderResult({
-          data: [{ ...baseRecord, work_adjustments: [], table_placements: [], change_history: [] }],
-          error: null,
-        })),
-    };
+  it.each(["plant_corrections", "hus_events", "hus_notes", "hus_photos"])("refuses incomplete %s loads rather than exposing empty editable history", async (relation) => {
+    const client = { from: vi.fn().mockReturnValue(selectOrderResult({
+      data: null, error: { code: "PGRST200", message: `Missing relationship ${relation}` },
+    })), rpc: vi.fn() };
     vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
-
-    const rows = await createSupabaseSowingPlanRepository().load();
-
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
-      id: baseRecord.id,
-      plantCorrections: [],
-      sectorName: "Hus 4",
-    });
+    await expect(createSupabaseSowingPlanRepository().load()).rejects.toMatchObject({ code: "PGRST200" });
+    await expect(createSupabaseSowingPlanRepository().loadArchived()).rejects.toMatchObject({ code: "PGRST200" });
     expect(client.from).toHaveBeenCalledTimes(2);
+    expect(client.rpc).not.toHaveBeenCalled();
   });
 
-  it("does not turn non-relation load errors into an empty plan", async () => {
-    const client = {
-      from: vi.fn().mockReturnValueOnce(selectOrderResult({
-        data: null,
-        error: {
-          code: "42501",
-          message: "permission denied",
-        },
-      })),
-    };
+  it("does not turn non-relation errors into an empty plan", async () => {
+    const client = { from: vi.fn().mockReturnValue(selectOrderResult({ data: null, error: { code: "42501" } })) };
     vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
-
-    await expect(createSupabaseSowingPlanRepository().load()).rejects.toMatchObject({
-      message: "permission denied",
-    });
-    expect(client.from).toHaveBeenCalledTimes(1);
+    await expect(createSupabaseSowingPlanRepository().load()).rejects.toMatchObject({ code: "42501" });
   });
 
-  it("round-trips plant corrections when updating a row", async () => {
-    const plantCorrectionsUpsert = upsertResult();
-    const client = {
-      from: vi
-        .fn()
-        .mockReturnValueOnce(versionCheckResult(baseRecord.updated_at))
-        .mockReturnValueOnce(updateResult({ id: baseRecord.id }))
-        .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(plantCorrectionsUpsert)
-        .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(selectSingleByIdResult({
-          ...baseRecord,
-          work_adjustments: [],
-          table_placements: [],
-          change_history: [],
-          hus_events: [],
-          plant_corrections: [
-            {
-              id: "22222222-2222-4222-8222-222222222222",
-              sowing_plan_row_id: baseRecord.id,
-              correction_date: "2026-10-08",
-              amount: -300,
-              reason: "thinning",
-              note: null,
-            },
-          ],
-        })),
+  it("saves parent, Moving, loss and work dates through one atomic RPC and reloads confirmed state", async () => {
+    const stored = { ...baseRecord, updated_at: "2026-10-02T00:00:00Z",
+      hus_events: [{ id: "event", event_date: "2026-10-08", event_type: "move", plant_change: -10, plant_correction_id: "loss" }],
+      plant_corrections: [{ id: "loss", correction_date: "2026-10-08", amount: -10, reason: "thinning" }],
+      work_adjustments: [{ work_type: "thinning", dates: ["2026-10-08"], source: "manual" }],
     };
+    const client = { rpc: vi.fn().mockResolvedValue({ data: baseRecord.id, error: null }),
+      from: vi.fn().mockReturnValue(selectSingleByIdResult(stored)) };
     vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
-
-    const row = await createSupabaseSowingPlanRepository().update({
-      id: baseRecord.id,
-      updatedAt: baseRecord.updated_at,
-      sectorName: baseRecord.hus,
-      requiredPlants: baseRecord.required_plants,
-      extraPlants: baseRecord.extra_plants,
-      variety: baseRecord.variety,
-      sowingDate: baseRecord.sowing_date,
-      harvestDate: baseRecord.move_out_date,
-      cycleLength: baseRecord.cycle_length,
-      sectorType: 26,
-      plantsPerBox: 12,
-      correction: 0,
-      plantCorrections: [
-        {
-          id: "22222222-2222-4222-8222-222222222222",
-          amount: -300,
-          date: "2026-10-08",
-          reason: "thinning",
-        },
-      ],
-    }, baseRecord.updated_at);
-
-    expect(plantCorrectionsUpsert.upsert).toHaveBeenCalledWith(
-      [
-        {
-          id: "22222222-2222-4222-8222-222222222222",
-          sowing_plan_row_id: baseRecord.id,
-          correction_date: "2026-10-08",
-          amount: -300,
-          reason: "thinning",
-          note: null,
-        },
-      ],
-      { onConflict: "id" },
-    );
-    expect(row.plantCorrections).toEqual([
-      {
-        id: "22222222-2222-4222-8222-222222222222",
-        amount: -300,
-        date: "2026-10-08",
-        reason: "thinning",
-      },
-    ]);
-  });
-
-  it("accepts equivalent updated_at timestamps and uses the current database token for the update", async () => {
-    const databaseUpdatedAt = "2026-10-01T00:00:00+00:00";
-    const update = updateResult({ id: baseRecord.id });
-    const client = {
-      from: vi
-        .fn()
-        .mockReturnValueOnce(versionCheckResult(databaseUpdatedAt))
-        .mockReturnValueOnce(update)
-        .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(upsertResult())
-        .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(selectSingleByIdResult({
-          ...baseRecord,
-          updated_at: "2026-10-01T00:00:01.000Z",
-          work_adjustments: [],
-          table_placements: [],
-          change_history: [],
-          hus_events: [],
-          plant_corrections: [
-            {
-              id: "22222222-2222-4222-8222-222222222222",
-              sowing_plan_row_id: baseRecord.id,
-              correction_date: "2026-10-08",
-              amount: -100,
-              reason: "thinning",
-              note: null,
-            },
-          ],
-        })),
-    };
-    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
-
-    const row = await createSupabaseSowingPlanRepository().update({
-      id: baseRecord.id,
-      updatedAt: baseRecord.updated_at,
-      sectorName: baseRecord.hus,
-      requiredPlants: baseRecord.required_plants,
-      extraPlants: baseRecord.extra_plants,
-      variety: baseRecord.variety,
-      sowingDate: baseRecord.sowing_date,
-      harvestDate: baseRecord.move_out_date,
-      cycleLength: baseRecord.cycle_length,
-      sectorType: 26,
-      plantsPerBox: 12,
-      correction: 0,
-      plantCorrections: [
-        {
-          id: "22222222-2222-4222-8222-222222222222",
-          amount: -100,
-          date: "2026-10-08",
-          reason: "thinning",
-        },
-      ],
-    }, baseRecord.updated_at);
-
-    expect(update.builder.eq).toHaveBeenCalledWith("updated_at", databaseUpdatedAt);
-    expect(row.updatedAt).toBe("2026-10-01T00:00:01.000Z");
-    expect(row.plantCorrections?.[0]?.amount).toBe(-100);
-  });
-
-  it("allows a second correction edit when the client uses the server-returned updated_at", async () => {
-    const firstUpdate = updateResult({ id: baseRecord.id });
-    const secondUpdate = updateResult({ id: baseRecord.id });
-    const firstSavedRecord = {
-      ...baseRecord,
-      updated_at: "2026-10-01T00:00:01.000Z",
-      work_adjustments: [],
-      table_placements: [],
-      change_history: [],
-      hus_events: [],
-      plant_corrections: [
-        {
-          id: "22222222-2222-4222-8222-222222222222",
-          sowing_plan_row_id: baseRecord.id,
-          correction_date: "2026-10-08",
-          amount: -100,
-          reason: "thinning",
-          note: null,
-        },
-      ],
-    };
-    const secondSavedRecord = {
-      ...firstSavedRecord,
-      updated_at: "2026-10-01T00:00:02.000Z",
-      plant_corrections: [
-        {
-          id: "22222222-2222-4222-8222-222222222222",
-          sowing_plan_row_id: baseRecord.id,
-          correction_date: "2026-10-08",
-          amount: -150,
-          reason: "thinning",
-          note: null,
-        },
-      ],
-    };
-    const client = {
-      from: vi
-        .fn()
-        .mockReturnValueOnce(versionCheckResult(baseRecord.updated_at))
-        .mockReturnValueOnce(firstUpdate)
-        .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(upsertResult())
-        .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(selectSingleByIdResult(firstSavedRecord))
-        .mockReturnValueOnce(versionCheckResult(firstSavedRecord.updated_at))
-        .mockReturnValueOnce(secondUpdate)
-        .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(upsertResult())
-        .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(selectSingleByIdResult(secondSavedRecord)),
-    };
-    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
-
-    const repository = createSupabaseSowingPlanRepository();
-    const firstSavedRow = await repository.update({
-      id: baseRecord.id,
-      updatedAt: baseRecord.updated_at,
-      sectorName: baseRecord.hus,
-      requiredPlants: baseRecord.required_plants,
-      extraPlants: baseRecord.extra_plants,
-      variety: baseRecord.variety,
-      sowingDate: baseRecord.sowing_date,
-      harvestDate: baseRecord.move_out_date,
-      cycleLength: baseRecord.cycle_length,
-      sectorType: 26,
-      plantsPerBox: 12,
-      correction: 0,
-      plantCorrections: [
-        {
-          id: "22222222-2222-4222-8222-222222222222",
-          amount: -100,
-          date: "2026-10-08",
-          reason: "thinning",
-        },
-      ],
-    }, baseRecord.updated_at);
-
-    const secondSavedRow = await repository.update({
-      ...firstSavedRow,
-      plantCorrections: [
-        {
-          id: "22222222-2222-4222-8222-222222222222",
-          amount: -150,
-          date: "2026-10-08",
-          reason: "thinning",
-        },
-      ],
-    }, firstSavedRow.updatedAt);
-
-    expect(firstSavedRow.updatedAt).toBe(firstSavedRecord.updated_at);
-    expect(secondSavedRow.updatedAt).toBe(secondSavedRecord.updated_at);
-    expect(secondSavedRow.plantCorrections?.[0]?.amount).toBe(-150);
-  });
-
-  it("still rejects a genuinely stale updated_at token", async () => {
-    const client = {
-      from: vi.fn().mockReturnValueOnce(versionCheckResult("2026-10-01T00:00:01.000Z")),
-    };
-    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
-
-    await expect(createSupabaseSowingPlanRepository().update({
-      id: baseRecord.id,
-      updatedAt: baseRecord.updated_at,
-      sectorName: baseRecord.hus,
-      requiredPlants: baseRecord.required_plants,
-      extraPlants: baseRecord.extra_plants,
-      variety: baseRecord.variety,
-      sowingDate: baseRecord.sowing_date,
-      harvestDate: baseRecord.move_out_date,
-      cycleLength: baseRecord.cycle_length,
-      sectorType: 26,
-      plantsPerBox: 12,
-      correction: 0,
-      plantCorrections: [],
-    }, baseRecord.updated_at)).rejects.toBeInstanceOf(SowingPlanConflictError);
-
-    expect(client.from).toHaveBeenCalledTimes(1);
-  });
-
-  it("round-trips Hus journal events linked to plant corrections when updating a row", async () => {
-    const husEventsUpsert = upsertResult();
-    const eventDeletion = deleteResult();
-    const correctionDeletion = deleteResult();
-    const client = {
-      from: vi
-        .fn()
-        .mockReturnValueOnce(versionCheckResult(baseRecord.updated_at))
-        .mockReturnValueOnce(updateResult({ id: baseRecord.id }))
-        .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(correctionDeletion)
-        .mockReturnValueOnce(upsertResult())
-        .mockReturnValueOnce(eventDeletion)
-        .mockReturnValueOnce(husEventsUpsert)
-        .mockReturnValueOnce(selectSingleByIdResult({
-          ...baseRecord,
-          work_adjustments: [],
-          table_placements: [],
-          change_history: [],
-          plant_corrections: [
-            {
-              id: "22222222-2222-4222-8222-222222222222",
-              sowing_plan_row_id: baseRecord.id,
-              correction_date: "2026-10-17",
-              amount: -32,
-              reason: "brownRoots",
-              note: "Brūnās saknes · C5",
-            },
-          ],
-          hus_events: [
-            {
-              id: "33333333-3333-4333-8333-333333333333",
-              sowing_plan_row_id: baseRecord.id,
-              event_date: "2026-10-17",
-              event_type: "brownRoots",
-              location: "C5",
-              destination_location: null,
-              plant_change: -32,
-              plant_correction_id: "22222222-2222-4222-8222-222222222222",
-              note: null,
-            },
-          ],
-        })),
-    };
-    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
-
-    const row = await createSupabaseSowingPlanRepository().update({
-      id: baseRecord.id,
-      updatedAt: baseRecord.updated_at,
-      sectorName: baseRecord.hus,
-      requiredPlants: baseRecord.required_plants,
-      extraPlants: baseRecord.extra_plants,
-      variety: baseRecord.variety,
-      sowingDate: baseRecord.sowing_date,
-      harvestDate: baseRecord.move_out_date,
-      cycleLength: baseRecord.cycle_length,
-      sectorType: 26,
-      plantsPerBox: 12,
-      correction: 0,
-      plantCorrections: [
-        {
-          id: "22222222-2222-4222-8222-222222222222",
-          amount: -32,
-          date: "2026-10-17",
-          reason: "brownRoots",
-          note: "Brūnās saknes · C5",
-        },
-      ],
-      husEvents: [
-        {
-          id: "33333333-3333-4333-8333-333333333333",
-          eventDate: "2026-10-17",
-          eventType: "brownRoots",
-          location: "C5",
-          plantChange: -32,
-          plantCorrectionId: "22222222-2222-4222-8222-222222222222",
-        },
-      ],
-    }, baseRecord.updated_at);
-
-    // Retained IDs must never be deleted: doing so cascades to existing private photo metadata.
-    expect(eventDeletion.delete.mock.results[0].value.not).toHaveBeenCalledWith("id", "in", "(33333333-3333-4333-8333-333333333333)");
-    expect(correctionDeletion.delete.mock.results[0].value.not).toHaveBeenCalledWith("id", "in", "(22222222-2222-4222-8222-222222222222)");
-    expect(eventDeletion.delete.mock.results[0].value.eq).toHaveBeenCalledWith("sowing_plan_row_id", baseRecord.id);
-    expect(husEventsUpsert.upsert).toHaveBeenCalledWith(
-      [
-        {
-          id: "33333333-3333-4333-8333-333333333333",
-          sowing_plan_row_id: baseRecord.id,
-          event_date: "2026-10-17",
-          event_type: "brownRoots",
-          location: "C5",
-          destination_location: null,
-          plant_change: -32,
-          plant_correction_id: "22222222-2222-4222-8222-222222222222",
-          note: null,
-          created_at: undefined,
-          updated_at: undefined,
-        },
-      ],
-      { onConflict: "id" },
-    );
-    expect(row.husEvents).toEqual([
-      {
-        id: "33333333-3333-4333-8333-333333333333",
-        eventDate: "2026-10-17",
-        eventType: "brownRoots",
-        location: "C5",
-        plantChange: -32,
-        plantCorrectionId: "22222222-2222-4222-8222-222222222222",
-      },
-    ]);
-    expect(row.plantCorrections?.[0]?.amount).toBe(-32);
-  });
-
-  it("persists plant correction deletion by clearing child rows without inserting replacements", async () => {
-    const plantCorrectionsDelete = deleteResult();
-    const client = {
-      from: vi
-        .fn()
-        .mockReturnValueOnce(versionCheckResult(baseRecord.updated_at))
-        .mockReturnValueOnce(updateResult({ id: baseRecord.id }))
-        .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(plantCorrectionsDelete)
-        .mockReturnValueOnce(deleteResult())
-        .mockReturnValueOnce(selectSingleByIdResult({
-          ...baseRecord,
-          work_adjustments: [],
-          table_placements: [],
-          change_history: [],
-          hus_events: [],
-          plant_corrections: [],
-        })),
-    };
-    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
-
-    const row = await createSupabaseSowingPlanRepository().update({
-      id: baseRecord.id,
-      updatedAt: baseRecord.updated_at,
-      sectorName: baseRecord.hus,
-      requiredPlants: baseRecord.required_plants,
-      extraPlants: baseRecord.extra_plants,
-      variety: baseRecord.variety,
-      sowingDate: baseRecord.sowing_date,
-      harvestDate: baseRecord.move_out_date,
-      cycleLength: baseRecord.cycle_length,
-      sectorType: 26,
-      plantsPerBox: 12,
-      correction: 0,
-      plantCorrections: [],
-    }, baseRecord.updated_at);
-
-    expect(plantCorrectionsDelete.delete).toHaveBeenCalled();
-    expect(client.from).not.toHaveBeenCalledWith("plant_corrections", expect.objectContaining({ method: "upsert" }));
-    expect(row.plantCorrections).toEqual([]);
-  });
-
-  it("does not replace child rows when an update targets an archived Hus", async () => {
-    const archivedParentUpdate = updateResult(null);
-    const client = {
-      from: vi
-        .fn()
-        .mockReturnValueOnce(versionCheckResult(baseRecord.updated_at))
-        .mockReturnValueOnce(archivedParentUpdate),
-    };
-    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
-
-    await expect(createSupabaseSowingPlanRepository().update({
-      id: baseRecord.id,
-      updatedAt: baseRecord.updated_at,
-      sectorName: baseRecord.hus,
-      requiredPlants: baseRecord.required_plants,
-      extraPlants: baseRecord.extra_plants,
-      variety: baseRecord.variety,
-      sowingDate: baseRecord.sowing_date,
-      harvestDate: baseRecord.move_out_date,
-      cycleLength: baseRecord.cycle_length,
-      sectorType: 26,
-      plantsPerBox: 12,
-      correction: 0,
-      adjustments: { sideShoots: "2026-10-18" },
-      plantCorrections: [
-        {
-          id: "22222222-2222-4222-8222-222222222222",
-          amount: -100,
-          date: "2026-10-08",
-          reason: "thinning",
-        },
-      ],
-    }, baseRecord.updated_at)).rejects.toBeInstanceOf(SowingPlanConflictError);
-
-    expect(archivedParentUpdate.builder.is).toHaveBeenCalledWith("archived_at", null);
-    expect(client.from).not.toHaveBeenCalledWith("work_adjustments");
-    expect(client.from).not.toHaveBeenCalledWith("plant_corrections");
-    expect(client.from).not.toHaveBeenCalledWith("hus_events");
-  });
-
-  it("archives with snapshot and archived_at in one guarded parent update", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-10-20T12:00:00.000Z"));
-
-    const archiveUpdate = updateResult({ id: baseRecord.id });
-    const recordWithRelations = {
-      ...baseRecord,
-      work_adjustments: [],
-      table_placements: [],
-      change_history: [],
-      plant_corrections: [
-        {
-          id: "22222222-2222-4222-8222-222222222222",
-          sowing_plan_row_id: baseRecord.id,
-          correction_date: "2026-10-08",
-          amount: -100,
-          reason: "thinning",
-          note: null,
-        },
-      ],
-      hus_events: [],
-    };
-    const client = {
-      from: vi
-        .fn()
-        .mockReturnValueOnce(selectSingleByIdResult(recordWithRelations))
-        .mockReturnValueOnce(selectOrderResult({ data: [recordWithRelations], error: null }))
-        .mockReturnValueOnce(archiveUpdate)
-        .mockReturnValueOnce(selectSingleByIdResult({
-          ...recordWithRelations,
-          archived_at: "2026-10-20T12:00:00.000Z",
-          archived_note: "Done",
-          archive_snapshot: {
-            version: 1,
-            archivedAt: "2026-10-20T12:00:00.000Z",
-            hus: { id: baseRecord.id, sectorName: baseRecord.hus },
-            workItems: [],
-            worksheetDays: [],
-            events: [],
-            plantCorrections: [],
-            workAdjustments: [],
-            plantBalance: {
-              actualPlants: 3800,
-              correctionTotal: 0,
-              difference: null,
-              initialPlants: 3800,
-              label: "Nepieciešamais nav norādīts",
-              requiredPlants: null,
-              tone: "unknown",
-            },
-            materials: {
-              sowing: "",
-              sowingTables: "",
-              thinning: "",
-              harvest: "",
-            },
-          },
-        })),
-    };
-    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
-
-    const row = await createSupabaseSowingPlanRepository().archive(baseRecord.id, "Done");
-
-    expect(archiveUpdate.update).toHaveBeenCalledWith(expect.objectContaining({
-      archived_at: "2026-10-20T12:00:00.000Z",
-      archived_note: "Done",
-      archive_snapshot: expect.objectContaining({
-        archivedAt: "2026-10-20T12:00:00.000Z",
-        plantCorrections: expect.arrayContaining([expect.objectContaining({ amount: -100 })]),
-        version: 1,
-      }),
+    const row = recordToSowingPlanRow(stored as never);
+    const result = await createSupabaseSowingPlanRepository().update(row, baseRecord.updated_at);
+    expect(result.updatedAt).toBe(stored.updated_at);
+    expect(result.husEvents).toHaveLength(1);
+    expect(result.plantCorrections?.[0].amount).toBe(-10);
+    expect(client.rpc).toHaveBeenCalledExactlyOnceWith("save_sowing_plan_row", expect.objectContaining({
+      p_operation: "update", p_expected_updated_at: baseRecord.updated_at,
+      p_hus_events: [expect.objectContaining({ id: "event", plant_correction_id: "loss" })],
+      p_plant_corrections: [expect.objectContaining({ id: "loss", amount: -10 })],
+      p_work_adjustments: [expect.objectContaining({ work_type: "thinning", dates: ["2026-10-08"] })],
     }));
-    expect(archiveUpdate.builder.eq).toHaveBeenCalledWith("id", baseRecord.id);
-    expect(archiveUpdate.builder.eq).toHaveBeenCalledWith("updated_at", baseRecord.updated_at);
-    expect(archiveUpdate.builder.is).toHaveBeenCalledWith("archived_at", null);
-    expect(client.from).not.toHaveBeenCalledWith("work_adjustments");
-    expect(client.from).not.toHaveBeenCalledWith("plant_corrections");
-    expect(client.from).not.toHaveBeenCalledWith("hus_events");
-    expect(row.archivedAt).toBe("2026-10-20T12:00:00.000Z");
-
-    vi.useRealTimers();
+    expect(client.from).toHaveBeenCalledExactlyOnceWith("sowing_plan_rows");
   });
 
-  it("rejects archiving when the row changes before the guarded archive update", async () => {
-    const archiveUpdate = updateResult(null);
-    const recordWithRelations = {
-      ...baseRecord,
-      work_adjustments: [],
-      table_placements: [],
-      change_history: [],
-      plant_corrections: [],
-      hus_events: [],
-    };
-    const client = {
-      from: vi
-        .fn()
-        .mockReturnValueOnce(selectSingleByIdResult(recordWithRelations))
-        .mockReturnValueOnce(selectOrderResult({ data: [recordWithRelations], error: null }))
-        .mockReturnValueOnce(archiveUpdate),
-    };
+  it("creates a cycle in the same atomic operation without separate child writes", async () => {
+    const client = { rpc: vi.fn().mockResolvedValue({ data: baseRecord.id, error: null }),
+      from: vi.fn().mockReturnValue(selectSingleByIdResult(baseRecord)) };
     vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
+    await createSupabaseSowingPlanRepository().create(recordToSowingPlanRow(baseRecord as never));
+    expect(client.rpc).toHaveBeenCalledWith("save_sowing_plan_row", expect.objectContaining({ p_operation: "create", p_expected_updated_at: null }));
+    expect(client.from).toHaveBeenCalledTimes(1);
+  });
 
-    await expect(createSupabaseSowingPlanRepository().archive(baseRecord.id)).rejects.toBeInstanceOf(SowingPlanConflictError);
+  it.each(["PGRST202", "42883", "23514", "40001", "55000", "P0002"])("never falls back to sequential writes on %s", async (code) => {
+    const client = { rpc: vi.fn().mockResolvedValue({ data: null, error: { code, message: "failed" } }), from: vi.fn() };
+    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
+    await expect(createSupabaseSowingPlanRepository().update(recordToSowingPlanRow(baseRecord as never), baseRecord.updated_at)).rejects.toThrow();
+    expect(client.from).not.toHaveBeenCalled();
+    expect(client.rpc).toHaveBeenCalledTimes(1);
+  });
 
-    expect(archiveUpdate.builder.eq).toHaveBeenCalledWith("updated_at", baseRecord.updated_at);
+  it("requires a version before editing and refuses demo creation", async () => {
+    const client = { from: vi.fn(), rpc: vi.fn() };
+    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
+    const row = recordToSowingPlanRow(baseRecord as never);
+    await expect(createSupabaseSowingPlanRepository().update({ ...row, updatedAt: undefined })).rejects.toBeInstanceOf(SowingPlanConflictError);
+    await expect(createSupabaseSowingPlanRepository().create({ ...row, source: "demo" })).rejects.toThrow("Demo rows");
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it.each(["archive", "restore"] as const)("%s sends freezes, versions and archive change through one RPC", async (operation) => {
+    const row = { ...baseRecord, archived_at: operation === "restore" ? "2026-10-01T10:00:00Z" : null };
+    const other = { ...baseRecord, id: "22222222-2222-4222-8222-222222222222", hus: "Hus 5" };
+    const active = operation === "restore" ? [other] : [row, other];
+    const client = { rpc: vi.fn().mockResolvedValue({ data: row.id, error: null }), from: vi.fn()
+      .mockReturnValueOnce(selectSingleByIdResult(row))
+      .mockReturnValueOnce(selectOrderResult({ data: active, error: null }))
+      .mockReturnValueOnce(selectSingleByIdResult(row)) };
+    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
+    await createSupabaseSowingPlanRepository()[operation](row.id);
+    expect(client.rpc).toHaveBeenCalledExactlyOnceWith("change_sowing_plan_archive", expect.objectContaining({
+      p_operation: operation, p_id: row.id, p_expected_updated_at: row.updated_at,
+      p_active_versions: active.map((item) => ({ id: item.id, updated_at: item.updated_at })),
+      p_freeze: expect.arrayContaining([expect.objectContaining({ sowing_plan_row_id: other.id, source: "optimizer", locked: true })]),
+      p_snapshot: operation === "restore" ? null : expect.objectContaining({ version: 1, hus: expect.objectContaining({ id: row.id }) }),
+    }));
+    expect(client.from.mock.calls.every(([table]) => table === "sowing_plan_rows")).toBe(true);
     expect(client.from).toHaveBeenCalledTimes(3);
   });
 
-  it("freezes other active Hus final work dates as optimizer adjustments before archiving", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-10-20T12:00:00.000Z"));
-
-    const otherRecord = {
-      ...baseRecord,
-      id: "22222222-2222-4222-8222-222222222222",
-      hus: "Hus 5",
-      sowing_date: "2026-10-03",
-      move_out_date: "2026-10-24",
-      updated_at: "2026-10-01T01:00:00.000Z",
-    };
-    const recordWithRelations = {
-      ...baseRecord,
-      work_adjustments: [],
-      table_placements: [],
-      change_history: [],
-      plant_corrections: [],
-      hus_events: [],
-    };
-    const otherWithRelations = {
-      ...otherRecord,
-      work_adjustments: [],
-      table_placements: [],
-      change_history: [],
-      plant_corrections: [],
-      hus_events: [],
-    };
-    const freezeParentTouch = updateResult({ id: otherRecord.id });
-    const frozenAdjustmentsUpsert = upsertResult();
-    const archiveUpdate = updateResult({ id: baseRecord.id });
-    const client = {
-      from: vi
-        .fn()
-        .mockReturnValueOnce(selectSingleByIdResult(recordWithRelations))
-        .mockReturnValueOnce(selectOrderResult({ data: [recordWithRelations, otherWithRelations], error: null }))
-        .mockReturnValueOnce(freezeParentTouch)
-        .mockReturnValueOnce(frozenAdjustmentsUpsert)
-        .mockReturnValueOnce(archiveUpdate)
-        .mockReturnValueOnce(selectSingleByIdResult({
-          ...recordWithRelations,
-          archived_at: "2026-10-20T12:00:00.000Z",
-          archived_note: null,
-          archive_snapshot: {
-            version: 1,
-            archivedAt: "2026-10-20T12:00:00.000Z",
-            hus: { id: baseRecord.id, sectorName: baseRecord.hus },
-            workItems: [],
-            worksheetDays: [],
-            events: [],
-            plantCorrections: [],
-            workAdjustments: [],
-            plantBalance: {
-              actualPlants: 3800,
-              correctionTotal: 0,
-              difference: null,
-              initialPlants: 3800,
-              label: "Nepieciešamais nav norādīts",
-              requiredPlants: null,
-              tone: "unknown",
-            },
-            materials: {
-              sowing: "",
-              sowingTables: "",
-              thinning: "",
-              harvest: "",
-            },
-          },
-        })),
-    };
+  it.each(["archive", "restore"] as const)("%s does not overwrite manual dates", async (operation) => {
+    const row = { ...baseRecord, archived_at: operation === "restore" ? "2026-10-01T10:00:00Z" : null };
+    const other = { ...baseRecord, id: "22222222-2222-4222-8222-222222222222", hus: "Hus 5",
+      work_adjustments: [{ work_type: "thinning", dates: ["2026-10-10"], source: "manual", locked: true }] };
+    const client = { rpc: vi.fn().mockResolvedValue({ data: row.id, error: null }), from: vi.fn()
+      .mockReturnValueOnce(selectSingleByIdResult(row))
+      .mockReturnValueOnce(selectOrderResult({ data: operation === "restore" ? [other] : [row, other], error: null }))
+      .mockReturnValueOnce(selectSingleByIdResult(row)) };
     vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
-
-    await createSupabaseSowingPlanRepository().archive(baseRecord.id);
-
-    expect(freezeParentTouch.update).toHaveBeenCalledWith({ status: otherRecord.status });
-    expect(freezeParentTouch.builder.eq).toHaveBeenCalledWith("id", otherRecord.id);
-    expect(freezeParentTouch.builder.eq).toHaveBeenCalledWith("updated_at", otherRecord.updated_at);
-    expect(frozenAdjustmentsUpsert.upsert).toHaveBeenCalledWith(
-      expect.arrayContaining([
-        expect.objectContaining({
-          locked: true,
-          source: "optimizer",
-          sowing_plan_row_id: otherRecord.id,
-        }),
-      ]),
-      { onConflict: "sowing_plan_row_id,work_type" },
-    );
-    expect(archiveUpdate.update).toHaveBeenCalledWith(expect.objectContaining({
-      archived_at: "2026-10-20T12:00:00.000Z",
-    }));
-
-    vi.useRealTimers();
+    await createSupabaseSowingPlanRepository()[operation](row.id);
+    const payload = client.rpc.mock.calls[0][1];
+    expect(payload.p_freeze.some((item: { work_type: string }) => item.work_type === "thinning")).toBe(false);
   });
 
-  it("restores the same archived row without deleting its snapshot or manual adjustments", async () => {
-    const restoreUpdate = updateResult({ id: baseRecord.id });
-    const archivedRecord = {
-      ...baseRecord,
-      archived_at: "2026-10-20T12:00:00.000Z",
-      archived_note: "Done",
-      archive_snapshot: {
-        version: 1,
-        archivedAt: "2026-10-20T12:00:00.000Z",
-        hus: { id: baseRecord.id, sectorName: baseRecord.hus },
-        workItems: [],
-        worksheetDays: [],
-        events: [],
-        plantCorrections: [],
-        workAdjustments: [{ workType: "sideShoots", source: "manual", locked: true, dates: ["2026-10-18"] }],
-        plantBalance: {
-          actualPlants: 3800,
-          correctionTotal: 0,
-          difference: null,
-          initialPlants: 3800,
-          label: "Nepieciešamais nav norādīts",
-          requiredPlants: null,
-          tone: "unknown",
-        },
-        materials: {
-          sowing: "",
-          sowingTables: "",
-          thinning: "",
-          harvest: "",
-        },
-      },
-      work_adjustments: [
-        {
-          sowing_plan_row_id: baseRecord.id,
-          work_type: "sideShoots",
-          dates: ["2026-10-18"],
-          source: "manual",
-          locked: true,
-        },
-      ],
-      table_placements: [],
-      change_history: [],
-      plant_corrections: [],
-      hus_events: [],
-    };
-    const restoredRecord = {
-      ...archivedRecord,
-      archived_at: null,
-      archived_note: null,
-    };
-    const client = {
-      from: vi
-        .fn()
-        .mockReturnValueOnce(selectSingleByIdResult(archivedRecord))
-        .mockReturnValueOnce(selectActiveIdentityResult([]))
-        .mockReturnValueOnce(selectOrderResult({ data: [], error: null }))
-        .mockReturnValueOnce(restoreUpdate)
-        .mockReturnValueOnce(selectSingleByIdResult(restoredRecord)),
-    };
-    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
-
-    const row = await createSupabaseSowingPlanRepository().restore(baseRecord.id);
-
-    expect(restoreUpdate.update).toHaveBeenCalledWith({
-      archived_at: null,
-      archived_note: null,
-    });
-    expect(restoreUpdate.builder.eq).toHaveBeenCalledWith("id", baseRecord.id);
-    expect(restoreUpdate.builder.not).toHaveBeenCalledWith("archived_at", "is", null);
-    expect(client.from).toHaveBeenCalledTimes(5);
-    expect(row.id).toBe(baseRecord.id);
-    expect(row.archivedAt).toBeUndefined();
-    expect(row.archiveSnapshot).toBeDefined();
-    expect(row.adjustments).toEqual({ sideShoots: "2026-10-18" });
+  it.each(["archive", "restore"] as const)("%s never falls back to partial writes on RPC errors", async (operation) => {
+    for (const code of ["PGRST202", "40001", "23505", "23514"]) {
+      const row = { ...baseRecord, archived_at: operation === "restore" ? "2026-10-01T10:00:00Z" : null };
+      const client = { rpc: vi.fn().mockResolvedValue({ data: null, error: { code } }), from: vi.fn()
+        .mockReturnValueOnce(selectSingleByIdResult(row))
+        .mockReturnValueOnce(selectOrderResult({ data: operation === "restore" ? [] : [row], error: null })) };
+      vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
+      await expect(createSupabaseSowingPlanRepository()[operation](row.id)).rejects.toThrow();
+      expect(client.from).toHaveBeenCalledTimes(2);
+      expect(client.rpc).toHaveBeenCalledTimes(1);
+    }
   });
 
-  it("freezes active Hus dates before restoring an archived cycle", async () => {
-    const archivedRecord = {
-      ...baseRecord,
-      archived_at: "2026-10-20T12:00:00.000Z",
-      archived_note: "Done",
-      archive_snapshot: {
-        version: 1,
-        archivedAt: "2026-10-20T12:00:00.000Z",
-        hus: { id: baseRecord.id, sectorName: baseRecord.hus },
-        workItems: [],
-        worksheetDays: [],
-        events: [],
-        plantCorrections: [],
-        workAdjustments: [],
-        plantBalance: {
-          actualPlants: 3800,
-          correctionTotal: 0,
-          difference: null,
-          initialPlants: 3800,
-          label: "Nepieciešamais nav norādīts",
-          requiredPlants: null,
-          tone: "unknown",
-        },
-        materials: {
-          sowing: "",
-          sowingTables: "",
-          thinning: "",
-          harvest: "",
-        },
-      },
-      work_adjustments: [],
-      table_placements: [],
-      change_history: [],
-      plant_corrections: [],
-      hus_events: [],
-    };
-    const activeRecord = {
-      ...baseRecord,
-      id: "22222222-2222-4222-8222-222222222222",
-      hus: "Hus 5",
-      sowing_date: "2026-10-03",
-      move_out_date: "2026-10-24",
-      updated_at: "2026-10-01T01:00:00.000Z",
-      work_adjustments: [],
-      table_placements: [],
-      change_history: [],
-      plant_corrections: [],
-      hus_events: [],
-    };
-    const freezeParentTouch = updateResult({ id: activeRecord.id });
-    const frozenAdjustmentsUpsert = upsertResult();
-    const restoreUpdate = updateResult({ id: baseRecord.id });
-    const restoredRecord = {
-      ...archivedRecord,
-      archived_at: null,
-      archived_note: null,
-    };
-    const client = {
-      from: vi
-        .fn()
-        .mockReturnValueOnce(selectSingleByIdResult(archivedRecord))
-        .mockReturnValueOnce(selectActiveIdentityResult([]))
-        .mockReturnValueOnce(selectOrderResult({ data: [activeRecord], error: null }))
-        .mockReturnValueOnce(freezeParentTouch)
-        .mockReturnValueOnce(frozenAdjustmentsUpsert)
-        .mockReturnValueOnce(restoreUpdate)
-        .mockReturnValueOnce(selectSingleByIdResult(restoredRecord)),
-    };
+  it("rejects an archive whose target changed between context reads", async () => {
+    const client = { rpc: vi.fn(), from: vi.fn().mockReturnValueOnce(selectSingleByIdResult(baseRecord))
+      .mockReturnValueOnce(selectOrderResult({ data: [{ ...baseRecord, updated_at: "2026-10-02T00:00:00Z" }], error: null })) };
     vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
-
-    await createSupabaseSowingPlanRepository().restore(baseRecord.id);
-
-    expect(frozenAdjustmentsUpsert.upsert).toHaveBeenCalledWith(
-      expect.arrayContaining([
-        expect.objectContaining({
-          locked: true,
-          source: "optimizer",
-          sowing_plan_row_id: activeRecord.id,
-        }),
-      ]),
-      { onConflict: "sowing_plan_row_id,work_type" },
-    );
-    expect(restoreUpdate.update).toHaveBeenCalledWith({
-      archived_at: null,
-      archived_note: null,
-    });
+    await expect(createSupabaseSowingPlanRepository().archive(baseRecord.id)).rejects.toBeInstanceOf(SowingPlanConflictError);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+  it.each(["create", "update", "archive", "restore"] as const)("reports %s as committed if its post-write read fails", async operation => {
+    const stored = { ...baseRecord, archived_at: operation === "restore" ? "2026-10-01T00:00:00Z" : null };
+    const readFailure = { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: null, error: { message: "read offline" } }) }) }) };
+    const client = { rpc: vi.fn().mockResolvedValue({ data: baseRecord.id, error: null }), from: vi.fn() };
+    if (operation === "archive" || operation === "restore") {
+      client.from.mockReturnValueOnce(selectSingleByIdResult(stored))
+        .mockReturnValueOnce(selectOrderResult({ data: operation === "archive" ? [stored] : [], error: null }));
+    }
+    client.from.mockReturnValueOnce(readFailure);
+    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
+    const repo = createSupabaseSowingPlanRepository();
+    const write = operation === "create" || operation === "update"
+      ? repo[operation](recordToSowingPlanRow(stored as never)) : repo[operation](stored.id);
+    await expect(write).rejects.toMatchObject({ writeStatus: "committed", ids: [baseRecord.id] });
+    expect(client.rpc).toHaveBeenCalledTimes(1);
   });
 
-  it("blocks restoring an archived row when an identical active cycle already exists", async () => {
-    const archivedRecord = {
-      ...baseRecord,
-      archived_at: "2026-10-20T12:00:00.000Z",
-      archived_note: "Done",
-      archive_snapshot: {
-        version: 1,
-        archivedAt: "2026-10-20T12:00:00.000Z",
-        hus: { id: baseRecord.id, sectorName: baseRecord.hus },
-        workItems: [],
-        worksheetDays: [],
-        events: [],
-        plantCorrections: [],
-        workAdjustments: [],
-        plantBalance: {
-          actualPlants: 3800,
-          correctionTotal: 0,
-          difference: null,
-          initialPlants: 3800,
-          label: "Nepieciešamais nav norādīts",
-          requiredPlants: null,
-          tone: "unknown",
-        },
-        materials: {
-          sowing: "",
-          sowingTables: "",
-          thinning: "",
-          harvest: "",
-        },
-      },
-      work_adjustments: [],
-      table_placements: [],
-      change_history: [],
-      plant_corrections: [],
-      hus_events: [],
-    };
-    const client = {
-      from: vi
-        .fn()
-        .mockReturnValueOnce(selectSingleByIdResult(archivedRecord))
-        .mockReturnValueOnce(selectActiveIdentityResult([
-          {
-            id: "99999999-9999-4999-8999-999999999999",
-            hus: " hus  4 ",
-            sowing_date: baseRecord.sowing_date,
-            move_out_date: baseRecord.move_out_date,
-          },
-        ])),
-    };
+  it("does not turn an uncertain RPC transport result into a definitive failed write", async () => {
+    const client = { rpc: vi.fn().mockResolvedValue({ data: null, error: { message: "fetch failed", code: "" } }), from: vi.fn() };
     vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
-
-    await expect(createSupabaseSowingPlanRepository().restore(baseRecord.id)).rejects.toBeInstanceOf(SowingPlanConflictError);
-    expect(client.from).toHaveBeenCalledTimes(2);
+    await expect(createSupabaseSowingPlanRepository().create(recordToSowingPlanRow(baseRecord as never))).rejects.toMatchObject({ writeStatus: "unknown" });
+    expect(client.from).not.toHaveBeenCalled();
   });
+
+  it("loads active and archived rows together through one unfiltered SELECT", async () => {
+    const archived = { ...baseRecord, id: "22222222-2222-4222-8222-222222222222", archived_at: "2026-10-24T12:00:00Z" };
+    const order = vi.fn().mockResolvedValue({ data: [baseRecord, archived], error: null, count: 2 });
+    const select = vi.fn().mockReturnValue({ order });
+    const client = { from: vi.fn().mockReturnValue({ select }), rpc: vi.fn() };
+    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
+    const rows = await loadWorkspaceRowsFromSupabase();
+    expect(rows.map(row => row.id)).toEqual([baseRecord.id, archived.id]);
+    expect(rows[1].archivedAt).toBe(archived.archived_at);
+    expect(client.from).toHaveBeenCalledExactlyOnceWith("sowing_plan_rows");
+    expect(select).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("hus_events(*)"), { count: "exact" });
+    expect(order).toHaveBeenCalledTimes(1);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it.each([3, null])("refuses a workspace truncated by server limits or missing its count (%s)", async count => {
+    const client = { from: vi.fn().mockReturnValue({ select: vi.fn().mockReturnValue({ order: vi.fn().mockResolvedValue({ data: [baseRecord], error: null, count }) }) }) };
+    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
+    await expect(loadWorkspaceRowsFromSupabase()).rejects.toThrow("nepilnīga");
+    expect(client.from).toHaveBeenCalledTimes(1);
+  });
+
+  it("never falls back to empty relation history when workspace loading fails", async () => {
+    const client = { from: vi.fn().mockReturnValue({ select: vi.fn().mockReturnValue({ order: vi.fn().mockResolvedValue({ data: null, error: { code: "PGRST200" }, count: null }) }) }) };
+    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
+    await expect(loadWorkspaceRowsFromSupabase()).rejects.toMatchObject({ code: "PGRST200" });
+    expect(client.from).toHaveBeenCalledTimes(1);
+  });
+
 });
 
 function selectOrderResult(result: unknown) {
-  const builder = {
-    is: vi.fn(),
-    not: vi.fn(),
-    order: vi.fn().mockResolvedValue(result),
-  };
-  builder.is.mockReturnValue(builder);
-  builder.not.mockReturnValue(builder);
-
-  return {
-    select: vi.fn().mockReturnValue(builder),
-  };
+  const builder = { is: vi.fn(), not: vi.fn(), order: vi.fn().mockResolvedValue(result) };
+  builder.is.mockReturnValue(builder); builder.not.mockReturnValue(builder);
+  return { select: vi.fn().mockReturnValue(builder) };
 }
-
-function versionCheckResult(updatedAt: string) {
-  return {
-    select: vi.fn().mockReturnValue({
-      eq: vi.fn().mockReturnValue({
-        maybeSingle: vi.fn().mockResolvedValue({ data: { updated_at: updatedAt }, error: null }),
-      }),
-    }),
-  };
-}
-
-function updateResult(data: unknown) {
-  const builder = {
-    eq: vi.fn(),
-    is: vi.fn(),
-    not: vi.fn(),
-    select: vi.fn(),
-  };
-  builder.eq.mockReturnValue(builder);
-  builder.is.mockReturnValue(builder);
-  builder.not.mockReturnValue(builder);
-  builder.select.mockReturnValue({
-    maybeSingle: vi.fn().mockResolvedValue({ data, error: null }),
-  });
-
-  return {
-    builder,
-    update: vi.fn().mockReturnValue(builder),
-  };
-}
-
-function deleteResult() {
-  const builder = {
-    eq: vi.fn(),
-    not: vi.fn(),
-    is: vi.fn(),
-    select: vi.fn(),
-  };
-  builder.eq.mockReturnValue(builder);
-  builder.not.mockReturnValue(builder);
-  builder.is.mockReturnValue(builder);
-  builder.select.mockReturnValue({
-    maybeSingle: vi.fn().mockResolvedValue({ data: { id: baseRecord.id }, error: null }),
-  });
-
-  return {
-    delete: vi.fn().mockReturnValue(builder),
-  };
-}
-
-function upsertResult() {
-  return {
-    upsert: vi.fn().mockResolvedValue({ error: null }),
-  };
-}
-
-function selectActiveIdentityResult(data: unknown[]) {
-  const builder = {
-    eq: vi.fn(),
-    is: vi.fn(),
-  };
-  builder.eq.mockReturnValue(builder);
-  builder.is.mockResolvedValue({ data, error: null });
-
-  return {
-    select: vi.fn().mockReturnValue(builder),
-  };
-}
-
 function selectSingleByIdResult(data: unknown) {
-  return {
-    select: vi.fn().mockReturnValue({
-      eq: vi.fn().mockReturnValue({
-        single: vi.fn().mockResolvedValue({ data, error: null }),
-      }),
-    }),
-  };
+  return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data, error: null }) }) }) };
 }

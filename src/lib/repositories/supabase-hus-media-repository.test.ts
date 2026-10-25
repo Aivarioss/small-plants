@@ -199,7 +199,7 @@ describe("supabase HUS media repository", () => {
     expect(result.photos[0].husNoteId).toBe(noteRecord.id);
   });
 
-  it("cleans uploaded storage when photo metadata insert fails", async () => {
+  it("retains uploaded storage when the metadata outcome is uncertain", async () => {
     const remove = vi.fn().mockResolvedValue({ error: null });
     const client = clientMock({
       eventExists: true,
@@ -218,7 +218,7 @@ describe("supabase HUS media repository", () => {
       }),
     ).rejects.toThrow("Neizdevās saglabāt HUS fotogrāfiju metadatus");
 
-    expect(remove).toHaveBeenCalledTimes(1);
+    expect(remove).not.toHaveBeenCalled();
   });
 
   it("downloads a private HUS photo", async () => {

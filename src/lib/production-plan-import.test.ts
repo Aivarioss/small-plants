@@ -116,6 +116,7 @@ describe("production plan photo import parsing", () => {
     expect(row.extraPlants).toBe(100);
     expect(row.requiredPlants + row.extraPlants).toBe(3844);
     expect(row.weekNumber).toBe(40);
+    expect(row.changeHistory?.at(-1)?.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
     expect(row.source).toBe("import");
     expect(row.status).toBe("imported");
   });

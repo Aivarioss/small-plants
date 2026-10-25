@@ -179,7 +179,7 @@ export function importCandidateToSowingPlanRow(
   const base = options.existingRow;
   const note = base ? "Atjaunots no production-plan foto importa" : "Izveidots no production-plan foto importa";
   const history: ChangeHistoryEntry = {
-    id: `${options.id}-history`,
+    id: crypto.randomUUID(),
     field: base ? "Foto imports" : "Rinda izveidota",
     from: base ? `${base.sectorName} ${base.sowingDate}` : "",
     note,

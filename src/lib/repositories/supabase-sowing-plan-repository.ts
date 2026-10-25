@@ -1,13 +1,11 @@
 import "server-only";
+import { WriteOutcomeError } from "@/lib/write-outcome";
+import type { PlanImportBatch } from "./types";
 import { plannerConfig } from "@/lib/demo-data";
 import { buildArchiveSnapshot, freezeWorkAdjustmentsForStableActiveSchedule } from "@/lib/planning";
 import type { SowingPlanRow, WorkAdjustments } from "@/lib/types";
 import type {
-  ChangeHistoryRecord,
-  HusEventRecord,
-  PlantCorrectionRecord,
   SowingPlanRowWithRelations,
-  TablePlacementRecord,
   WorkAdjustmentRecord,
 } from "@/lib/supabase/database";
 import {
@@ -77,6 +75,19 @@ export function createSupabaseSowingPlanRepository(): RemoteSowingPlanRepository
   };
 }
 
+/** One PostgREST SELECT (including relations) supplies the complete workspace. */
+export async function loadWorkspaceRowsFromSupabase(): Promise<SowingPlanRow[]> {
+  const { data, error, count } = await createSupabaseServerClient()
+    .from("sowing_plan_rows").select(SOWING_PLAN_SELECT, { count: "exact" })
+    .order("sowing_date", { ascending: true });
+  if (error) throw error;
+  // A server row limit must fail closed, not make older/active cycles disappear.
+  if (!Array.isArray(data) || count === null || count !== data.length) {
+    throw new Error("Pilnā plāna ielāde ir nepilnīga. Dati nav atjaunoti; pārbaudi servera rindu limitu.");
+  }
+  return (data as SowingPlanRowWithRelations[]).map(recordToSowingPlanRow);
+}
+
 async function loadRowsFromSupabase(): Promise<SowingPlanRow[]> {
   const client = createSupabaseServerClient();
 
@@ -85,19 +96,6 @@ async function loadRowsFromSupabase(): Promise<SowingPlanRow[]> {
     .select(SOWING_PLAN_SELECT)
     .is("archived_at", null)
     .order("sowing_date", { ascending: true });
-
-  if (error && isOptionalRelationError(error)) {
-    const fallbackSelect = isHusEventsRelationError(error)
-      ? "*, work_adjustments(*), table_placements(*), change_history(*), plant_corrections(*)"
-      : "*, work_adjustments(*), table_placements(*), change_history(*)";
-    const fallback = await client.from("sowing_plan_rows").select(fallbackSelect).is("archived_at", null).order("sowing_date", { ascending: true });
-
-    if (fallback.error) {
-      throw fallback.error;
-    }
-
-    return ((fallback.data ?? []) as unknown as SowingPlanRowWithRelations[]).map(recordToSowingPlanRow);
-  }
 
   if (error) {
     throw error;
@@ -115,23 +113,6 @@ async function loadArchivedRowsFromSupabase(): Promise<SowingPlanRow[]> {
     .not("archived_at", "is", null)
     .order("archived_at", { ascending: false });
 
-  if (error && isOptionalRelationError(error)) {
-    const fallbackSelect = isHusEventsRelationError(error)
-      ? "*, work_adjustments(*), table_placements(*), change_history(*), plant_corrections(*)"
-      : "*, work_adjustments(*), table_placements(*), change_history(*)";
-    const fallback = await client
-      .from("sowing_plan_rows")
-      .select(fallbackSelect)
-      .not("archived_at", "is", null)
-      .order("archived_at", { ascending: false });
-
-    if (fallback.error) {
-      throw fallback.error;
-    }
-
-    return ((fallback.data ?? []) as unknown as SowingPlanRowWithRelations[]).map(recordToSowingPlanRow);
-  }
-
   if (error) {
     throw error;
   }
@@ -140,59 +121,40 @@ async function loadArchivedRowsFromSupabase(): Promise<SowingPlanRow[]> {
 }
 
 async function createRowInSupabase(row: SowingPlanRow): Promise<SowingPlanRow> {
-  const client = createSupabaseServerClient();
-  const record = sowingPlanRowToRecord(row);
-
-  if (!record) {
-    throw new Error("Demo rows cannot be saved to Supabase.");
-  }
-
-  const { error } = await client.from("sowing_plan_rows").insert(record);
-  if (error) {
-    throw error;
-  }
-
-  await replaceWorkAdjustments(row);
-  await replaceTablePlacement(row);
-  await replacePlantCorrections(row);
-  await replaceHusEvents(row);
-  await upsertChangeHistory(row);
-
-  return loadRowById(row.id);
+  return saveRowAtomically(row, "create");
 }
 
 async function updateRowInSupabase(row: SowingPlanRow, expectedUpdatedAt?: string): Promise<SowingPlanRow> {
-  const client = createSupabaseServerClient();
+  const expected = expectedUpdatedAt ?? row.updatedAt;
+  if (!expected) throw new SowingPlanConflictError("Pārlādē HUS pirms saglabāšanas. / Reload the HUS before saving.");
+  return saveRowAtomically(row, "update", expected);
+}
+
+async function saveRowAtomically(row: SowingPlanRow, operation: "create" | "update", expected?: string): Promise<SowingPlanRow> {
   const record = sowingPlanRowToRecord(row);
-
-  if (!record) {
-    throw new Error("Demo rows cannot be saved to Supabase.");
-  }
-
-  const currentUpdatedAt = await assertCurrentVersion(row.id, expectedUpdatedAt);
-
-  const patch = rowRecordUpdatePatch(record);
-  let query = client.from("sowing_plan_rows").update(patch).eq("id", row.id).is("archived_at", null);
-  if (currentUpdatedAt) {
-    query = query.eq("updated_at", currentUpdatedAt);
-  }
-
-  const { data, error } = await query.select("id").maybeSingle();
+  if (!record) throw new Error("Demo rows cannot be saved to Supabase.");
+  const client = createSupabaseServerClient();
+  const { data, error } = await rpcWrite(client, "save_sowing_plan_row", [row.id], {
+    p_operation: operation,
+    p_row: record,
+    p_expected_updated_at: expected ?? null,
+    p_work_adjustments: rowAdjustmentsToRecords(row, "manual"),
+    p_table_placement: rowPlacementToRecord(row),
+    p_plant_corrections: rowPlantCorrectionsToRecords(row),
+    p_hus_events: rowHusEventsToRecords(row),
+    p_change_history: rowChangeHistoryToRecords(row),
+  });
   if (error) {
-    throw error;
+    if (error.code === "40001") throw new SowingPlanConflictError();
+    if (error.code === "P0002") throw new SowingPlanNotFoundError();
+    if (error.code === "55000") throw new SowingPlanArchivedError();
+    if (error.code === "PGRST202" || error.code === "42883") {
+      throw new SupabasePersistenceError("Droša saglabāšana vēl nav sagatavota datubāzē. Nepieciešama save_sowing_plan_row migrācija; dati nav mainīti", error);
+    }
+    throw new SupabasePersistenceError("Neizdevās atomiski saglabāt HUS", error);
   }
-
-  if (!data) {
-    throw new SowingPlanConflictError();
-  }
-
-  await replaceWorkAdjustments(row);
-  await replaceTablePlacement(row);
-  await replacePlantCorrections(row);
-  await replaceHusEvents(row);
-  await upsertChangeHistory(row);
-
-  return loadRowById(row.id);
+  if (data !== row.id) throw new WriteOutcomeError("unknown", [row.id]);
+  return readConfirmedWrite(row.id);
 }
 
 async function deleteRowFromSupabase(id: string, expectedUpdatedAt?: string): Promise<void> {
@@ -216,151 +178,47 @@ async function deleteRowFromSupabase(id: string, expectedUpdatedAt?: string): Pr
 }
 
 async function archiveRowInSupabase(id: string, note?: string): Promise<SowingPlanRow> {
-  const client = createSupabaseServerClient();
-  const row = await loadRowById(id);
-
-  if (row.archivedAt) {
-    throw new SowingPlanArchivedError("This Hus is already archived.");
-  }
-
-  const activeRows = await loadRowsFromSupabase();
-  await freezeActiveRowsForArchive(client, activeRows, id);
-  const archivedAt = new Date().toISOString();
-  const snapshot = buildArchiveSnapshot(row, activeRows, plannerConfig, archivedAt, note?.trim() || undefined);
-
-  let query = client
-    .from("sowing_plan_rows")
-    .update({
-      archived_at: archivedAt,
-      archived_note: note?.trim() || null,
-      archive_snapshot: snapshot,
-    })
-    .eq("id", id)
-    .is("archived_at", null);
-
-  if (row.updatedAt) {
-    query = query.eq("updated_at", row.updatedAt);
-  }
-
-  const { data, error } = await query.select("id").maybeSingle();
-
-  if (error) {
-    throw error;
-  }
-
-  if (!data) {
-    throw new SowingPlanConflictError("This Hus changed while it was being archived. Reload and archive again.");
-  }
-
-  return loadRowById(id);
+  return changeArchiveState(id, "archive", note);
 }
 
 async function restoreRowInSupabase(id: string): Promise<SowingPlanRow> {
-  const client = createSupabaseServerClient();
+  return changeArchiveState(id, "restore");
+}
+
+async function changeArchiveState(id: string, operation: "archive" | "restore", note?: string): Promise<SowingPlanRow> {
   const row = await loadRowById(id);
-
-  if (!row.archivedAt) {
-    return row;
-  }
-
-  await assertNoActiveDuplicateForRestore(row);
+  if (operation === "archive" && row.archivedAt) throw new SowingPlanArchivedError();
+  if (operation === "restore" && !row.archivedAt) return row;
   const activeRows = await loadRowsFromSupabase();
-  await freezeActiveRowsForArchive(client, activeRows, id);
-
-  const { data, error } = await client
-    .from("sowing_plan_rows")
-    .update({
-      archived_at: null,
-      archived_note: null,
-    })
-    .eq("id", id)
-    .not("archived_at", "is", null)
-    .select("id")
-    .maybeSingle();
-
+  if (!row.updatedAt || activeRows.some((candidate) => !candidate.updatedAt)) throw new SowingPlanConflictError();
+  if (operation === "archive" && activeRows.find((candidate) => candidate.id === id)?.updatedAt !== row.updatedAt) {
+    throw new SowingPlanConflictError();
+  }
+  const archivedAt = new Date().toISOString();
+  const originalById = new Map(activeRows.map((candidate) => [candidate.id, candidate]));
+  const frozen = freezeWorkAdjustmentsForStableActiveSchedule(activeRows, id, plannerConfig)
+    .flatMap((candidate) => {
+      const original = originalById.get(candidate.id);
+      return original && candidate.id !== id ? optimizerAdjustmentRecordsAddedByFreeze(original, candidate) : [];
+    });
+  const { data, error } = await rpcWrite(createSupabaseServerClient(), "change_sowing_plan_archive", [id], {
+    p_id: id, p_operation: operation, p_expected_updated_at: row.updatedAt,
+    p_active_versions: activeRows.map((candidate) => ({ id: candidate.id, updated_at: candidate.updatedAt })),
+    p_freeze: frozen,
+    p_archived_at: operation === "archive" ? archivedAt : null,
+    p_note: note?.trim() || null,
+    p_snapshot: operation === "archive" ? buildArchiveSnapshot(row, activeRows, plannerConfig, archivedAt, note?.trim() || undefined) : null,
+  });
   if (error) {
-    throw error;
+    if (["40001", "23505", "40P01", "55P03"].includes(error.code)) throw new SowingPlanConflictError();
+    if (error.code === "P0002") throw new SowingPlanNotFoundError();
+    if (["PGRST202", "42883"].includes(error.code)) {
+      throw new SupabasePersistenceError("Arhīva operācija nav sagatavota datubāzē; nepieciešama change_sowing_plan_archive migrācija", error);
+    }
+    throw new SupabasePersistenceError("Neizdevās atomiski mainīt arhīvu", error);
   }
-
-  if (!data) {
-    throw new SowingPlanConflictError("This Hus was restored elsewhere. Reload and review before trying again.");
-  }
-
-  return loadRowById(id);
-}
-
-async function assertNoActiveDuplicateForRestore(row: SowingPlanRow): Promise<void> {
-  const client = createSupabaseServerClient();
-  const { data, error } = await client
-    .from("sowing_plan_rows")
-    .select("id, hus, sowing_date, move_out_date")
-    .eq("sowing_date", row.sowingDate)
-    .eq("move_out_date", row.harvestDate)
-    .is("archived_at", null);
-
-  if (error) {
-    throw error;
-  }
-
-  const duplicate = ((data ?? []) as Array<{ id: string; hus: string; sowing_date: string; move_out_date: string }>).find(
-    (candidate) =>
-      candidate.id !== row.id &&
-      normalizeHusIdentity(candidate.hus) === normalizeHusIdentity(row.sectorName) &&
-      candidate.sowing_date === row.sowingDate &&
-      candidate.move_out_date === row.harvestDate,
-  );
-
-  if (duplicate) {
-    throw new SowingPlanConflictError("Aktīvajā plānā jau ir identisks HUS cikls. Restore blocked because an identical active cycle already exists.");
-  }
-}
-
-async function freezeActiveRowsForArchive(
-  client: ReturnType<typeof createSupabaseServerClient>,
-  activeRows: SowingPlanRow[],
-  archivedRowId: string,
-): Promise<void> {
-  const frozenRows = freezeWorkAdjustmentsForStableActiveSchedule(activeRows, archivedRowId, plannerConfig);
-  const originalById = new Map(activeRows.map((row) => [row.id, row]));
-
-  for (const frozenRow of frozenRows) {
-    const originalRow = originalById.get(frozenRow.id);
-    if (!originalRow || originalRow.id === archivedRowId) {
-      continue;
-    }
-
-    const records = optimizerAdjustmentRecordsAddedByFreeze(originalRow, frozenRow);
-    if (records.length === 0) {
-      continue;
-    }
-
-    let touchQuery = client
-      .from("sowing_plan_rows")
-      .update({ status: originalRow.status ?? "planned" })
-      .eq("id", originalRow.id)
-      .is("archived_at", null);
-
-    if (originalRow.updatedAt) {
-      touchQuery = touchQuery.eq("updated_at", originalRow.updatedAt);
-    }
-
-    const { data, error } = await touchQuery.select("id").maybeSingle();
-    if (error) {
-      throw error;
-    }
-
-    if (!data) {
-      throw new SowingPlanConflictError("Aktīvais plāns mainījās arhivēšanas laikā. Pārlādē un mēģini vēlreiz.");
-    }
-
-    const { error: upsertError } = await client
-      .from("work_adjustments")
-      .upsert(records as WorkAdjustmentRecord[], { onConflict: "sowing_plan_row_id,work_type" });
-
-    if (upsertError) {
-      throw upsertError;
-    }
-  }
+  if (data !== id) throw new WriteOutcomeError("unknown", [id]);
+  return readConfirmedWrite(id);
 }
 
 function optimizerAdjustmentRecordsAddedByFreeze(
@@ -395,10 +253,6 @@ function adjustmentDatesForRecord(value: WorkAdjustments[keyof WorkAdjustments] 
   return value ? [value] : [];
 }
 
-function normalizeHusIdentity(value: string): string {
-  return value.trim().replace(/\s+/g, " ").toLocaleLowerCase("lv-LV");
-}
-
 async function loadRowById(id: string): Promise<SowingPlanRow> {
   const client = createSupabaseServerClient();
   const { data, error } = await client
@@ -406,19 +260,6 @@ async function loadRowById(id: string): Promise<SowingPlanRow> {
     .select(SOWING_PLAN_SELECT)
     .eq("id", id)
     .single();
-
-  if (error && isOptionalRelationError(error)) {
-    const fallbackSelect = isHusEventsRelationError(error)
-      ? "*, work_adjustments(*), table_placements(*), change_history(*), plant_corrections(*)"
-      : "*, work_adjustments(*), table_placements(*), change_history(*)";
-    const fallback = await client.from("sowing_plan_rows").select(fallbackSelect).eq("id", id).single();
-
-    if (fallback.error) {
-      throw fallback.error;
-    }
-
-    return recordToSowingPlanRow(fallback.data as unknown as SowingPlanRowWithRelations);
-  }
 
   if (error) {
     throw error;
@@ -461,190 +302,6 @@ function isSameTimestamp(left: string, right: string): boolean {
   return left === right;
 }
 
-async function replaceWorkAdjustments(row: SowingPlanRow): Promise<void> {
-  const client = createSupabaseServerClient();
-
-  const { error: deleteError } = await client.from("work_adjustments").delete().eq("sowing_plan_row_id", row.id);
-  if (deleteError) {
-    throw deleteError;
-  }
-
-  const records = rowAdjustmentsToRecords(row, "manual");
-  if (records.length === 0) {
-    return;
-  }
-
-  const { error } = await client
-    .from("work_adjustments")
-    .upsert(records as WorkAdjustmentRecord[], { onConflict: "sowing_plan_row_id,work_type" });
-
-  if (error) {
-    throw error;
-  }
-}
-
-async function replaceTablePlacement(row: SowingPlanRow): Promise<void> {
-  const client = createSupabaseServerClient();
-
-  const { error: deleteError } = await client.from("table_placements").delete().eq("sowing_plan_row_id", row.id);
-  if (deleteError) {
-    throw deleteError;
-  }
-
-  const record = rowPlacementToRecord(row);
-  if (!record) {
-    return;
-  }
-
-  const { error } = await client.from("table_placements").upsert(record as TablePlacementRecord, {
-    onConflict: "sowing_plan_row_id",
-  });
-
-  if (error) {
-    throw error;
-  }
-}
-
-async function replacePlantCorrections(row: SowingPlanRow): Promise<void> {
-  const client = createSupabaseServerClient();
-
-  const records = rowPlantCorrectionsToRecords(row);
-  let deletion = client.from("plant_corrections").delete();
-  // Never delete/recreate retained IDs: foreign keys link corrections and private photos to them.
-  if (records.length) deletion = deletion.not("id", "in", "("+records.map((record) => record.id).join(",")+")");
-  const { error: deleteError } = await deletion.eq("sowing_plan_row_id", row.id);
-  if (deleteError && isPlantCorrectionsRelationError(deleteError) && (row.plantCorrections ?? []).length === 0) {
-    return;
-  }
-  if (deleteError && isPlantCorrectionsRelationError(deleteError)) {
-    throw new Error("plant_corrections tabula vai relācija nav pieejama. Pārbaudi, vai Supabase plant_corrections migrācija ir palaista un schema cache ir atjaunots.");
-  }
-  if (deleteError) {
-    throw new SupabasePersistenceError("Neizdevās dzēst iepriekšējās stādu korekcijas", deleteError);
-  }
-
-  if (records.length === 0) {
-    return;
-  }
-
-  const { error } = await client.from("plant_corrections").upsert(records as PlantCorrectionRecord[], { onConflict: "id" });
-
-  if (error) {
-    throw new SupabasePersistenceError("Neizdevās saglabāt stādu korekcijas", error);
-  }
-}
-
-async function replaceHusEvents(row: SowingPlanRow): Promise<void> {
-  const client = createSupabaseServerClient();
-
-  const records = rowHusEventsToRecords(row);
-  let deletion = client.from("hus_events").delete();
-  // Never delete/recreate retained IDs: foreign keys link corrections and private photos to them.
-  if (records.length) deletion = deletion.not("id", "in", "("+records.map((record) => record.id).join(",")+")");
-  const { error: deleteError } = await deletion.eq("sowing_plan_row_id", row.id);
-  if (deleteError && isHusEventsRelationError(deleteError) && (row.husEvents ?? []).length === 0) {
-    return;
-  }
-  if (deleteError && isHusEventsRelationError(deleteError)) {
-    throw new Error("hus_events tabula vai relācija nav pieejama. Pārbaudi, vai Supabase hus_events migrācija ir palaista un schema cache ir atjaunots.");
-  }
-  if (deleteError) {
-    throw new SupabasePersistenceError("Neizdevās dzēst iepriekšējos HUS žurnāla ierakstus", deleteError);
-  }
-
-  if (records.length === 0) {
-    return;
-  }
-
-  const { error } = await client.from("hus_events").upsert(records as HusEventRecord[], { onConflict: "id" });
-
-  if (error) {
-    throw new SupabasePersistenceError("Neizdevās saglabāt HUS žurnāla ierakstus", error);
-  }
-}
-
-async function upsertChangeHistory(row: SowingPlanRow): Promise<void> {
-  const client = createSupabaseServerClient();
-  const records = rowChangeHistoryToRecords(row).filter((record): record is ChangeHistoryRecord => Boolean(record.id));
-
-  if (records.length === 0) {
-    return;
-  }
-
-  const { error } = await client.from("change_history").upsert(records, { onConflict: "id" });
-
-  if (error) {
-    throw error;
-  }
-}
-
-function rowRecordUpdatePatch(record: NonNullable<ReturnType<typeof sowingPlanRowToRecord>>) {
-  return {
-    correction: record.correction,
-    cycle_length: record.cycle_length,
-    extra_plants: record.extra_plants,
-    greenhouse_required_plants: record.greenhouse_required_plants,
-    hus: record.hus,
-    move_out_date: record.move_out_date,
-    previcure_date: record.previcure_date,
-    required_plants: record.required_plants,
-    sector_type: record.sector_type,
-    source: record.source,
-    sowing_tables: record.sowing_tables,
-    sowing_date: record.sowing_date,
-    status: record.status,
-    variety: record.variety,
-    week_number: record.week_number,
-  };
-}
-
-function isPlantCorrectionsRelationError(error: unknown): boolean {
-  const candidate = error as { code?: unknown; message?: unknown };
-  const code = typeof candidate.code === "string" ? candidate.code : "";
-  const message = typeof candidate.message === "string" ? candidate.message : "";
-  const haystack = `${code} ${message}`.toLowerCase();
-
-  return (
-    haystack.includes("plant_corrections") &&
-    (haystack.includes("pgrst200") ||
-      haystack.includes("pgrst205") ||
-      haystack.includes("42p01") ||
-      haystack.includes("relationship") ||
-      haystack.includes("schema cache") ||
-      haystack.includes("does not exist"))
-  );
-}
-
-function isHusEventsRelationError(error: unknown): boolean {
-  return isMissingRelationError(error, "hus_events");
-}
-
-function isOptionalRelationError(error: unknown): boolean {
-  return (
-    isPlantCorrectionsRelationError(error) ||
-    isHusEventsRelationError(error) ||
-    isMissingRelationError(error, "hus_notes") ||
-    isMissingRelationError(error, "hus_photos")
-  );
-}
-
-function isMissingRelationError(error: unknown, relation: string): boolean {
-  const candidate = error as { code?: unknown; message?: unknown };
-  const code = typeof candidate.code === "string" ? candidate.code : "";
-  const message = typeof candidate.message === "string" ? candidate.message : "";
-  const haystack = `${code} ${message}`.toLowerCase();
-
-  return (
-    haystack.includes(relation) &&
-    (haystack.includes("pgrst200") ||
-      haystack.includes("pgrst205") ||
-      haystack.includes("42p01") ||
-      haystack.includes("relationship") ||
-      haystack.includes("schema cache") ||
-      haystack.includes("does not exist"))
-  );
-}
-
 function supabaseErrorSummary(error: unknown): string {
   const candidate = error as { code?: unknown; details?: unknown; hint?: unknown; message?: unknown };
   const parts = [
@@ -655,4 +312,46 @@ function supabaseErrorSummary(error: unknown): string {
   ].filter(Boolean);
 
   return parts.length > 0 ? parts.join(" · ") : "Supabase operation failed.";
+}
+
+async function readConfirmedWrite(id: string): Promise<SowingPlanRow> {
+  try { return await loadRowById(id); }
+  catch { throw new WriteOutcomeError("committed", [id]); }
+}
+
+export async function importPlanBatch(batch: PlanImportBatch): Promise<string[]> {
+  if (!batch.items.length || batch.items.length > 500) throw new Error("Imports drīkst saturēt 1–500 rindas.");
+  const items = batch.items.map(({ operation, row }) => {
+    const record = sowingPlanRowToRecord(row);
+    if (!record) throw new Error("Demo rows cannot be imported.");
+    if (operation === "update" && !row.updatedAt) throw new SowingPlanConflictError();
+    return { operation, row: record, expected_updated_at: operation === "update" ? row.updatedAt : null,
+      work: rowAdjustmentsToRecords(row, "manual"), placement: rowPlacementToRecord(row),
+      losses: rowPlantCorrectionsToRecords(row), events: rowHusEventsToRecords(row), history: rowChangeHistoryToRecords(row) };
+  });
+  const ids = batch.items.map(item => item.row.id);
+  let result;
+  try { result = await createSupabaseServerClient().rpc("import_sowing_plan_rows", { p_id: batch.id, p_request: batch.items, p_items: items }); }
+  catch { throw new WriteOutcomeError("unknown", ids); }
+  if (result.error) {
+    if (!result.error.code) throw new WriteOutcomeError("unknown", ids);
+    // This retry may have timed out waiting for an earlier request's receipt.
+    // Aborting the retry says nothing about the original transaction's outcome.
+    if (["55P03", "40P01"].includes(result.error.code)) throw new WriteOutcomeError("unknown", ids);
+    if (["40001", "23505"].includes(result.error.code)) throw new SowingPlanConflictError();
+    throw new SupabasePersistenceError(["PGRST202", "42883"].includes(result.error.code)
+      ? "Imports nav saglabāts; nepieciešama import_sowing_plan_rows migrācija" : "Neizdevās atomiski saglabāt importu", result.error);
+  }
+  if (!Array.isArray(result.data) || result.data.length !== ids.length || ids.some(id => !result.data.includes(id))) {
+    throw new WriteOutcomeError("unknown", ids);
+  }
+  return result.data as string[];
+}
+
+async function rpcWrite(client: ReturnType<typeof createSupabaseServerClient>, name: string, ids: string[], args: Record<string, unknown>) {
+  let result;
+  try { result = await client.rpc(name, args); }
+  catch { throw new WriteOutcomeError("unknown", ids); }
+  if (result.error && !result.error.code) throw new WriteOutcomeError("unknown", ids);
+  return result;
 }

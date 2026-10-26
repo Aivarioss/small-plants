@@ -531,7 +531,7 @@ export function formatPrintSowingPlan(plantCount: number, language: AppLanguage)
   }
 
   const full = plan.fullTables === 1 ? "1 full table" : `${plan.fullTables} full tables`;
-  const partial = plan.hasPartialTable ? ` + partial table 16x${plan.partialRowsWithReserve}` : "";
+  const partial = plan.hasPartialTable ? ` + partial table 16x${plan.partialRows}` : "";
   return `${full}${partial}`;
 }
 

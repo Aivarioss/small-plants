@@ -105,13 +105,12 @@ describe("planning calculations", () => {
     expect(getTotalSow(row)).toBe(3542);
   });
 
-  it("calculates full sowing tables and partial table reserve rows", () => {
+  it("calculates only the required full tables and rounded partial rows", () => {
     const plan = calculateSowingPlan(3542);
 
     expect(plan.fullTables).toBe(2);
     expect(plan.partialRows).toBe(38);
-    expect(plan.partialRowsWithReserve).toBe(43);
-    expect(plan.label).toBe("2 pilni galdi + nepilns galds 16x43");
+    expect(plan.label).toBe("2 pilni galdi + nepilns galds 16x38");
   });
 
   it("chooses a thinning plan inside the 23-28 plants per gutter target", () => {

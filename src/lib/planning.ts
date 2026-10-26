@@ -475,15 +475,13 @@ export function calculateSowingPlan(plantCount: number): SowingPlan {
   const fullTables = Math.floor(plantCount / FULL_TABLE_PLANTS);
   const remainder = plantCount % FULL_TABLE_PLANTS;
   const partialRows = remainder > 0 ? Math.ceil(remainder / 16) : 0;
-  const partialRowsWithReserve = partialRows > 0 ? Math.min(partialRows + 5, 92) : 0;
-  const hasPartialTable = partialRowsWithReserve > 0;
+  const hasPartialTable = partialRows > 0;
   const fullPart = fullTables === 1 ? "1 pilns galds" : `${fullTables} pilni galdi`;
-  const partialPart = hasPartialTable ? ` + nepilns galds 16x${partialRowsWithReserve}` : "";
+  const partialPart = hasPartialTable ? ` + nepilns galds 16x${partialRows}` : "";
 
   return {
     fullTables,
     partialRows,
-    partialRowsWithReserve,
     hasPartialTable,
     label: `${fullPart}${partialPart}`,
   };

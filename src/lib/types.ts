@@ -263,7 +263,6 @@ export type PlannerConfig = {
 export type SowingPlan = {
   fullTables: number;
   partialRows: number;
-  partialRowsWithReserve: number;
   hasPartialTable: boolean;
   label: string;
 };

@@ -2772,7 +2772,7 @@ function GreenhousePanel({
       </div>
 
       <div className="greenhouse-grid">
-        <SeedingCapacityView occupancy={snapshot.seeding} language={language} />
+        <SeedingCapacityView occupancy={snapshot.seeding} language={language} date={date} today={localTodayIso()} />
         {snapshot.growing.rows.map((row) => (
           <article className="greenhouse-row" key={row.planRowId}>
             <div>

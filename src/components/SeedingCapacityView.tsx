@@ -1,9 +1,16 @@
 import type { GreenhouseSeedingOccupancy } from "@/lib/greenhouse-simulation";
 import type { AppLanguage } from "@/lib/localization";
+import { formatSowingTableSelection } from "@/lib/planning";
 
 /** Count-only reservations do not imply a choice of physical A-table numbers. */
-export function SeedingCapacityView({ occupancy, language }: { occupancy: GreenhouseSeedingOccupancy; language: AppLanguage }) {
+export function SeedingCapacityView({ occupancy, language, date, today }: {
+  occupancy: GreenhouseSeedingOccupancy;
+  language: AppLanguage;
+  date: string;
+  today: string;
+}) {
   const lv = language === "lv";
+  const planned = date > today;
   const unknownCount = occupancy.unknownRows.some((row) => row.reason === "unknownCount" || row.reason === "missingSowingTables");
   return <article className="greenhouse-row">
     <div>
@@ -15,8 +22,8 @@ export function SeedingCapacityView({ occupancy, language }: { occupancy: Greenh
     {occupancy.rows.map((row) => {
       const countUnknown = occupancy.unknownRows.some((entry) => entry.planRowId === row.planRowId &&
         (entry.reason === "unknownCount" || entry.reason === "missingSowingTables"));
-      return <p key={row.planRowId}>{row.sectorName} — {countUnknown && !row.tableCount ? "?" :
-        `${countUnknown ? lv ? "vismaz " : "at least " : ""}${row.tableCount}`} {lv ? "galdi" : "tables"}</p>;
+      return <p key={row.planRowId}>{row.sectorName} — {row.tables.length ? `${formatSowingTableSelection(row.tables)} · ` : ""}{countUnknown && !row.tableCount ? "?" :
+        `${countUnknown ? lv ? "vismaz " : "at least " : ""}${row.tableCount}`} {lv ? "galdi" : "tables"}{planned ? lv ? " · plānots" : " · planned" : ""}</p>;
     })}
     {!occupancy.rows.length ? <p>{lv ? "Nav sēšanas galdu rezervāciju šajā datumā" : "No seeding table reservations on this date"}</p> : null}
     {occupancy.unknownRows.map((row) => <p className="capacity-note" key={row.planRowId}>

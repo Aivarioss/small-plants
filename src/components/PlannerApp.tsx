@@ -36,6 +36,7 @@ import {
 import {
   applyHusTemplateToDraft,
   calculateMoveOutDate,
+  DEFAULT_WORKER_EXTRA,
   deriveCycleLength,
   operationalTotal,
   sectorTypeForOperationalTotal,
@@ -137,7 +138,7 @@ const initialDraft: SowingPlanDraft = {
   sectorName: "",
   greenhouseRequiredPlants: "",
   requiredPlants: "3400",
-  extraPlants: "144",
+  extraPlants: String(DEFAULT_WORKER_EXTRA),
   variety: "",
   sowingTables: "",
   sowingDate: toIsoDate(new Date()),
@@ -1381,9 +1382,9 @@ function SowingPlanPanel({
           </label>
         </div>
 
-        <div className="quick-entry-summary">
+        {draft.sectorName.trim() ? <div className="quick-entry-summary">
           <strong>
-            {draft.variety || t("variety", language)} · {Number(draft.requiredPlants || 0).toLocaleString("lv-LV")} +{" "}
+            {draft.sectorName} · {draft.variety || t("variety", language)} · {Number(draft.requiredPlants || 0).toLocaleString("lv-LV")} +{" "}
             {Number(draft.extraPlants || 0).toLocaleString("lv-LV")} →{" "}
             {formatPlants(operationalTotal(Number(draft.requiredPlants || 0), Number(draft.extraPlants || 0)), language)}
           </strong>
@@ -1396,7 +1397,7 @@ function SowingPlanPanel({
           <span>
             {t("moveOut", language)} {shortDate(draft.harvestDate)} · {draft.cycleLength || "?"} {language === "lv" ? "dienu cikls" : "day cycle"}
           </span>
-        </div>
+        </div> : null}
 
         <details className="advanced-fields">
           <summary>{t("changeDetails", language)}</summary>

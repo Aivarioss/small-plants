@@ -1,3 +1,5 @@
+import { growingTableSelectionRows, interpretHusMovingEventPlacement } from "./greenhouse-simulation";
+import { parseHusEventMovementRows } from "./planning";
 import type { HusPhotoEntry, SowingPlanRow } from "./types";
 
 export type HusPhotoDetails = { description?: string; date?: string; table?: string };
@@ -24,6 +26,9 @@ export type PhotoArchiveEntry = {
   uploadedAt?: string;
   description?: string;
   location?: string;
+  /** Association with a Moving event, not a claim about where the photo was taken. */
+  movements?: Array<{ from: string; to: string }>;
+  movementTableIds?: string[];
 };
 
 // A readable convention in the existing note field avoids a DB migration.
@@ -75,6 +80,12 @@ export function buildPhotoArchive(activeRows: SowingPlanRow[], archivedRows: Sow
       const note = notes.find((candidate) => candidate.id === photo.husNoteId);
       const event = events.find((candidate) => candidate.id === photo.husEventId);
       const details = noteToPhotoDetails(note?.note);
+      const movingEvent = event && (event.eventType === "move" || event.eventType === "thinning") ? event : undefined;
+      const movements = movingEvent ? parseHusEventMovementRows(movingEvent) : undefined;
+      const movementTableIds = movingEvent ? interpretHusMovingEventPlacement(movingEvent)?.rows
+        .filter((movement) => growingTableSelectionRows(movement.to).length > 0)
+        .flatMap((movement) => movement.toGrowingTables) : undefined;
+
       entries.set(photo.id, {
         photo,
         rowId: row.id,
@@ -83,7 +94,9 @@ export function buildPhotoArchive(activeRows: SowingPlanRow[], archivedRows: Sow
         date: note?.observationDate || event?.eventDate || undefined,
         uploadedAt: photo.createdAt,
         description: details.description || event?.note?.trim() || undefined,
-        location: details.table || event?.location?.trim() || undefined,
+        location: details.table || (!movingEvent ? event?.location?.trim() : undefined) || undefined,
+        movements: movements?.length ? movements : undefined,
+        movementTableIds,
       });
     }
   }
@@ -102,7 +115,9 @@ export function filterPhotoArchive(entries: PhotoArchiveEntry[], query: string, 
     if (filter === "active" && entry.archived || filter === "archived" && !entry.archived) return false;
     const dates = [entry.date, entry.uploadedAt?.slice(0, 10)].filter((date): date is string => Boolean(date));
     const displayDates = dates.map((date) => `${date.slice(8, 10)}.${date.slice(5, 7)}.${date.slice(0, 4)}`);
-    const text = normalize([entry.hus, entry.description, entry.location, ...dates, ...displayDates].filter(Boolean).join(" "));
+    const movementText = entry.movements?.flatMap((movement) => [movement.from, movement.to]) ?? [];
+    const text = normalize([entry.hus, entry.description, entry.location, ...movementText,
+      ...(entry.movementTableIds ?? []), ...dates, ...displayDates].filter(Boolean).join(" "));
     return terms.every((term) => text.includes(term));
   });
 }

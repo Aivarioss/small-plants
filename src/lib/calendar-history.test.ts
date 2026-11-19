@@ -1,8 +1,9 @@
+import { buildArchiveSnapshot } from "./hus-archive";
 import { describe, expect, it } from "vitest";
 import { buildCalendarHistory } from "./calendar-history";
 import { plannerConfig } from "./demo-data";
 import { buildGreenhouseOccupancyDay } from "./greenhouse-simulation";
-import { buildArchiveSnapshot, generateWorkItemsForRows } from "./planning";
+import { generateWorkItemsForRows } from "./planning";
 import type { SowingPlanRow } from "./types";
 
 const today = "2026-10-18";

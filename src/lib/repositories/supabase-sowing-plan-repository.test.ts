@@ -116,6 +116,30 @@ describe("supabase sowing plan repository", () => {
     expect(client.rpc).not.toHaveBeenCalled();
   });
 
+  it("archives the actual A/D placement through the existing atomic RPC without changing event data", async () => {
+    const row = { ...baseRecord, hus: "Hus 1", required_plants: 4947, extra_plants: 100,
+      sowing_date: "2026-11-10", move_out_date: "2026-12-02", cycle_length: 23, sector_type: 39,
+      table_placements: [{ primary_row: "C", tables: null, manual: true }],
+      work_adjustments: [{ work_type: "thinning", dates: ["2026-11-19"], source: "manual", locked: true }],
+      hus_events: [{ id: "33333333-3333-4333-8333-333333333333", sowing_plan_row_id: baseRecord.id,
+        event_type: "move", event_date: "2026-11-19", location: "A4\nA5\nA6\nA7",
+        destination_location: "D1-D4\nD5-D14\nD15-D24\nA14-A23" }],
+    };
+    const client = { rpc: vi.fn().mockResolvedValue({ data: row.id, error: null }), from: vi.fn()
+      .mockReturnValueOnce(selectSingleByIdResult(row))
+      .mockReturnValueOnce(selectOrderResult({ data: [row], error: null }))
+      .mockReturnValueOnce(selectSingleByIdResult({ ...row, archived_at: "2026-12-03T12:00:00Z" })) };
+    vi.mocked(createSupabaseServerClient).mockReturnValue(client as never);
+    await createSupabaseSowingPlanRepository().archive(row.id);
+    expect(client.rpc).toHaveBeenCalledTimes(1);
+    const [operation, args] = client.rpc.mock.calls[0];
+    expect(operation).toBe("change_sowing_plan_archive");
+    expect(args.p_snapshot.workItems.find((item: { type: string }) => item.type === "thinning").placement)
+      .toMatchObject({ label: "Rinda A, D — 34 galdi", rowIds: ["A", "D"], tables: 34 });
+    expect(args.p_snapshot.events).toEqual(recordToSowingPlanRow(row as never).husEvents);
+    expect(client.from.mock.calls.every(([table]) => table === "sowing_plan_rows")).toBe(true);
+  });
+
   it.each(["archive", "restore"] as const)("%s sends freezes, versions and archive change through one RPC", async (operation) => {
     const row = { ...baseRecord, archived_at: operation === "restore" ? "2026-10-01T10:00:00Z" : null };
     const other = { ...baseRecord, id: "22222222-2222-4222-8222-222222222222", hus: "Hus 5" };

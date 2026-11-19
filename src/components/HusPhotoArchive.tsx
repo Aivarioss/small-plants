@@ -12,6 +12,8 @@ export function PhotoArchiveMetadata({ entry, language }: { entry: PhotoArchiveE
       <strong>{entry.hus}{entry.date ? ` — ${formatPhotoDate(entry.date, language)}` : ""}</strong>
       {entry.description ? <p>{entry.description}</p> : null}
       {entry.location ? <p>{language === "lv" ? "Galds / atrašanās vieta" : "Table / location"}: {entry.location}</p> : null}
+      {entry.movements?.length ? <p>{language === "lv" ? "Pārvietošana" : "Moving"}: {entry.movements
+        .map((movement) => `${movement.from || "—"} → ${movement.to || "—"}`).join("; ")}</p> : null}
       {!entry.date && entry.uploadedAt ? (
         <p>{language === "lv" ? "Augšupielādēts" : "Uploaded"}: {formatPhotoDate(entry.uploadedAt.slice(0, 10), language)}</p>
       ) : null}

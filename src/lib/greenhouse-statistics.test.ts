@@ -1,6 +1,7 @@
+import { buildArchiveSnapshot } from "./hus-archive";
 import { describe, expect, it, vi } from "vitest";
 import { buildGreenhouseRootStatistics, rankedRootTables, statisticsTableIds } from "./greenhouse-statistics";
-import { buildArchiveSnapshot } from "./planning";
+
 import { plannerConfig } from "./demo-data";
 import type { HusEventEntry, HusPhotoEntry, SowingPlanRow } from "./types";
 

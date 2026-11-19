@@ -1,8 +1,9 @@
+import { buildArchiveSnapshot } from "@/lib/hus-archive";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { buildCalendarHistory } from "@/lib/calendar-history";
 import { plannerConfig } from "@/lib/demo-data";
-import { buildArchiveSnapshot } from "@/lib/planning";
+
 import type { SowingPlanRow, ViewMode } from "@/lib/types";
 import { CalendarPanel, DayDetails, MonthlyPrintPlan } from "./PlannerApp";
 

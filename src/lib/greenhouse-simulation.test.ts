@@ -164,7 +164,7 @@ describe("greenhouse occupancy and sowing-date simulation", () => {
     expect(actual?.rowLabel).toBe("B1-B26");
     expect(actual?.tables).toBe(26);
     expect(actual?.reservedTables).toBe(26);
-    expect(snapshot.warnings.some((warning) => warning.includes("plānotā rinda bija C"))).toBe(true);
+    expect(snapshot.warnings.some((warning) => warning.includes("plānotā rinda bija C"))).toBe(false);
   });
 
   it("reserves a whole long row when actual Moving uses only 24 of 26 tables", () => {

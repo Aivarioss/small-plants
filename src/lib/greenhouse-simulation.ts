@@ -164,7 +164,6 @@ export type SimulationNotice = { lv: string; en: string };
 
 type GrowingPlacement = {
   plannedStartDate?: string;
-  plannedPrimaryRow?: PhysicalGrowingRowId;
   actualMovements?: ActualGrowingMovement[];
   density?: number;
   endDate: string;
@@ -490,9 +489,9 @@ function growingOccupancyRowForDate(placement: GrowingPlacement, date: string): 
       return undefined;
     }
     const reservation = reservationForActualTables(actualTableIds);
+    // A legacy row estimate is not an independently confirmed plan to compare with actual Moving.
     const warnings = [
       ...(placement.actualMovements ?? []).filter((movement) => movement.eventDate <= date).flatMap((movement) => movement.warnings),
-      ...actualPlacementMismatchWarnings(placement, reservation),
     ];
 
     return {
@@ -541,13 +540,11 @@ function assignPhysicalGrowingPlacements(rawPlacements: RawGrowingPlacement[]): 
         const reservation = reservationForActualTables(actualTableIds);
         const actualWarnings = [
           ...(raw.actualMovements?.flatMap((movement) => movement.warnings) ?? []),
-          ...actualPlacementMismatchWarningsForPlan(raw.row, reservation),
         ];
 
         reservations.push({
           actualMovements: raw.actualMovements,
           plannedStartDate: raw.plannedStartDate,
-          plannedPrimaryRow: raw.row.placement?.primaryRow,
           density: raw.density,
           endDate: raw.endDate,
           placementKind: "standardRow",
@@ -1698,32 +1695,6 @@ function plannedPlacementLabel(placement: Pick<GrowingPlacement, "primaryRow" | 
 
   return `${placement.primaryRow}1-${placement.primaryRow}${Math.min(placement.tables, LONG_ROW_TABLE_CAPACITY)}`;
 }
-
-function actualPlacementMismatchWarnings(
-  placement: GrowingPlacement,
-  reservation: Pick<GrowingPlacement, "primaryRow" | "reservedTables">,
-): string[] {
-  const warnings: string[] = [];
-  if (placement.plannedPrimaryRow && reservation.primaryRow && placement.plannedPrimaryRow !== reservation.primaryRow) {
-    warnings.push(`Faktiskais Moving izvietojums ir ${reservation.primaryRow} rindā, bet plānotā rinda bija ${placement.plannedPrimaryRow}.`);
-  }
-
-  return warnings;
-}
-
-function actualPlacementMismatchWarningsForPlan(
-  row: Pick<SowingPlanRow, "placement">,
-  reservation: Pick<GrowingPlacement, "primaryRow">,
-): string[] {
-  const warnings: string[] = [];
-  if (row.placement?.primaryRow && reservation.primaryRow && row.placement.primaryRow !== reservation.primaryRow) {
-    warnings.push(`Faktiskais Moving izvietojums ir ${reservation.primaryRow} rindā, bet plānotā rinda bija ${row.placement.primaryRow}.`);
-  }
-
-  return warnings;
-}
-
-
 
 function simulationExplanation(status: GreenhouseOccupancyStatus): string {
   if (status === "can") {

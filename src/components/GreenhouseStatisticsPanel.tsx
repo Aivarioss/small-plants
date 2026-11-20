@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import {
   buildGreenhouseRootStatistics, growingStatisticsRows, rankedRootTables,
   seedingStatisticsTables, validStatisticsDate, type RootObservation, type TableRootStatistics,
@@ -11,16 +11,31 @@ import { addDays } from "@/lib/planning";
 import type { AppLanguage } from "@/lib/localization";
 import type { HusPhotoEntry, SowingPlanRow } from "@/lib/types";
 
-export function GreenhouseStatisticsPanel({ rows, archivedRows, today, language, onOpenHus, onViewPhoto }: {
+export type GreenhouseStatisticsSelection = { preset: string; start: string; end: string; selected: string | null };
+
+export function GreenhouseStatisticsPanel({ rows, archivedRows, today, language, onOpenHus, onViewPhoto,
+  selection, onSelectionChange, focusHistorySignal = 0 }: {
+  selection?: GreenhouseStatisticsSelection;
+  onSelectionChange?: Dispatch<SetStateAction<GreenhouseStatisticsSelection>>;
+  focusHistorySignal?: number;
   rows: SowingPlanRow[]; archivedRows: SowingPlanRow[]; today: string; language: AppLanguage;
   onOpenHus: (id: string) => void; onViewPhoto: (photo: HusPhotoEntry) => void;
 }) {
   const lv = language === "lv";
-  const [preset, setPreset] = useState("all");
-  const [start, setStart] = useState("");
-  const [end, setEnd] = useState(today);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [localSelection, setLocalSelection] = useState<GreenhouseStatisticsSelection>(() => ({ preset: "all", start: "", end: today, selected: null }));
+  const { preset, start, end, selected } = selection ?? localSelection;
+  const setSelection = onSelectionChange ?? setLocalSelection;
+  const setPreset = (preset: string) => setSelection(current => ({ ...current, preset }));
+  const setStart = (start: string) => setSelection(current => ({ ...current, start }));
+  const setEnd = (end: string) => setSelection(current => ({ ...current, end }));
+  const setSelected = (selected: string | null) => setSelection(current => ({ ...current, selected }));
   const historyRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (focusHistorySignal) {
+      historyRef.current?.focus();
+      historyRef.current?.scrollIntoView?.({ block: "start" });
+    }
+  }, [focusHistorySignal]);
   const validPeriod = validStatisticsDate(end) && end <= today && (!start || validStatisticsDate(start) && start <= end);
   const stats = useMemo(() => validPeriod ? buildGreenhouseRootStatistics(rows, archivedRows, { start: start || undefined, end }) : undefined,
     [rows, archivedRows, start, end, validPeriod]);

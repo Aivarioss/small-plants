@@ -678,3 +678,36 @@ function monthlyMaterialNotes(item: WorkItem, row: SowingPlanRow, language: AppL
 function localizedWorkload(workload: number): string {
   return workload % 1 === 0 ? workload.toFixed(0) : workload.toFixed(1);
 }
+
+export function formatWorkCount(count: number, language: AppLanguage): string {
+  if (language === "en") return count + (count === 1 ? " task" : " tasks");
+  return count + (count % 10 === 1 && count % 100 !== 11 ? " darbs" : " darbi");
+}
+
+export function formatBalanceHeading(difference: number | null, language: AppLanguage): string {
+  if (difference === null) return t("reserveShortageUnavailable", language);
+  return (language === "lv" ? difference >= 0 ? "Rezerve " : "Trūkst " : difference >= 0 ? "Reserve " : "Shortage ") + formatPlants(Math.abs(difference), language);
+}
+
+export function archiveConfirmation(hus: string, language: AppLanguage): string {
+  return language === "lv"
+    ? hus + " tiks pārvietots uz arhīvu un vairs nepiedalīsies aktīvajā plānošanā. HUS vēsture un pagātnes darbi kalendārā saglabāsies tikai lasīšanai. Turpināt?"
+    : hus + " will move to the archive and leave active planning. HUS history and past calendar work will remain read-only. Continue?";
+}
+
+/** Translate known house notices at display time; original reservations/history stay untouched. */
+export function formatHouseWarning(warning: string, language: AppLanguage): string {
+  if (language === "lv") return warning;
+  return warning
+    .replace("nav zināms nepieciešamais sēšanas galdu skaits.", "required seeding table count is unknown.")
+    .replace("nav droši zināms sēšanas galdu atbrīvošanas datums.", "seeding table release date is uncertain.")
+    .replace("sēšanas galda konflikts", "seeding-table conflict")
+    .replace("augšanas galdu konflikts", "growing-table conflict")
+    .replace(/Sēšanas galdu noslodze pārsniedz (\d+)\./, "Seeding table occupancy exceeds $1.")
+    .replace(/Augšanas galdu noslodze pārsniedz (\d+)\./, "Growing table reservations exceed $1.")
+    .replace(/Moving ieraksta galamērķi "(.+)" nevar droši interpretēt kā augšanas galdus\./, 'Moving destination "$1" cannot be reliably interpreted as growing tables.')
+    .replace(/([BCD]) rinda rezervēta pilnībā, arī ja izmantoti (\d+) no 26 galdiem\./, "The whole $1 row is reserved even when $2 of 26 tables are used.")
+    .replace("A14-A26 rezervēts šim HUS līdz Planting.", "A14-A26 is reserved for this HUS until Planting.")
+    .replace("Kompromiss: izmantots A papildu bloks, nevis garā B/C/D rinda.", "Compromise: the extra A block is used instead of a long B/C/D row.")
+    .replace(/([BCD]) laistīšanas zona tiek dalīta ar (.+); vajadzīga agronoma saskaņošana\./, "$1 irrigation zone is shared with $2; agronomist approval is required.");
+}

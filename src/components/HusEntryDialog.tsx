@@ -1,5 +1,6 @@
 "use client";
 
+import { Modal } from "./Modal";
 import { useEffect, useRef, useState } from "react";
 import { defaultHusEventDate, getBiologicalCycleDays, getCycleDay, parseHusEventMovementRows } from "@/lib/planning";
 import { growingTableSelectionRows } from "@/lib/greenhouse-simulation";
@@ -208,9 +209,19 @@ export function HusEntryDialog({
     }
   }
 
+  function cancelDialog() {
+    if (busy) return;
+    if (attempted && !window.confirm(recordSaved
+      ? language === "lv" ? "Ieraksts ir saglabāts, bet daļa foto vēl nav pievienota. Aizvērt logu?"
+        : "The entry is saved, but some photos are still missing. Close the dialog?"
+      : language === "lv" ? "Saglabāšana vēl nav pilnībā apstiprināta. Ieteicams mēģināt vēlreiz šajā logā. Aizvērt?"
+        : "Saving has not been fully confirmed. Retry in this dialog to finish safely. Close?")) return;
+    onCancel();
+  }
+
   return (
     <div className="dialog-backdrop" role="presentation">
-      <section aria-modal="true" aria-label={t("husEvents", language)} className="sowing-tables-dialog" role="dialog">
+      <Modal onClose={cancelDialog} dismissDisabled={busy} initialFocus='input[type="date"]' aria-label={t("husEvents", language)} className="sowing-tables-dialog">
         <div>
           <p className="eyebrow">{t("husEvents", language)}</p>
           <h3>{entry ? t("editEntry", language) : t("addEntry", language)}</h3>
@@ -228,7 +239,7 @@ export function HusEntryDialog({
         <fieldset className="hus-entry-fields" disabled={busy || attempted}>
         <label>
           {t("date", language)}
-          <input autoFocus type="date" value={eventDate} onChange={(event) => setEventDate(event.target.value)} />
+          <input type="date" value={eventDate} onChange={(event) => setEventDate(event.target.value)} />
         </label>
         <div className="segmented segmented--compact hus-event-type-picker" aria-label={language === "lv" ? "Notikuma veids" : "Event type"}>
           {(readOnly ? ["other"] as const : ["move", "brownRoots", "other"] as const).map((type) => (
@@ -374,14 +385,7 @@ export function HusEntryDialog({
           : "The entry and plant changes are saved. Retrying will upload only the remaining photos."}</p> : null}
         {error ? <p className="dialog-error" role="alert">{error}</p> : null}
         <div className="button-row">
-          <button className="secondary-action" type="button" disabled={busy} onClick={() => {
-            if (attempted && !window.confirm(recordSaved
-              ? language === "lv" ? "Ieraksts ir saglabāts, bet daļa foto vēl nav pievienota. Aizvērt logu?"
-                : "The entry is saved, but some photos are still missing. Close the dialog?"
-              : language === "lv" ? "Saglabāšana vēl nav pilnībā apstiprināta. Ieteicams mēģināt vēlreiz šajā logā. Aizvērt?"
-                : "Saving has not been fully confirmed. Retry in this dialog to finish safely. Close?")) return;
-            onCancel();
-          }}>
+          <button className="secondary-action" type="button" disabled={busy} onClick={cancelDialog}>
             {t("cancel", language)}
           </button>
           <button
@@ -395,7 +399,7 @@ export function HusEntryDialog({
                 : language === "lv" ? "Mēģināt vēlreiz" : "Retry" : t("save", language)}
           </button>
         </div>
-      </section>
+      </Modal>
     </div>
   );
 }

@@ -21,6 +21,7 @@ import type {
   WorkScheduleKind,
   WorkType,
 } from "./types";
+import { PLANTS_PER_BOX } from "./production-defaults";
 import { scheduleProductionWork, type ScheduledWorkItem } from "./scheduler";
 
 const FULL_TABLE_PLANTS = 16 * 92;
@@ -28,7 +29,7 @@ const GUTTERS_PER_TABLE = 6;
 const TARGET_MIN = 23;
 const TARGET_MAX = 28;
 const TARGET_IDEAL = 25;
-const BOX_SIZE = 12;
+const BOX_SIZE = PLANTS_PER_BOX;
 const DAILY_WORKLOAD_TARGET = 1;
 
 type ScheduledWorkEntry = {
@@ -142,8 +143,8 @@ export function localTodayIso(now: Date = new Date()): string {
   return toIsoDate(now);
 }
 
-export function dateLabel(date: string): string {
-  return new Intl.DateTimeFormat("lv-LV", {
+export function dateLabel(date: string, language: "lv" | "en" = "lv"): string {
+  return new Intl.DateTimeFormat(language === "lv" ? "lv-LV" : "en-GB", {
     day: "2-digit",
     month: "short",
     year: "numeric",

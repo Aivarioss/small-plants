@@ -3,11 +3,12 @@ import type { AppLanguage } from "@/lib/localization";
 import { formatSowingTableSelection } from "@/lib/planning";
 
 /** Count-only reservations do not imply a choice of physical A-table numbers. */
-export function SeedingCapacityView({ occupancy, language, date, today }: {
+export function SeedingCapacityView({ occupancy, language, date, today, showWarnings = true }: {
   occupancy: GreenhouseSeedingOccupancy;
   language: AppLanguage;
   date: string;
   today: string;
+  showWarnings?: boolean;
 }) {
   const lv = language === "lv";
   const planned = date > today;
@@ -26,7 +27,7 @@ export function SeedingCapacityView({ occupancy, language, date, today }: {
         `${countUnknown ? lv ? "vismaz " : "at least " : ""}${row.tableCount}`} {lv ? "galdi" : "tables"}{planned ? lv ? " · plānots" : " · planned" : ""}</p>;
     })}
     {!occupancy.rows.length ? <p>{lv ? "Nav sēšanas galdu rezervāciju šajā datumā" : "No seeding table reservations on this date"}</p> : null}
-    {occupancy.unknownRows.map((row) => <p className="capacity-note" key={row.planRowId}>
+    {showWarnings && occupancy.unknownRows.map((row) => <p className="capacity-note" key={row.planRowId}>
       {row.sectorName}: {row.reason === "unknownRelease"
         ? lv ? "nav droši zināms galdu atbrīvošanas datums" : "table release date is uncertain"
         : lv ? "nav zināms nepieciešamais galdu skaits" : "required table count is unknown"}.

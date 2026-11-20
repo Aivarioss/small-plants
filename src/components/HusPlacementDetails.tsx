@@ -1,7 +1,7 @@
 import { plannerConfig } from "@/lib/demo-data";
 import { describeHusPlacement } from "@/lib/greenhouse-work-placement";
 import { calculateBoxPlan, dateLabel, getTotalSow } from "@/lib/planning";
-import { formatPrintHarvestBoxes } from "@/lib/localization";
+import { formatHouseWarning, formatPrintHarvestBoxes } from "@/lib/localization";
 import type { AppLanguage } from "@/lib/localization";
 import type { SowingPlanRow } from "@/lib/types";
 
@@ -23,13 +23,13 @@ export function HusPlacementDetails({ row, rows, language }: {
         <span>{language === "lv" ? "Renes" : "Troughs"}: {placement.tables * 6}</span>
         <span>{language === "lv" ? "Vidēji" : "Average"}: {(getTotalSow(row) / (placement.tables * 6)).toFixed(2)} {language === "lv" ? "stādi/renē" : "plants/trough"}</span>
       </> : null}
-      <span>{language === "lv" ? "Datums" : "Date"}: {dateLabel(date)}</span>
+      <span>{language === "lv" ? "Datums" : "Date"}: {dateLabel(date, language)}</span>
       <span>{language === "lv" ? "Kopā sēts" : "Total sown"}: {getTotalSow(row).toLocaleString("lv-LV")}</span>
       <span>{language === "lv" ? "Kastītes" : "Boxes"}: {language === "lv" ? calculateBoxPlan(row).label : formatPrintHarvestBoxes(row, language)}</span>
       {!actual ? <p>{language === "lv"
         ? "Rinda ir aprēķināts plāns. Faktiskos galdus norādi HUS Moving ierakstā pēc retināšanas."
         : "The row is a calculated plan. Record actual tables in a Hus Moving entry after thinning."}</p> : null}
-      {placement?.warnings?.map((warning) => <p className="capacity-note" key={warning}>{warning}</p>)}
+      {placement?.warnings?.map((warning) => <p className="capacity-note" key={warning}>{formatHouseWarning(warning, language)}</p>)}
     </section>
   );
 }

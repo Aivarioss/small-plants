@@ -72,14 +72,14 @@ export function HusList({
                 <span>
                   <strong>{sectorName}</strong>
                   <small>
-                    {mode === "active" ? `${phaseLabels[husCyclePhase(row, today)]} · ` : ""}{row.variety} · {dateLabel(row.sowingDate)} - {dateLabel(row.harvestDate)}
+                    {mode === "active" ? `${phaseLabels[husCyclePhase(row, today)]} · ` : ""}{row.variety} · {dateLabel(row.sowingDate, language)} - {dateLabel(row.harvestDate, language)}
                   </small>
                 </span>
                 <span>{formatPlants(totalSow, language)}</span>
                 <span>{formatCycleDays(row.cycleLength, language)}</span>
                 {mode === "archive" ? (
                   <span>
-                    {language === "lv" ? "Arhivēts" : "Archived"} {row.archivedAt ? dateLabel(row.archivedAt.slice(0, 10)) : "—"} ·{" "}
+                    {language === "lv" ? "Arhivēts" : "Archived"} {row.archivedAt ? dateLabel(row.archivedAt.slice(0, 10), language) : "—"} ·{" "}
                     {language === "lv" ? "Faktiski" : "Actual"} {formatPlants(balance.actualPlants, language)}
                   </span>
                 ) : null}
@@ -89,7 +89,7 @@ export function HusList({
                 <div className="previous-cycles">
                   {cycles.slice(1).map((cycle) => (
                     <button key={cycle.id} type="button" onClick={() => onOpen(cycle.id)}>
-                      {mode === "active" ? `${phaseLabels[husCyclePhase(cycle, today)]} · ` : ""}{dateLabel(cycle.sowingDate)} - {dateLabel(cycle.harvestDate)}
+                      {mode === "active" ? `${phaseLabels[husCyclePhase(cycle, today)]} · ` : ""}{dateLabel(cycle.sowingDate, language)} - {dateLabel(cycle.harvestDate, language)}
                     </button>
                   ))}
                 </div>

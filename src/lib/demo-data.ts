@@ -1,8 +1,9 @@
-import { deriveCycleLength } from "./hus-templates";
+import { PLANTS_PER_BOX } from "./production-defaults";
+import { DEFAULT_WORKER_EXTRA, deriveCycleLength } from "./hus-templates";
 import type { PlannerConfig, SowingPlanRow } from "./types";
 
 export const plannerConfig: PlannerConfig = {
-  defaultPlantsPerBox: 30,
+  defaultPlantsPerBox: PLANTS_PER_BOX,
 };
 
 export const demoPlanRows: SowingPlanRow[] = [
@@ -10,7 +11,7 @@ export const demoPlanRows: SowingPlanRow[] = [
     id: "plan-hus-3",
     sectorName: "Hus 3",
     requiredPlants: 3400,
-    extraPlants: 144,
+    extraPlants: DEFAULT_WORKER_EXTRA,
     variety: "Proloog",
     sowingDate: "2026-09-02",
     harvestDate: "2026-09-23",

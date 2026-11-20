@@ -1,6 +1,10 @@
 "use client";
 
 import Image from "next/image";
+import { Modal } from "./Modal";
+import { PlanNumberInput } from "./PlanNumberInput";
+import { createSowingDraft, observeLocalDay, refreshUntouchedSowingDraft } from "@/lib/sowing-form";
+import { workspaceMessage } from "@/lib/workspace-messages";
 import { writeAndRefresh, loadPlanWorkspace } from "@/lib/write-outcome";
 import { createWorkspaceReadOrder, SupersededWorkspaceReadError } from "@/lib/workspace-read-order";
 import { createHusMediaPublication } from "@/lib/hus-media-publication";
@@ -36,7 +40,6 @@ import {
 import {
   applyHusTemplateToDraft,
   calculateMoveOutDate,
-  DEFAULT_WORKER_EXTRA,
   deriveCycleLength,
   operationalTotal,
   sectorTypeForOperationalTotal,
@@ -51,6 +54,10 @@ import {
   importCandidateValidationErrors,
 } from "@/lib/production-plan-import";
 import {
+  archiveConfirmation,
+  formatBalanceHeading,
+  formatHouseWarning,
+  formatWorkCount,
   formatCycleDay,
   formatCycleDays,
   formatPlants,
@@ -71,7 +78,7 @@ import {
 import { compressHusPhotoForUpload } from "@/lib/image-compression";
 import { HusPhotoArchive, PhotoArchiveMetadata } from "./HusPhotoArchive";
 import { SowingSimulationPanel } from "./SowingSimulationPanel";
-import { GreenhouseStatisticsPanel } from "./GreenhouseStatisticsPanel";
+import { GreenhouseStatisticsPanel, type GreenhouseStatisticsSelection } from "./GreenhouseStatisticsPanel";
 import { HusEntryDialog } from "./HusEntryDialog";
 import { enqueueRowSave } from "@/lib/row-save-queue";
 import { createHusEntrySaveOperation, persistHusEntries } from "@/lib/hus-entry-save";
@@ -134,21 +141,6 @@ function useAppLanguage(): AppLanguage {
   return useContext(LanguageContext);
 }
 
-const initialDraft: SowingPlanDraft = {
-  sectorName: "",
-  greenhouseRequiredPlants: "",
-  requiredPlants: "3400",
-  extraPlants: String(DEFAULT_WORKER_EXTRA),
-  variety: "",
-  sowingTables: "",
-  sowingDate: toIsoDate(new Date()),
-  harvestDate: calculateMoveOutDate(toIsoDate(new Date()), 22),
-  cycleLength: "22",
-  cycleMode: "length",
-  sectorType: 26,
-  plantsPerBox: String(plannerConfig.defaultPlantsPerBox),
-};
-
 function calendarItemLabel(item: WorkItem, language: AppLanguage) {
   const placementLabel =
     item.type === "thinning" && item.placement
@@ -165,18 +157,23 @@ function calendarItemLabel(item: WorkItem, language: AppLanguage) {
 export function PlannerApp() {
   const [planRows, setPlanRows] = useState<SowingPlanRow[]>([]);
   const [archivedRows, setArchivedRows] = useState<SowingPlanRow[]>([]);
-  const [repositoryMessage, setRepositoryMessage] = useState("Ielādē Supabase");
+  const [repositoryMessage, setRepositoryMessage] = useState("Ielādē plānu…");
   const [repositoryError, setRepositoryError] = useState("");
   const [activeView, setActiveView] = useState<MainView>("sowingPlan");
   const [husListMode, setHusListMode] = useState<"active" | "archive">("active");
   const [archiveTab, setArchiveTab] = useState<"hus" | "photos">("hus");
   const [houseTab, setHouseTab] = useState<"occupancy" | "statistics">("occupancy");
+  const [statisticsSelection, setStatisticsSelection] = useState<GreenhouseStatisticsSelection>(() => ({
+    preset: "all", start: "", end: localTodayIso(), selected: null,
+  }));
+  const [statisticsReturnRow, setStatisticsReturnRow] = useState<string | null>(null);
+  const [statisticsFocusSignal, setStatisticsFocusSignal] = useState(0);
   const [viewMode, setViewMode] = useState<ViewMode>("month");
   const [printLanguage, setPrintLanguage] = useState<AppLanguage>(() => readStoredLanguage());
   const [anchorDate, setAnchorDate] = useState(() => localTodayIso());
   const [selectedDate, setSelectedDate] = useState(() => localTodayIso());
   const [selectedRowId, setSelectedRowId] = useState("");
-  const [draft, setDraft] = useState<SowingPlanDraft>(initialDraft);
+  const [draft, setDraft] = useState<SowingPlanDraft>(() => createSowingDraft());
   const [moveErrors, setMoveErrors] = useState<Record<string, string>>({});
   const [importResult, setImportResult] = useState<PlanImportResult | null>(null);
   const [importBusy, setImportBusy] = useState(false);
@@ -210,7 +207,11 @@ export function PlannerApp() {
   const photoArchiveEntries = useMemo(() => buildPhotoArchive(planRows, archivedRows), [planRows, archivedRows]);
   const selectedRow = planRows.find((row) => row.id === selectedRowId) ?? selectedArchivedRow ?? planRows[0];
   const hasDemoRows = planRows.some((row) => row.source === "demo");
-  const today = localTodayIso();
+  const [today, setToday] = useState(() => localTodayIso());
+  useEffect(() => observeLocalDay((day, previous) => {
+    setToday(day);
+    setDraft(current => refreshUntouchedSowingDraft(current, previous, day));
+  }), []);
   const calendarHistory = useMemo(
     () => buildCalendarHistory(workItems, planRows, archivedRows, today),
     [workItems, planRows, archivedRows, today],
@@ -237,11 +238,11 @@ export function PlannerApp() {
 
         writesPausedRef.current = false;
         setNeedsRefresh(false);
-        setRepositoryMessage("Supabase aktīvs");
+        setRepositoryMessage("Dati ielādēti");
         setRepositoryError("");
       } catch (error) {
         if (!cancelled && !(error instanceof SupersededWorkspaceReadError)) {
-          const message = error instanceof Error ? error.message : "Neizdevās ielādēt Supabase plānu";
+          const message = error instanceof Error ? error.message : "Neizdevās ielādēt plānu";
           writesPausedRef.current = true;
           setNeedsRefresh(true);
           setRepositoryMessage(message);
@@ -381,14 +382,14 @@ export function PlannerApp() {
       source: "user",
     };
 
-    setRepositoryMessage("Saglabā Supabase");
+    setRepositoryMessage("Saglabā izmaiņas…");
     setRepositoryError("");
     const result = await completePlanWrite(() => sowingPlanRepository.create(row), snapshot => snapshot.active.some(candidate => candidate.id === row.id));
     if (result.writeStatus === "committed") {
       setSelectedRowId(row.id);
       setSelectedDate(row.sowingDate);
       setAnchorDate(row.sowingDate);
-      setDraft(initialDraft);
+      setDraft(createSowingDraft());
       setActiveView("worksheet");
     }
   }
@@ -398,7 +399,7 @@ export function PlannerApp() {
     setNeedsRefresh(true);
     const message = error instanceof SowingPlanApiConflictError
       ? "Šis Hus ir mainīts citur. Pārbaudi jaunāko versiju pirms atkārtotas izmaiņas."
-      : error instanceof Error ? error.message : "Neizdevās saglabāt Hus Supabase";
+      : error instanceof Error ? error.message : "Neizdevās saglabāt HUS";
     setRepositoryMessage(message);
     setRepositoryError(message);
     try {
@@ -435,7 +436,7 @@ export function PlannerApp() {
     };
     workspaceReadOrderRef.current.invalidate();
     setPlanRows((current) => current.map((row) => row.id === id ? applyPatch(row) : row));
-    setRepositoryMessage("Saglabā Supabase");
+    setRepositoryMessage("Saglabā izmaiņas…");
     setRepositoryError("");
     void enqueueRowSave(rowSaveChainsRef.current, previous,
       (latest) => mutateWorkspace(() => sowingPlanRepository.update(applyPatch(latest))), {
@@ -444,13 +445,13 @@ export function PlannerApp() {
           workspaceReadOrderRef.current.invalidate();
           setPlanRows((current) => current.map((row) => row.id === savedRow.id
             ? husMediaPublicationRef.current.acknowledge(row, savedRow, mediaCheckpoint) : row));
-          setRepositoryMessage("Supabase saglabāts");
+          setRepositoryMessage("Izmaiņas saglabātas");
           setRepositoryError("");
         },
         failed: async (error) => {
           const message = error instanceof SowingPlanApiConflictError
             ? "Šis Hus ir mainīts citur. Pārbaudi jaunāko versiju pirms atkārtotas izmaiņas."
-            : error instanceof Error ? error.message : "Neizdevās saglabāt Hus Supabase";
+            : error instanceof Error ? error.message : "Neizdevās saglabāt HUS";
           setRepositoryMessage(message);
           setRepositoryError(message);
         },
@@ -471,7 +472,7 @@ export function PlannerApp() {
           workspaceReadOrderRef.current.invalidate();
           setPlanRows((current) => current.map((row) => row.id === rowId
             ? husMediaPublicationRef.current.acknowledge(row, saved, mediaCheckpoint) : row));
-          setRepositoryMessage("Supabase saglabāts");
+          setRepositoryMessage("Izmaiņas saglabātas");
           setRepositoryError("");
         },
         failed: async (error) => {
@@ -770,8 +771,8 @@ export function PlannerApp() {
       setRepositoryMessage(
         result.storageRemoved === false
           ? printLanguage === "lv"
-            ? "Foto noņemts no HUS. Storage tīrīšana jāatkārto vēlāk."
-            : "Photo removed from HUS. Storage cleanup should be retried later."
+            ? "Foto noņemts no HUS. Faila dzēšanu vēl nav izdevies apstiprināt."
+            : "Photo removed from HUS. File deletion has not yet been confirmed."
           : printLanguage === "lv"
             ? "Foto dzēsts"
             : "Photo deleted",
@@ -909,9 +910,9 @@ export function PlannerApp() {
           <h1>{printLanguage === "lv" ? "Gurķu stādu cikli" : "Cucumber plant cycles"}</h1>
         </div>
         <div className="topbar__stats">
-          <span>{repositoryMessage}</span>
+          <span role="status">{workspaceMessage(repositoryMessage, printLanguage)}</span>
           <span>{planRows.length} {t("plannedRows", printLanguage)}</span>
-          <strong>{workItems.length} {t("work", printLanguage).toLowerCase()}</strong>
+          <strong>{formatWorkCount(workItems.length, printLanguage)}</strong>
           <LanguageToggle language={printLanguage} onChange={setPrintLanguage} />
           <form action="/api/auth/logout" method="post">
             <button className="secondary-action" type="submit">
@@ -929,7 +930,7 @@ export function PlannerApp() {
         <section className="repository-error no-print" role="alert">
           <div>
             <strong>{printLanguage === "lv" ? "Datu stāvoklis" : "Data status"}</strong>
-            <code>{repositoryError}</code>
+            <code>{workspaceMessage(repositoryError, printLanguage)}</code>
           </div>
           <div className="button-row">
             <button
@@ -951,7 +952,7 @@ export function PlannerApp() {
           <button
             className={item.id === activeView ? "is-active" : ""}
             key={item.id}
-            onClick={() => setActiveView(item.id)}
+            onClick={() => { setStatisticsReturnRow(null); setActiveView(item.id); }}
             type="button"
           >
             {t(item.labelKey, printLanguage)}
@@ -1109,13 +1110,25 @@ export function PlannerApp() {
           <div id="house-panel" role="tabpanel" aria-labelledby={`house-${houseTab}-tab`}>
             {houseTab === "occupancy" ? <GreenhousePanel date={selectedDate} onDateChange={setSelectedDate} rows={planRows} />
               : <GreenhouseStatisticsPanel rows={planRows} archivedRows={archivedRows} today={today} language={printLanguage}
+                selection={statisticsSelection} onSelectionChange={setStatisticsSelection} focusHistorySignal={statisticsFocusSignal}
                 onViewPhoto={setHusPhotoViewer} onOpenHus={(id) => {
+                  setStatisticsReturnRow(id);
                   setSelectedRowId(id);
                   setHusListMode(planRows.some((row) => row.id === id) ? "active" : "archive");
                   setActiveView("worksheet");
                 }} />}
           </div>
         </>
+      ) : null}
+
+      {(activeView === "worksheet" || activeView === "batch") && selectedRow?.id === statisticsReturnRow ? (
+        <button className="secondary-action no-print statistics-return" type="button" onClick={() => {
+          setHouseTab("statistics"); setActiveView("greenhouse");
+          setStatisticsFocusSignal(current => current + 1);
+        }}>
+          ← {printLanguage === "lv" ? "Atpakaļ uz statistiku" : "Back to statistics"}
+          {statisticsSelection.selected ? ` · ${printLanguage === "lv" ? "Galds" : "Table"} ${statisticsSelection.selected}` : ""}
+        </button>
       ) : null}
 
       {activeView === "worksheet" && selectedRow ? (
@@ -1192,6 +1205,7 @@ export function PlannerApp() {
           entry={photoArchiveEntries.find((entry) => entry.photo.id === husPhotoViewer.id)}
           onOpenHus={(entry) => {
             const target = photoArchiveHusTarget(entry);
+            setStatisticsReturnRow(activeView === "greenhouse" && houseTab === "statistics" ? target.rowId : null);
             setSelectedRowId(target.rowId);
             setHusListMode(target.mode);
             setHusPhotoViewer(null);
@@ -1330,9 +1344,11 @@ function SowingPlanPanel({
             <select
               onChange={(event) => onDraftChange(applyHusTemplateToDraft(draft, event.target.value))}
               required
-              value={standardHusTemplates.some((template) => template.hus === draft.sectorName) ? draft.sectorName : ""}
+              value={draft.sectorName}
             >
               <option value="">{t("chooseHus", language)}</option>
+              {draft.sectorName && !standardHusTemplates.some(template => template.hus === draft.sectorName)
+                ? <option value={draft.sectorName}>{draft.sectorName}</option> : null}
               {standardHusTemplates.map((template) => (
                 <option key={template.hus} value={template.hus}>
                   {template.hus}
@@ -1500,27 +1516,12 @@ function SowingPlanPanel({
                 value={row.sowingTables ?? ""}
                 onSave={(value) => onUpdateRow(row.id, { sowingTables: value || undefined })}
               />
-              <input
-                min="1"
-                type="number"
-                value={row.greenhouseRequiredPlants ?? ""}
-                onChange={(event) =>
-                  onUpdateRow(row.id, {
-                    greenhouseRequiredPlants: event.target.value ? Number(event.target.value) : undefined,
-                  })
-                }
-              />
-              <input
-                min="1"
-                type="number"
-                value={row.requiredPlants}
-                onChange={(event) => onUpdateRow(row.id, { requiredPlants: Number(event.target.value) })}
-              />
-              <input
-                type="number"
-                value={row.extraPlants}
-                onChange={(event) => onUpdateRow(row.id, { extraPlants: Number(event.target.value) })}
-              />
+              <PlanNumberInput min={1} optional value={row.greenhouseRequiredPlants}
+                onCommit={value => onUpdateRow(row.id, { greenhouseRequiredPlants: value })} />
+              <PlanNumberInput min={1} value={row.requiredPlants}
+                onCommit={value => onUpdateRow(row.id, { requiredPlants: value! })} />
+              <PlanNumberInput value={row.extraPlants}
+                onCommit={value => onUpdateRow(row.id, { extraPlants: value! })} />
               <strong>{totalSow.toLocaleString("lv-LV")}</strong>
               <input value={row.variety} onChange={(event) => onUpdateRow(row.id, { variety: event.target.value })} />
               <input type="date" value={row.sowingDate} onChange={(event) => onUpdateDate(row, "sowingDate", event.target.value)} />
@@ -1625,7 +1626,7 @@ function SowingPlanDocumentViewer({ document, onClose }: { document: SowingPlanD
 
   return (
     <div className="dialog-backdrop" role="presentation">
-      <section aria-modal="true" aria-label={t("seedingPlanDocument", language)} className="plan-document-viewer" role="dialog">
+      <Modal onClose={onClose} aria-label={t("seedingPlanDocument", language)} className="plan-document-viewer">
         <div className="panel-header">
           <div>
             <p className="eyebrow">{t("seedingPlanDocument", language)}</p>
@@ -1636,7 +1637,7 @@ function SowingPlanDocumentViewer({ document, onClose }: { document: SowingPlanD
           </button>
         </div>
         <Image alt={document.originalFileName} height={900} src={planDocumentFileUrl(document)} unoptimized width={1200} />
-      </section>
+      </Modal>
     </div>
   );
 }
@@ -1671,36 +1672,10 @@ function HusPhotoViewer({
   onOpenHus: (entry: PhotoArchiveEntry) => void;
 }) {
   const language = useAppLanguage();
-  const dialogRef = useRef<HTMLElement>(null);
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    const dialog = dialogRef.current;
-    dialog?.querySelector<HTMLButtonElement>("button")?.focus();
-    const originalOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-      if (event.key !== "Tab" || !dialog) return;
-      const buttons = Array.from(dialog.querySelectorAll<HTMLButtonElement>("button"));
-      const first = buttons[0];
-      const last = buttons[buttons.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault(); last?.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault(); first?.focus();
-      }
-    }
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.body.style.overflow = originalOverflow;
-      document.removeEventListener("keydown", onKeyDown);
-      previous?.focus();
-    };
-  }, [onClose]);
 
   return (
     <div className="dialog-backdrop" role="presentation">
-      <section ref={dialogRef} aria-modal="true" aria-label={entry?.hus ?? photo.originalFileName} className="plan-document-viewer hus-photo-viewer" role="dialog">
+      <Modal onClose={onClose} aria-label={entry?.hus ?? photo.originalFileName} className="plan-document-viewer hus-photo-viewer">
         <div className="panel-header">
           <div>
             <p className="eyebrow">{language === "lv" ? "HUS fotogrāfija" : "HUS photo"}</p>
@@ -1730,7 +1705,7 @@ function HusPhotoViewer({
           </>
         ) : null}
         <Image alt={photo.originalFileName} height={900} src={husPhotoFileUrl(photo)} unoptimized width={1200} />
-      </section>
+      </Modal>
     </div>
   );
 }
@@ -1982,9 +1957,7 @@ export function WorksheetView({
                 }
                 if (
                   window.confirm(
-                    printLanguage === "lv"
-                      ? `${viewRow.sectorName} tiks pārvietots uz arhīvu un vairs nebūs aktīvajā kalendārā. Turpināt?`
-                      : `${viewRow.sectorName} will move to the archive and no longer appear in the active calendar. Continue?`,
+                    archiveConfirmation(viewRow.sectorName, printLanguage),
                   )
                 ) {
                   onArchive(row, note);
@@ -2038,7 +2011,7 @@ export function WorksheetView({
                 <h3>{viewRow.sectorName}</h3>
                 <span>{viewRow.variety}</span>
               </div>
-              <strong className={balance.tone === "short" ? "danger-text" : ""}>{balance.label}</strong>
+              <strong className={balance.tone === "short" ? "danger-text" : ""}>{formatBalanceHeading(balance.difference, printLanguage)}</strong>
             </div>
             <div className="plant-balance-grid">
               <span>
@@ -2051,7 +2024,7 @@ export function WorksheetView({
               <span>{printLanguage === "lv" ? "Zudumi/korekcijas" : "Losses/corrections"}: {signedNumber(balance.correctionTotal)}</span>
               <span>{t("currentActual", printLanguage)}: {balance.actualPlants.toLocaleString("lv-LV")}</span>
               <span>{formatReserveShortage(balance.difference, printLanguage)}</span>
-              {row.archivedAt ? <span>{printLanguage === "lv" ? "Arhivēts" : "Archived"}: {dateLabel(row.archivedAt.slice(0, 10))}</span> : null}
+              {row.archivedAt ? <span>{printLanguage === "lv" ? "Arhivēts" : "Archived"}: {dateLabel(row.archivedAt.slice(0, 10), printLanguage)}</span> : null}
               {row.archivedNote ? <span>{printLanguage === "lv" ? "Arhīva piezīme" : "Archive note"}: {row.archivedNote}</span> : null}
             </div>
           </section>
@@ -2430,11 +2403,10 @@ function SowingTablesPicker({
       </button>
       {open ? (
         <div className="dialog-backdrop" role="presentation">
-          <section
-            aria-modal="true"
+          <Modal
+            onClose={cancelDialog}
             aria-label={language === "lv" ? "Izvēlēties sēšanas galdus" : "Choose seeding tables"}
             className="sowing-tables-dialog"
-            role="dialog"
           >
             <div>
               <p className="eyebrow">{t("seedingTables", language)}</p>
@@ -2461,7 +2433,7 @@ function SowingTablesPicker({
                 {t("save", language)}
               </button>
             </div>
-          </section>
+          </Modal>
         </div>
       ) : null}
     </div>
@@ -2723,7 +2695,7 @@ export function DayDetails({
       <div className="panel-header">
         <div>
           <p className="eyebrow">{t("dayWork", language)}</p>
-          <h2>{dateLabel(selectedDate)}</h2>
+          <h2>{dateLabel(selectedDate, language)}</h2>
         </div>
         {countMainWork(items.filter((item) => !item.calendarReadOnly), selectedDate) > 1 ? <span className="overload-badge">{t("overload", language)}</span> : null}
       </div>
@@ -2737,7 +2709,8 @@ export function DayDetails({
   );
 }
 
-function GreenhousePanel({
+export function GreenhousePanel({
+  language: languageOverride,
   date,
   onDateChange,
   rows,
@@ -2745,8 +2718,10 @@ function GreenhousePanel({
   date: string;
   onDateChange: (date: string) => void;
   rows: SowingPlanRow[];
+  language?: AppLanguage;
 }) {
-  const language = useAppLanguage();
+  const contextLanguage = useAppLanguage();
+  const language = languageOverride ?? contextLanguage;
   const snapshot = buildGreenhouseOccupancyDay(rows, plannerConfig, date);
 
   return (
@@ -2773,7 +2748,7 @@ function GreenhousePanel({
       </div>
 
       <div className="greenhouse-grid">
-        <SeedingCapacityView occupancy={snapshot.seeding} language={language} date={date} today={localTodayIso()} />
+        <SeedingCapacityView occupancy={snapshot.seeding} language={language} date={date} today={localTodayIso()} showWarnings={false} />
         {snapshot.growing.rows.map((row) => (
           <article className="greenhouse-row" key={row.planRowId}>
             <div>
@@ -2797,11 +2772,6 @@ function GreenhousePanel({
                 ? ` · ${row.primaryRow && row.primaryRow !== "A" ? `${row.primaryRow} ${language === "lv" ? "rinda rezervēta" : "row reserved"}` : language === "lv" ? "rezervēta kapacitāte" : "capacity reserved"}`
                 : ""}
             </p>
-            {row.warnings?.map((warning) => (
-              <p className="capacity-note" key={warning}>
-                {warning}
-              </p>
-            ))}
           </article>
         ))}
         {snapshot.growing.rows.length === 0 ? (
@@ -2815,9 +2785,9 @@ function GreenhousePanel({
         ) : null}
       </div>
 
-      {snapshot.warnings.map((warning) => (
+      {[...new Set(snapshot.warnings)].map((warning) => (
         <div className="capacity-warning" key={warning}>
-          <strong>⚠️ {language === "en" ? warning.replace("augšanas galdu konflikts", "growing-table conflict") : warning}</strong>
+          <strong>⚠️ {formatHouseWarning(warning, language)}</strong>
         </div>
       ))}
 
@@ -2874,7 +2844,7 @@ function WorkItemCard({
         ))}
       </ul>
       {readOnly ? (
-        <small>{dateLabel(item.date)}</small>
+        <small>{dateLabel(item.date, language)}</small>
       ) : item.fixed ? (
         <small>{t("fixedDate", language)}</small>
       ) : item.scheduleKind === "flexible" ? (
@@ -2962,12 +2932,8 @@ function BatchEditor({
       />
       <label>
         {t("weekNumber", language)}
-        <input
-          min="1"
-          type="number"
-          value={row.weekNumber ?? getIsoWeek(row.sowingDate)}
-          onChange={(event) => onUpdateRow(row.id, { weekNumber: Number(event.target.value) })}
-        />
+        <PlanNumberInput min={1} max={53} value={row.weekNumber ?? getIsoWeek(row.sowingDate)}
+          onCommit={value => onUpdateRow(row.id, { weekNumber: value! })} />
       </label>
       <label>
         {t("status", language)}
@@ -2983,33 +2949,18 @@ function BatchEditor({
       </label>
       <label>
         {t("greenhouseRequired", language)}
-        <input
-          min="1"
-          type="number"
-          value={row.greenhouseRequiredPlants ?? ""}
-          onChange={(event) =>
-            onUpdateRow(row.id, {
-              greenhouseRequiredPlants: event.target.value ? Number(event.target.value) : undefined,
-            })
-          }
-        />
+        <PlanNumberInput min={1} optional value={row.greenhouseRequiredPlants}
+          onCommit={value => onUpdateRow(row.id, { greenhouseRequiredPlants: value })} />
       </label>
       <label>
         {t("agronomistSowing", language)}
-        <input
-          min="1"
-          type="number"
-          value={row.requiredPlants}
-          onChange={(event) => onUpdateRow(row.id, { requiredPlants: Number(event.target.value) })}
-        />
+        <PlanNumberInput min={1} value={row.requiredPlants}
+          onCommit={value => onUpdateRow(row.id, { requiredPlants: value! })} />
       </label>
       <label>
         {language === "lv" ? "Darbinieka extra" : "Worker extra"}
-        <input
-          type="number"
-          value={row.extraPlants}
-          onChange={(event) => onUpdateRow(row.id, { extraPlants: Number(event.target.value) })}
-        />
+        <PlanNumberInput value={row.extraPlants}
+          onCommit={value => onUpdateRow(row.id, { extraPlants: value! })} />
       </label>
       <div className="metric-inline">
         <span>{t("totalSow", language)}</span>
@@ -3033,12 +2984,8 @@ function BatchEditor({
       </label>
       <label>
         {t("cycleLength", language)}
-        <input
-          min="1"
-          type="number"
-          value={row.cycleLength}
-          onChange={(event) => onUpdateCycleLength(row, Number(event.target.value))}
-        />
+        <PlanNumberInput min={1} value={row.cycleLength}
+          onCommit={value => onUpdateCycleLength(row, value!)} />
       </label>
       <label>
         {t("sectorTables", language)}
@@ -3052,7 +2999,7 @@ function BatchEditor({
       </label>
       <div className={`availability availability--${availability.tone}`}>
         <span>{language === "lv" ? "Faktiski pieejams" : "Actually available"}: {availability.availablePlants.toLocaleString("lv-LV")}</span>
-        <strong>{availability.label}</strong>
+        <strong>{formatBalanceHeading(availability.difference, language)}</strong>
       </div>
       <HusPlacementDetails row={row} rows={rows} language={language} />
       <section className="history-box">
@@ -3117,12 +3064,12 @@ function BatchTimeline({
         <span>{language === "lv" ? sowing.label : formatPrintSowingPlan(totalSow, language)}</span>
         <span>{language === "lv" ? thinning.label : formatPrintThinningPlan(row, language)}</span>
         <span>{row.cycleLength} {language === "lv" ? "dienu cikls" : "day cycle"}</span>
-        <span>{availability.label}</span>
+        <span>{formatBalanceHeading(availability.difference, language)}</span>
       </div>
       <div className="timeline">
         {items.map((item) => (
           <div className="timeline-item" key={item.id}>
-            <time>{dateLabel(item.date)}</time>
+            <time>{dateLabel(item.date, language)}</time>
             <WorkItemCard errors={errors} item={item} onMove={onMove} onMoveRange={onMoveRange} row={row} />
           </div>
         ))}
@@ -3318,7 +3265,7 @@ function calendarTitle(anchorDate: string, viewMode: ViewMode, language: AppLang
 
   const first = days[0]?.isoDate ?? anchorDate;
   const last = days.at(-1)?.isoDate ?? anchorDate;
-  return first === last ? dateLabel(first) : `${dateLabel(first)} - ${dateLabel(last)}`;
+  return first === last ? dateLabel(first, language) : `${dateLabel(first, language)} - ${dateLabel(last, language)}`;
 }
 
 function shortDate(date: string): string {

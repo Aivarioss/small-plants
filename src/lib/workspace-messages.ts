@@ -9,7 +9,7 @@ const messages: Array<[string, string]> = [
   ["Ielādē plānu…", "Loading plan…"], ["Dati ielādēti", "Data loaded"],
   ["Saglabā izmaiņas…", "Saving changes…"], ["Izmaiņas saglabātas", "Changes saved"],
   ["Saglabā HUS ierakstu", "Saving HUS entry"], ["Saglabā HUS fotogrāfijas", "Saving HUS photos"],
-  ["HUS ieraksts saglabāts", "HUS entry saved"], ["Dzēš HUS foto", "Deleting HUS photo"], ["Foto dzēsts", "Photo deleted"],
+  ["HUS ieraksts saglabāts", "HUS entry saved"], ["Foto pieprasījums apstiprināts", "Photo request confirmed"], ["Dzēš HUS foto", "Deleting HUS photo"], ["Foto dzēsts", "Photo deleted"],
   ["Saglabāts; dati pārlādēti.", "Saved; data refreshed."],
   ["Saglabāts. Datu pārlāde neizdevās; saglabāšanu neatkārto, pārlādē datus.", "Saved. Refresh failed; refresh the data instead of saving again."],
   ["Saglabāšanas rezultāts nav apstiprināts. Pārlādē datus un pārbaudi rezultātu.", "Saving has not been confirmed. Refresh the data and check the result."],

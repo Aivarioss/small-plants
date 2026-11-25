@@ -1,12 +1,14 @@
 "use client";
 
+import { compressHusPhotoForUpload } from "@/lib/image-compression";
+import { HusEntrySaveStatus } from "./HusEntrySaveStatus";
 import { Modal } from "./Modal";
 import { useEffect, useRef, useState } from "react";
 import { defaultHusEventDate, getBiologicalCycleDays, getCycleDay, parseHusEventMovementRows } from "@/lib/planning";
 import { growingTableSelectionRows } from "@/lib/greenhouse-simulation";
 import { formatCycleDay, husEventTypeTitle, t, type AppLanguage } from "@/lib/localization";
 import { type HusMediaUploadInput } from "@/lib/hus-photo-archive";
-import { buildHusEntrySubmission, createHusEntrySaveOperation } from "@/lib/hus-entry-save";
+import { buildHusEntrySubmission, createHusEntrySaveOperation, type HusEntrySaveProgress } from "@/lib/hus-entry-save";
 import type { HusEventEntry, HusEventType, SowingPlanRow } from "@/lib/types";
 import { HusEntryPhotos, type HusEntryDraftPhoto } from "./HusEntryPhotos";
 
@@ -59,6 +61,7 @@ export function HusEntryDialog({
   onCancel,
   onSaveEvents,
   onUploadMedia,
+  onProgress,
   readOnly = false,
   language,
   row,
@@ -67,6 +70,7 @@ export function HusEntryDialog({
   onCancel: () => void;
   onSaveEvents: (entries: HusEventEntry[]) => Promise<void>;
   onUploadMedia: (input: HusMediaUploadInput) => Promise<void>;
+  onProgress?: (progress: HusEntrySaveProgress) => void;
   readOnly?: boolean;
   language: AppLanguage;
   row: SowingPlanRow;
@@ -99,7 +103,8 @@ export function HusEntryDialog({
   const operationRef = useRef<ReturnType<typeof createHusEntrySaveOperation> | null>(null);
   const [busy, setBusy] = useState(false);
   const [attempted, setAttempted] = useState(false);
-  const [recordSaved, setRecordSaved] = useState(false);
+  const [progress, setProgress] = useState<HusEntrySaveProgress | null>(null);
+  const recordSaved = Boolean(progress?.eventsSaved) && !readOnly;
   const [error, setError] = useState("");
   useEffect(() => () => photosRef.current.forEach((photo) => URL.revokeObjectURL(photo.url)), []);
 
@@ -199,10 +204,15 @@ export function HusEntryDialog({
     setBusy(true);
     setError("");
     try {
-      await operation.save({ saveEvents: onSaveEvents, upload: onUploadMedia });
+      await operation.save({ saveEvents: onSaveEvents, upload: onUploadMedia,
+        preparePhoto: compressHusPhotoForUpload,
+        onProgress: next => { setProgress(next); onProgress?.(next); },
+      });
       onCancel();
     } catch (error) {
-      setRecordSaved(operation.eventsSaved && !readOnly);
+      setProgress(operation.progress);
+      // No request has started: allow correcting/removing an unreadable image without creating a new saved event.
+      if (!operation.progress.writeStarted) { operationRef.current = null; setAttempted(false); }
       setError(error instanceof Error ? error.message : language === "lv" ? "Neizdevās saglabāt." : "Could not save.");
     } finally {
       setBusy(false);
@@ -380,9 +390,7 @@ export function HusEntryDialog({
         {eventType !== "brownRoots" ? <HusEntryPhotos photos={photos.filter((photo) => photo.target === "entry")} language={language}
           onAdd={(files) => addPhotos("entry", files)} onRemove={removePhoto} /> : null}
         </fieldset>
-        {recordSaved ? <p className="dialog-hint" role="status">{language === "lv"
-          ? "Ieraksts un stādu izmaiņas ir saglabātas. Atkārtoti tiks sūtīti tikai vēl nesaglabātie foto."
-          : "The entry and plant changes are saved. Retrying will upload only the remaining photos."}</p> : null}
+        <HusEntrySaveStatus progress={progress} language={language} mode={readOnly ? "observation" : "event"} />
         {error ? <p className="dialog-error" role="alert">{error}</p> : null}
         <div className="button-row">
           <button className="secondary-action" type="button" disabled={busy} onClick={cancelDialog}>

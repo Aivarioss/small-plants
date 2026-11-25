@@ -79,9 +79,11 @@ import { compressHusPhotoForUpload } from "@/lib/image-compression";
 import { HusPhotoArchive, PhotoArchiveMetadata } from "./HusPhotoArchive";
 import { SowingSimulationPanel } from "./SowingSimulationPanel";
 import { GreenhouseStatisticsPanel, type GreenhouseStatisticsSelection } from "./GreenhouseStatisticsPanel";
+import { HusEntrySaveStatus, husEntrySaveMessage, type HusEntrySaveMode } from "./HusEntrySaveStatus";
+import { eventPhotoUploads, sendHusMedia } from "@/lib/hus-photo-transfer";
 import { HusEntryDialog } from "./HusEntryDialog";
 import { enqueueRowSave } from "@/lib/row-save-queue";
-import { createHusEntrySaveOperation, persistHusEntries } from "@/lib/hus-entry-save";
+import { createHusEntrySaveOperation, persistHusEntries, type HusEntrySaveProgress } from "@/lib/hus-entry-save";
 import { HusPlacementDetails } from "./HusPlacementDetails";
 import { SeedingCapacityView } from "./SeedingCapacityView";
 import { buildCalendarHistory, type CalendarWorkItem } from "@/lib/calendar-history";
@@ -157,7 +159,7 @@ function calendarItemLabel(item: WorkItem, language: AppLanguage) {
 export function PlannerApp() {
   const [planRows, setPlanRows] = useState<SowingPlanRow[]>([]);
   const [archivedRows, setArchivedRows] = useState<SowingPlanRow[]>([]);
-  const [repositoryMessage, setRepositoryMessage] = useState("Ielādē plānu…");
+  const [repositoryMessage, setRepositoryMessage] = useState<string | { progress: HusEntrySaveProgress; mode: HusEntrySaveMode }>("Ielādē plānu…");
   const [repositoryError, setRepositoryError] = useState("");
   const [activeView, setActiveView] = useState<MainView>("sowingPlan");
   const [husListMode, setHusListMode] = useState<"active" | "archive">("active");
@@ -683,33 +685,7 @@ export function PlannerApp() {
     const beforeCount = countHusMediaTarget([...planRows, ...archivedRows], rowId, input.eventId);
 
     try {
-      const preparedFiles = await prepareHusPhotoFiles(input.files);
-      const formData = new FormData();
-      formData.append("rowId", rowId);
-      if (input.uploadId) formData.append("uploadId", input.uploadId);
-      if (input.eventId) {
-        formData.append("eventId", input.eventId);
-      }
-      if (input.note?.trim()) {
-        formData.append("note", input.note.trim());
-      }
-      if (input.observationDate) {
-        formData.append("observationDate", input.observationDate);
-      }
-      if (input.photoDetails) {
-        formData.append("photoDetails", JSON.stringify(input.photoDetails));
-      }
-      preparedFiles.forEach((file) => formData.append("photos", file));
-
-      const response = await fetch("/api/hus-media", {
-        body: formData,
-        method: "POST",
-      });
-      const result = (await response.json().catch(() => null)) as { note?: HusNoteEntry; notes?: HusNoteEntry[]; photos?: HusPhotoEntry[]; error?: string } | null;
-
-      if (!response.ok || !result) {
-        throw new Error(result?.error ?? (printLanguage === "lv" ? "Neizdevās saglabāt HUS ierakstu." : "Could not save HUS entry."));
-      }
+      const result = await sendHusMedia(rowId, input);
 
       const update = (candidate: SowingPlanRow) =>
         candidate.id === rowId ? mergeHusMedia(candidate, result.note, result.photos ?? [], result.notes) : candidate;
@@ -717,7 +693,7 @@ export function PlannerApp() {
       husMediaPublicationRef.current.changed(rowId);
       setPlanRows((current) => current.map(update));
       setArchivedRows((current) => current.map(update));
-      setRepositoryMessage(printLanguage === "lv" ? "HUS ieraksts saglabāts" : "HUS entry saved");
+      setRepositoryMessage(printLanguage === "lv" ? "Foto pieprasījums apstiprināts" : "Photo request confirmed");
       setRepositoryError("");
     } catch (error) {
       endMutation();
@@ -910,7 +886,8 @@ export function PlannerApp() {
           <h1>{printLanguage === "lv" ? "Gurķu stādu cikli" : "Cucumber plant cycles"}</h1>
         </div>
         <div className="topbar__stats">
-          <span role="status">{workspaceMessage(repositoryMessage, printLanguage)}</span>
+          <span role="status">{typeof repositoryMessage === "string" ? workspaceMessage(repositoryMessage, printLanguage)
+            : husEntrySaveMessage(repositoryMessage.progress, printLanguage, repositoryMessage.mode)}</span>
           <span>{planRows.length} {t("plannedRows", printLanguage)}</span>
           <strong>{formatWorkCount(workItems.length, printLanguage)}</strong>
           <LanguageToggle language={printLanguage} onChange={setPrintLanguage} />
@@ -1138,6 +1115,12 @@ export function PlannerApp() {
           onUpdateRow={updatePlanRow}
           onRestore={restorePlanRow}
           onSaveHusEntries={saveWorksheetHusEntries}
+          onEntryProgress={(progress, mode) => {
+            const message = husEntrySaveMessage(progress, printLanguage, mode);
+            setRepositoryMessage({ progress, mode });
+            if (progress.phase === "failed") setRepositoryError(message);
+            else if (progress.phase === "complete" || progress.phase === "preparing") setRepositoryError("");
+          }}
           onUploadHusMedia={uploadHusMedia}
           onViewPhoto={setHusPhotoViewer}
           printLanguage={printLanguage}
@@ -1833,6 +1816,7 @@ export function WorksheetView({
   onUpdateRow,
   onUploadHusMedia,
   onSaveHusEntries,
+  onEntryProgress,
   onViewPhoto,
   printLanguage,
   readOnly = false,
@@ -1843,6 +1827,7 @@ export function WorksheetView({
   onEdit: () => void;
   onRestore: (row: SowingPlanRow) => void;
   onUpdateRow: (id: string, patch: Partial<SowingPlanRow>) => void;
+  onEntryProgress?: (progress: HusEntrySaveProgress, mode: HusEntrySaveMode) => void;
   onSaveHusEntries: (rowId: string, entries: HusEventEntry[]) => Promise<void>;
   onUploadHusMedia: (
     rowId: string,
@@ -1860,6 +1845,7 @@ export function WorksheetView({
   const [mediaBusy, setMediaBusy] = useState(false);
   const [mediaError, setMediaError] = useState("");
   const [photoRetryPending, setPhotoRetryPending] = useState(false);
+  const [photoProgress, setPhotoProgress] = useState<HusEntrySaveProgress | null>(null);
   const photoSaveRef = useRef<{ rowId: string; operation: ReturnType<typeof createHusEntrySaveOperation> } | null>(null);
   const archiveSnapshot = readOnly ? row.archiveSnapshot : undefined;
   const viewRow = archiveSnapshot ? rowFromArchiveSnapshot(row, archiveSnapshot) : row;
@@ -1906,7 +1892,7 @@ export function WorksheetView({
       return;
     }
     photoSaveRef.current = { rowId: row.id, operation: createHusEntrySaveOperation({
-      entries: [], media: [{ eventId: entry.id, files }],
+      entries: [], media: eventPhotoUploads(entry.id, files),
     }) };
     setPhotoRetryPending(true);
     await retryEventPhotos();
@@ -1919,7 +1905,9 @@ export function WorksheetView({
     setMediaError("");
     try {
       await pending.operation.save({ saveEvents: async () => {},
-        upload: (input) => onUploadHusMedia(pending.rowId, input) });
+        upload: (input) => onUploadHusMedia(pending.rowId, input), preparePhoto: compressHusPhotoForUpload,
+        onProgress: progress => { setPhotoProgress(progress); onEntryProgress?.(progress, "photos"); },
+      });
       photoSaveRef.current = null;
       setPhotoRetryPending(false);
     } catch (error) {
@@ -2147,10 +2135,12 @@ export function WorksheetView({
               </article>
             ))}
           </div>
+          <HusEntrySaveStatus progress={photoProgress} language={printLanguage} mode="photos" />
           {eventDialogOpen ? (
             <HusEntryDialog
               entry={editingEvent}
               onCancel={closeEventDialog}
+              onProgress={progress => onEntryProgress?.(progress, readOnly ? "observation" : "event")}
               onSaveEvents={(entries) => onSaveHusEntries(row.id, entries)}
               onUploadMedia={(input) => onUploadHusMedia(row.id, input)}
               readOnly={readOnly}
@@ -3289,14 +3279,6 @@ async function fetchSowingPlanDocument(): Promise<SowingPlanDocument | null> {
 function planDocumentFileUrl(document: SowingPlanDocument): string {
   const version = encodeURIComponent(document.updatedAt ?? document.createdAt ?? document.id);
   return `/api/sowing-plan-document/file?v=${version}`;
-}
-
-async function prepareHusPhotoFiles(files: File[]): Promise<File[]> {
-  const compressed: File[] = [];
-  for (const file of files) {
-    compressed.push(await compressHusPhotoForUpload(file));
-  }
-  return compressed;
 }
 
 function mergeHusMedia(row: SowingPlanRow, note: HusNoteEntry | undefined, photos: HusPhotoEntry[], notes?: HusNoteEntry[]): SowingPlanRow {
